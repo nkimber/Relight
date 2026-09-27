@@ -651,6 +651,57 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         Task.Run(() => ChangeProfileAsync(profileId, enabled: false, remove: true,
             cancellationToken), CancellationToken.None);
 
+    public async Task<Guid> DuplicateProfileAsync(Guid profileId,
+        CancellationToken cancellationToken = default)
+    {
+        await _changes.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(RecoveryApplicationHost));
+            StoredConfiguration current = Configuration ??
+                throw new ConfigurationUnavailableException("Configuration is unavailable.");
+            if (!current.AutomaticActionsAllowed)
+                throw new ConfigurationUnavailableException(
+                    "Repair configuration before duplicating a profile.");
+            ProfileConfiguration source = current.Configuration.Profiles.SingleOrDefault(
+                item => item.Id == profileId) ??
+                throw new InvalidOperationException("Profile no longer exists.");
+            Guid duplicateId = Guid.NewGuid();
+            string duplicateName = $"Copy of {source.Name}";
+            if (duplicateName.Length > 100) duplicateName = duplicateName[..100].TrimEnd();
+            ProfileConfiguration duplicate = source with
+            {
+                Id = duplicateId,
+                Name = duplicateName,
+                Enabled = false
+            };
+            var updated = current.Configuration with
+            {
+                Profiles = [.. current.Configuration.Profiles, duplicate]
+            };
+            ConfigurationStore.ValidateConfiguration(updated);
+            // Never copy the source budget or live process state. A failed save
+            // leaves an unreferenced state file, not an enabled duplicate.
+            await Task.Run(() => _stateStore.Create(duplicateId,
+                new RecoveryMachine(duplicate.Policy, enabled: false).ExportCheckpoint()),
+                CancellationToken.None).ConfigureAwait(false);
+            StoredConfiguration saved = await Task.Run(() =>
+                _configurationStore.Save(current, updated), CancellationToken.None)
+                .ConfigureAwait(false);
+            Configuration = saved;
+            lock (_statusSync)
+                _statuses[duplicateId] = new(duplicateId, duplicate.Name, false, false,
+                    null, new RecoveryMachine(duplicate.Policy, enabled: false).Snapshot,
+                    null, ConfiguredEnabled: false, Policy: duplicate.Policy,
+                    TargetKind: duplicate.Target.Kind);
+            _recorder?.TryRecord(new(DateTimeOffset.UtcNow, Guid.NewGuid(),
+                EventSeverity.Information, OperationalEventKind.ManualAction,
+                ProfileId: duplicateId, ProfileName: duplicate.Name));
+            return duplicateId;
+        }
+        finally { _changes.Release(); }
+    }
+
     private async Task ChangeProfileAsync(Guid profileId, bool enabled, bool remove,
         CancellationToken cancellationToken)
     {

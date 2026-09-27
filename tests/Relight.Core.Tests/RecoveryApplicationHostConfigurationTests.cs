@@ -67,6 +67,54 @@ public sealed class RecoveryApplicationHostConfigurationTests
         Assert.Equal("{ damaged", File.ReadAllText(path));
     }
 
+    [Fact]
+    public async Task Duplicate_is_disabled_with_new_identity_and_fresh_budget()
+    {
+        using var directory = new TestDirectory();
+        Guid sourceId = Guid.NewGuid();
+        Guid episodeId = Guid.NewGuid();
+        var source = new ProfileConfiguration(sourceId, "Protected app", true,
+            new(TargetKind.Executable, @"C:\Windows\System32\notepad.exe", []),
+            RecoveryPolicy.Default);
+        new ConfigurationStore(directory.Path).Initialize(
+            new([source], GlobalConfiguration.Default));
+        var state = new RecoveryStateStore(directory.Path);
+        RecoveryCheckpoint sourceCheckpoint = new(true, false, true, true, 2,
+            episodeId, RecoveryState.AwaitingIntervention, null);
+        state.Create(sourceId, sourceCheckpoint);
+
+        Guid duplicateId;
+        await using (var host = await RecoveryApplicationHost.OpenAsync(directory.Path,
+                         new FakeClock()))
+        {
+            duplicateId = await host.DuplicateProfileAsync(sourceId);
+            Assert.NotEqual(sourceId, duplicateId);
+            HostedProfileStatus copy = Assert.Single(host.GetProfiles(),
+                item => item.Id == duplicateId);
+            Assert.False(copy.ConfiguredEnabled);
+            Assert.False(copy.Monitoring);
+            Assert.False(copy.AutomaticActionsAllowed);
+            Assert.Equal(RecoveryState.Disabled, copy.Recovery?.State);
+            Assert.DoesNotContain(duplicateId, host.Pulse().Keys);
+        }
+
+        StoredConfiguration saved = new ConfigurationStore(directory.Path).Load();
+        ProfileConfiguration duplicate = Assert.Single(saved.Configuration.Profiles,
+            item => item.Id == duplicateId);
+        Assert.Equal("Copy of Protected app", duplicate.Name);
+        Assert.False(duplicate.Enabled);
+        Assert.Equal(source.Target.Kind, duplicate.Target.Kind);
+        Assert.Equal(source.Target.Identity, duplicate.Target.Identity);
+        Assert.Equal(source.Target.Arguments, duplicate.Target.Arguments);
+        Assert.Equal(source.Policy, duplicate.Policy);
+        Assert.Equal(sourceCheckpoint, state.Load(sourceId).Checkpoint);
+        RecoveryCheckpoint fresh = state.Load(duplicateId).Checkpoint;
+        Assert.False(fresh.Enabled);
+        Assert.Equal(0, fresh.ReservedAutomaticAttempts);
+        Assert.False(fresh.LockedOut);
+        Assert.Null(fresh.EpisodeId);
+    }
+
     private sealed class FakeClock : IMonotonicClock
     {
         public TimeSpan Elapsed { get; set; }

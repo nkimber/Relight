@@ -20,6 +20,7 @@ public partial class MainWindow : Window
         Task<EventHistoryExportResult>> _exportHistory;
     private readonly Func<Guid, bool, Task> _setEnabled;
     private readonly Func<Guid, Task> _removeProfile;
+    private readonly Func<Guid, Task<Guid>> _duplicateProfile;
     private readonly Action<Guid> _editProfile;
     private readonly Func<bool, Task> _setStartAtSignIn;
     private readonly Func<string, Task<DiagnosticBundleResult>> _exportDiagnostics;
@@ -35,6 +36,7 @@ public partial class MainWindow : Window
             Task<EventHistoryExportResult>> exportHistory,
         Func<Guid, bool, Task> setEnabled,
         Func<Guid, Task> removeProfile,
+        Func<Guid, Task<Guid>> duplicateProfile,
         Action<Guid> editProfile,
         Func<bool, Task> setStartAtSignIn,
         Func<string, Task<DiagnosticBundleResult>> exportDiagnostics,
@@ -49,6 +51,7 @@ public partial class MainWindow : Window
         _exportHistory = exportHistory;
         _setEnabled = setEnabled;
         _removeProfile = removeProfile;
+        _duplicateProfile = duplicateProfile;
         _editProfile = editProfile;
         _setStartAtSignIn = setStartAtSignIn;
         _exportDiagnostics = exportDiagnostics;
@@ -360,6 +363,26 @@ public partial class MainWindow : Window
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally { button.IsEnabled = row.CanRemove; }
+    }
+
+    private async void DuplicateProfileClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: ApplicationStatusRow row } button) return;
+        button.IsEnabled = false;
+        try
+        {
+            await _duplicateProfile(row.Id);
+            MessageBox.Show(this,
+                "A disabled copy was added. Review its settings before enabling protection.",
+                "Profile duplicated", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Could not duplicate profile",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally { button.IsEnabled = row.CanEdit; }
     }
 
     private void ViewProfileHistoryClick(object sender, RoutedEventArgs e)
