@@ -11,6 +11,44 @@ public sealed class RecoveryApplicationHostIntegrationTests
 {
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Sign_in_preference_saves_with_registry_and_rolls_back_on_stale_configuration()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-startup-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var registry = new FakeStartupRegistry();
+            var startup = new CurrentUserStartupRegistration(@"C:\Relight\Relight.exe", registry);
+            await using (var host = await RecoveryApplicationHost.OpenAsync(root,
+                new FakeClock()))
+            {
+                await host.SetStartAtSignInAsync(true, startup);
+                Assert.True(host.Configuration?.Configuration.Settings.StartAtSignIn);
+                Assert.True(startup.Inspect().EnabledForThisExecutable);
+
+                var store = new ConfigurationStore(root);
+                StoredConfiguration current = store.Load();
+                store.Save(current, current.Configuration);
+                await Assert.ThrowsAsync<StaleConfigurationException>(() =>
+                    host.SetStartAtSignInAsync(true, startup));
+                Assert.True(startup.Inspect().EnabledForThisExecutable);
+                await Assert.ThrowsAsync<StaleConfigurationException>(() =>
+                    host.SetStartAtSignInAsync(false, startup));
+                Assert.True(startup.Inspect().EnabledForThisExecutable);
+                Assert.True(host.Configuration?.Configuration.Settings.StartAtSignIn);
+            }
+            await using var reopened = await RecoveryApplicationHost.OpenAsync(root,
+                new FakeClock());
+            Assert.True(reopened.Configuration?.Configuration.Settings.StartAtSignIn);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Explicit_repair_reopens_last_good_profile_with_its_existing_state()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-host-repair-{Guid.NewGuid():N}");
@@ -371,5 +409,12 @@ public sealed class RecoveryApplicationHostIntegrationTests
     private sealed class FakeClock : IMonotonicClock
     {
         public TimeSpan Elapsed { get; set; }
+    }
+
+    private sealed class FakeStartupRegistry : IStartupRegistryValue
+    {
+        private string? _command;
+        public string? Read() => _command;
+        public void Write(string? command) => _command = command;
     }
 }

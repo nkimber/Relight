@@ -9,9 +9,11 @@ internal sealed class TrayService : IDisposable
 {
     private readonly Forms.NotifyIcon _icon;
     private readonly Forms.ContextMenuStrip _menu;
+    private readonly Forms.ToolStripMenuItem _startupItem;
     private readonly Icon _image;
 
-    public TrayService(Action open, Action add, Action history, Action exit)
+    public TrayService(Action open, Action add, Action history, Action toggleStartup,
+        Action exit)
     {
         using var resource = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/Relight.ico"))!.Stream;
         _image = new Icon(resource);
@@ -22,7 +24,9 @@ internal sealed class TrayService : IDisposable
         _menu.Items.Add(Unavailable("Pause all"));
         _menu.Items.Add(Unavailable("Resume all"));
         _menu.Items.Add("View history", null, (_, _) => history());
-        _menu.Items.Add(Unavailable("Start at sign-in"));
+        _startupItem = new Forms.ToolStripMenuItem("Start at sign-in", null,
+            (_, _) => toggleStartup()) { Enabled = false };
+        _menu.Items.Add(_startupItem);
         _menu.Items.Add(new Forms.ToolStripSeparator());
         _menu.Items.Add("Exit Relight", null, (_, _) => exit());
 
@@ -47,6 +51,13 @@ internal sealed class TrayService : IDisposable
     {
         if (string.IsNullOrWhiteSpace(text)) return;
         _icon.Text = text.Length > 63 ? text[..63] : text;
+    }
+
+    public void UpdateStartupStatus(bool enabled, bool available, string explanation)
+    {
+        _startupItem.Checked = enabled;
+        _startupItem.Enabled = available;
+        _startupItem.ToolTipText = explanation;
     }
 
     public void Dispose()

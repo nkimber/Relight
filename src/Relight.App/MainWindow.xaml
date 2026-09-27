@@ -189,9 +189,13 @@
                                 <TextBlock Text="Application behavior" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,16" />
                                 <TextBlock Text="Close to tray" FontWeight="SemiBold" />
                                 <TextBlock Text="The close button hides the dashboard. Use Exit Relight to quit." Style="{StaticResource Muted}" Margin="0,4,0,18" />
-                                <CheckBox Content="Start Relight when I sign in" IsEnabled="False" IsChecked="False"
-                                          ToolTipService.ShowOnDisabled="True" ToolTip="Sign-in startup will be available in a later milestone." />
-                                <TextBlock Text="Off · Not available in this preview" Style="{StaticResource Muted}" Margin="22,4,0,0" />
+                                <CheckBox x:Name="StartAtSignInInput" Content="Start Relight when I sign in"
+                                          IsEnabled="{Binding CanChangeStartAtSignIn}"
+                                          IsChecked="{Binding StartAtSignIn, Mode=OneWay}"
+                                          AutomationProperties.Name="Start Relight when I sign in"
+                                          Click="StartAtSignInClick" />
+                                <TextBlock Text="{Binding StartAtSignInStatus}" Style="{StaticResource Muted}"
+                                           TextWrapping="Wrap" Margin="22,4,0,0" />
                             </StackPanel>
                         </Border>
                         <Border Style="{StaticResource Card}">

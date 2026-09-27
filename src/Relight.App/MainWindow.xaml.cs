@@ -20,6 +20,8 @@ public partial class MainWindow : Window
     private readonly Func<Guid, bool, Task> _setEnabled;
     private readonly Func<Guid, Task> _removeProfile;
     private readonly Action<Guid> _editProfile;
+    private readonly Func<bool, Task> _setStartAtSignIn;
+    private bool _changingStartAtSignIn;
 
     public MainWindow(Func<Guid, bool, Task> setPaused, Func<Guid, Task> resetRecovery,
         Func<Guid, Task> startNow,
@@ -27,7 +29,8 @@ public partial class MainWindow : Window
             Task<EventHistoryExportResult>> exportHistory,
         Func<Guid, bool, Task> setEnabled,
         Func<Guid, Task> removeProfile,
-        Action<Guid> editProfile)
+        Action<Guid> editProfile,
+        Func<bool, Task> setStartAtSignIn)
     {
         _setPaused = setPaused;
         _resetRecovery = resetRecovery;
@@ -36,6 +39,7 @@ public partial class MainWindow : Window
         _setEnabled = setEnabled;
         _removeProfile = removeProfile;
         _editProfile = editProfile;
+        _setStartAtSignIn = setStartAtSignIn;
         InitializeComponent();
     }
 
@@ -194,6 +198,26 @@ public partial class MainWindow : Window
     {
         if (sender is Button { DataContext: ApplicationStatusRow row })
             _editProfile(row.Id);
+    }
+
+    private async void StartAtSignInClick(object sender, RoutedEventArgs e)
+    {
+        if (_changingStartAtSignIn) return;
+        _changingStartAtSignIn = true;
+        StartAtSignInInput.SetCurrentValue(IsEnabledProperty, false);
+        try { await _setStartAtSignIn(StartAtSignInInput.IsChecked == true); }
+        catch (Exception error)
+        {
+            StartAtSignInInput.GetBindingExpression(
+                System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty)?.UpdateTarget();
+            MessageBox.Show(this, error.Message, "Could not change sign-in startup",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            _changingStartAtSignIn = false;
+            StartAtSignInInput.GetBindingExpression(IsEnabledProperty)?.UpdateTarget();
+        }
     }
 
     private async void ResetRecoveryClick(object sender, RoutedEventArgs e)

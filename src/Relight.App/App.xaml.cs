@@ -24,6 +24,9 @@ public partial class App : Application
     private bool _updatingStatus;
     private bool _exiting;
     private bool _repairingConfiguration;
+    private bool _changingStartup;
+    private CurrentUserStartupRegistration? _startupRegistration;
+    private string? _startupUnavailable;
     private CancellationTokenSource? _historyCancellation;
 
     protected override void OnStartup(StartupEventArgs e)
@@ -42,12 +45,22 @@ public partial class App : Application
 
             ApplyAccessibilityColors();
             SystemParameters.StaticPropertyChanged += OnSystemParametersChanged;
+            try
+            {
+                _startupRegistration = new CurrentUserStartupRegistration(
+                    Environment.ProcessPath ?? throw new InvalidOperationException(
+                        "The Relight executable path is unavailable."));
+            }
+            catch (Exception error) when (error is ArgumentException or InvalidOperationException)
+            {
+                _startupUnavailable = error.Message;
+            }
             _viewModel = new ShellViewModel(HideDashboard, RequestExit, ShowAddApplication,
                 RepairConfiguration);
             _viewModel.HistoryRefreshRequested += OnHistoryRefreshRequested;
             _dashboard = new MainWindow(SetProfilePausedAsync, ResetProfileRecoveryAsync,
                 StartProfileNowAsync, ExportHistoryAsync, SetProfileEnabledAsync,
-                RemoveProfileAsync, ShowEditProfile)
+                RemoveProfileAsync, ShowEditProfile, SetStartAtSignInAsync)
             {
                 DataContext = _viewModel
             };
@@ -57,6 +70,7 @@ public partial class App : Application
                 () => ShowDashboard(ShellPage.Applications),
                 ShowAddApplication,
                 () => ShowDashboard(ShellPage.History),
+                ToggleStartupFromTray,
                 RequestExit);
             _instance.Listen(() => Dispatcher.BeginInvoke(() => ShowDashboard()));
 
@@ -130,9 +144,39 @@ public partial class App : Application
         {
             var profiles = host.GetProfiles();
             var logging = await host.GetLoggingStatusAsync();
+            StartupRegistrationStatus? startupStatus = null;
+            string? startupProblem = _startupUnavailable;
+            if (_startupRegistration is not null)
+            {
+                try
+                {
+                    startupStatus = await Task.Run(() => _startupRegistration.Inspect());
+                }
+                catch (Exception error)
+                {
+                    startupProblem = $"Sign-in startup could not be checked: {error.Message}";
+                }
+            }
             _viewModel?.UpdateMonitoring(host.ConfigurationProblem,
                 host.Configuration?.FromLastGoodBackup == true, profiles, logging);
+            bool configured = host.Configuration?.Configuration.Settings.StartAtSignIn == true;
+            bool registered = startupStatus?.EnabledForThisExecutable == true;
+            bool startupAvailable = host.Configuration?.AutomaticActionsAllowed == true &&
+                startupStatus is { ConflictingValue: false } && !_changingStartup;
+            string explanation = startupProblem ?? (startupStatus switch
+            {
+                { ConflictingValue: true } =>
+                    "Another startup entry named Relight exists; it was left untouched.",
+                { RegisteredToAnotherRelightExecutable: true } =>
+                    "An older Relight.exe path is registered. Turn this on to use the current path.",
+                _ when configured != registered =>
+                    "Saved preference and Windows registration differ. Use this control to reconcile them.",
+                _ when registered => "Relight will start in the tray at your next sign-in.",
+                _ => "Off · Relight will not start automatically at sign-in."
+            });
+            _viewModel?.UpdateStartAtSignIn(registered, startupAvailable, explanation);
             if (_viewModel is not null) _tray?.UpdateStatus(_viewModel.TrayStatus);
+            _tray?.UpdateStartupStatus(registered, startupAvailable, explanation);
         }
         catch (Exception error)
         {
@@ -145,6 +189,36 @@ public partial class App : Application
     {
         _viewModel?.ShowMonitoringProblem(message);
         _tray?.UpdateStatus("Relight · Monitoring unavailable");
+    }
+
+    private async Task SetStartAtSignInAsync(bool enabled)
+    {
+        if (_changingStartup) throw new InvalidOperationException(
+            "A sign-in startup change is already in progress.");
+        CurrentUserStartupRegistration startup = _startupRegistration ??
+            throw new InvalidOperationException(_startupUnavailable ??
+                "Sign-in startup is unavailable.");
+        RecoveryApplicationHost host = Volatile.Read(ref _host) ??
+            throw new InvalidOperationException("Monitoring is unavailable.");
+        _changingStartup = true;
+        try
+        {
+            await host.SetStartAtSignInAsync(enabled, startup,
+                _monitoringCancellation?.Token ?? CancellationToken.None);
+        }
+        finally { _changingStartup = false; }
+    }
+
+    private async void ToggleStartupFromTray()
+    {
+        if (_exiting || _changingStartup || _viewModel is null) return;
+        try { await SetStartAtSignInAsync(!_viewModel.StartAtSignIn); }
+        catch (Exception error)
+        {
+            ShowDashboard(ShellPage.Settings);
+            MessageBox.Show(_dashboard!, error.Message, "Could not change sign-in startup",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     private async void RepairConfiguration()

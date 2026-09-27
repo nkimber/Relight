@@ -35,6 +35,9 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     private string _monitoringBanner = "Loading monitoring configuration…";
     private string _footerStatus = "Relight is in the tray · Loading monitoring status";
     private bool _canRepairConfiguration;
+    private bool _startAtSignIn;
+    private bool _canChangeStartAtSignIn;
+    private string _startAtSignInStatus = "Checking current-user startup registration…";
     private IReadOnlyList<HistoryProfileOption> _historyProfiles =
         [new("All applications", null)];
     private IReadOnlyList<EventHistoryProfile> _retainedHistoryProfiles = [];
@@ -122,6 +125,9 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     public string ApplicationCountText => $"{_applicationRows.Count} configured";
     public string MonitoringBanner => _monitoringBanner;
     public bool CanRepairConfiguration => _canRepairConfiguration;
+    public bool StartAtSignIn => _startAtSignIn;
+    public bool CanChangeStartAtSignIn => _canChangeStartAtSignIn;
+    public string StartAtSignInStatus => _startAtSignInStatus;
     public string FooterStatus => _footerStatus;
     public string TrayStatus => _footerStatus.Length > 63
         ? $"Relight · {_applicationRows.Count} configured" : _footerStatus;
@@ -213,9 +219,20 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     public void ShowMonitoringProblem(string problem)
     {
         _canRepairConfiguration = false;
+        _canChangeStartAtSignIn = false;
         _applicationRows = [];
         _monitoringBanner = $"Monitoring could not start: {problem}";
         _footerStatus = "Relight is in the tray · Monitoring unavailable";
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
+    }
+
+    public void UpdateStartAtSignIn(bool configured, bool canChange, string status)
+    {
+        if (_startAtSignIn == configured && _canChangeStartAtSignIn == canChange &&
+            _startAtSignInStatus == status) return;
+        _startAtSignIn = configured;
+        _canChangeStartAtSignIn = canChange;
+        _startAtSignInStatus = status;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
     }
 

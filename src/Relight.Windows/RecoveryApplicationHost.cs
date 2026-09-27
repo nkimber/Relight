@@ -311,6 +311,48 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
 
     public IReadOnlyDictionary<Guid, Task> Pulse() => _scheduler.Pulse();
 
+    public Task SetStartAtSignInAsync(bool enabled,
+        CurrentUserStartupRegistration startup,
+        CancellationToken cancellationToken = default) => Task.Run(async () =>
+    {
+        ArgumentNullException.ThrowIfNull(startup);
+        await _changes.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(RecoveryApplicationHost));
+            StoredConfiguration current = Configuration ??
+                throw new ConfigurationUnavailableException("Configuration is unavailable.");
+            if (!current.AutomaticActionsAllowed)
+                throw new ConfigurationUnavailableException(
+                    "Repair configuration before changing sign-in startup.");
+            var updated = current.Configuration with
+            {
+                Settings = current.Configuration.Settings with { StartAtSignIn = enabled }
+            };
+            ConfigurationStore.ValidateConfiguration(updated);
+            cancellationToken.ThrowIfCancellationRequested();
+            StartupRegistrationChange change = startup.Apply(enabled);
+            try
+            {
+                // Check the shared configuration revision even when the saved
+                // preference already matches and only the Run entry drifted.
+                Configuration = _configurationStore.Save(current, updated);
+            }
+            catch (Exception saveError)
+            {
+                try { change.Rollback(); }
+                catch (Exception rollbackError)
+                {
+                    throw new AggregateException(
+                        "Configuration could not be saved and sign-in startup could not be rolled back.",
+                        saveError, rollbackError);
+                }
+                throw;
+            }
+        }
+        finally { _changes.Release(); }
+    }, CancellationToken.None);
+
     public Task<string?> RepairConfigurationAsync(CancellationToken cancellationToken = default) =>
         Task.Run(async () =>
         {
