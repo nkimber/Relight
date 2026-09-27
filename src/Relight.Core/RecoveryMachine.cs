@@ -191,8 +191,8 @@ public sealed class RecoveryMachine
         {
             Enabled = enabled,
             State = enabled
-                ? Snapshot.Armed
-                    ? Snapshot.LockedOut ? RecoveryState.AwaitingIntervention : RecoveryState.RetryWaiting
+                ? Snapshot.LockedOut ? RecoveryState.AwaitingIntervention
+                    : Snapshot.Armed ? RecoveryState.RetryWaiting
                     : RecoveryState.WaitingForFirstStart
                 : RecoveryState.Disabled,
             OperationId = null,

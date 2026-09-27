@@ -84,6 +84,66 @@ public sealed class RecoveryApplicationHostIntegrationTests
 
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Stale_disable_restores_enabled_ledger_and_keeps_profile_scheduled()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-disable-stale-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            await using var host = await RecoveryApplicationHost.OpenAsync(root, new FakeClock());
+            Guid id = await host.RegisterExecutableAsync("Disposable target", TestExecutable());
+            var configuration = new ConfigurationStore(root);
+            StoredConfiguration current = configuration.Load();
+            configuration.Save(current, current.Configuration);
+
+            await Assert.ThrowsAsync<StaleConfigurationException>(() =>
+                host.SetProfileEnabledAsync(id, false));
+            Assert.True(new RecoveryStateStore(root).Load(id).Checkpoint.Enabled);
+            Assert.True(Assert.Single(host.GetProfiles()).ConfiguredEnabled);
+            await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Disabled_profile_reopens_with_its_existing_ledger()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-disabled-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            Guid id;
+            await using (var host = await RecoveryApplicationHost.OpenAsync(root, new FakeClock()))
+            {
+                id = await host.RegisterExecutableAsync("Disposable target", TestExecutable());
+                await host.SetProfileEnabledAsync(id, false);
+                Assert.False(Assert.Single(host.GetProfiles()).ConfiguredEnabled);
+            }
+
+            await using (var reopened = await RecoveryApplicationHost.OpenAsync(root,
+                             new FakeClock()))
+            {
+                HostedProfileStatus disabled = Assert.Single(reopened.GetProfiles());
+                Assert.False(disabled.ConfiguredEnabled);
+                Assert.Equal(RecoveryState.Disabled, disabled.Recovery?.State);
+                Assert.Empty(reopened.Pulse());
+                await reopened.SetProfileEnabledAsync(id, true);
+                Assert.True(Assert.Single(reopened.GetProfiles()).ConfiguredEnabled);
+                Assert.True(new RecoveryStateStore(root).Load(id).Checkpoint.Enabled);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Host_recovers_disposable_target_and_leaves_it_running_on_exit()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-host-{Guid.NewGuid():N}");
@@ -132,6 +192,25 @@ public sealed class RecoveryApplicationHostIntegrationTests
                 await host.SetProfilePausedAsync(id, true);
                 Assert.True(new RecoveryStateStore(root).Load(id).Checkpoint.Paused);
                 using Process stillRunning = Process.GetProcessById(pid.Value);
+                Assert.False(stillRunning.HasExited);
+
+                await host.SetProfileEnabledAsync(id, false);
+                Assert.False(Assert.Single(host.GetProfiles()).ConfiguredEnabled);
+                RecoveryCheckpoint disabled = new RecoveryStateStore(root).Load(id).Checkpoint;
+                Assert.False(disabled.Enabled);
+                Assert.Equal(1, disabled.ReservedAutomaticAttempts);
+                Assert.False(stillRunning.HasExited);
+
+                await host.SetProfileEnabledAsync(id, true);
+                Assert.True(Assert.Single(host.GetProfiles()).ConfiguredEnabled);
+                Assert.Equal(1, new RecoveryStateStore(root).Load(id)
+                    .Checkpoint.ReservedAutomaticAttempts);
+                Assert.False(stillRunning.HasExited);
+
+                await host.RemoveProfileAsync(id);
+                Assert.Empty(host.GetProfiles());
+                Assert.Empty(new ConfigurationStore(root).Load().Configuration.Profiles);
+                Assert.False(new RecoveryStateStore(root).Load(id).Checkpoint.Enabled);
                 Assert.False(stillRunning.HasExited);
             }
 

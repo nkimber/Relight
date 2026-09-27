@@ -13,9 +13,12 @@ internal enum ShellPage { Applications, History, Settings }
 
 internal sealed record ApplicationStatusRow(Guid Id, string Name, string State,
     string Detail, bool IsPaused, bool CanPauseResume, bool CanReset,
-    bool CanStartNow)
+    bool CanStartNow, bool ConfiguredEnabled, bool CanToggleEnabled,
+    bool CanRemove)
 {
     public string PauseResumeLabel => IsPaused ? "Resume protection" : "Pause protection";
+    public string EnableDisableLabel => ConfiguredEnabled ? "Disable protection" :
+        "Enable protection";
 }
 
 internal sealed record HistoryProfileOption(string Label, Guid? Id);
@@ -167,7 +170,11 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
                     HoldReason: null, State: Relight.Core.RecoveryState.WaitingForFirstStart or
                         Relight.Core.RecoveryState.RetryWaiting or
                         Relight.Core.RecoveryState.AwaitingIntervention } &&
-                    profile.AutomaticActionsAllowed && profile.Problem is null))
+                    profile.AutomaticActionsAllowed && profile.Problem is null,
+                profile.ConfiguredEnabled,
+                configurationProblem is null &&
+                    (profile.ConfiguredEnabled || profile.Problem is null),
+                configurationProblem is null))
             .ToArray();
         Guid? selectedId = _selectedHistoryProfile.Id;
         HistoryProfileOption[] availableProfiles =
@@ -315,7 +322,11 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     }
 
     private static string DetailText(HostedProfileStatus profile) =>
-        profile.Recovery is { } recovery
+        !profile.ConfiguredEnabled
+            ? profile.Recovery is { } disabled
+                ? $"Protection is disabled; the target is left running. {disabled.ReservedAutomaticAttempts} automatic attempt(s) remain charged."
+                : "Protection is disabled; the target is left running."
+        : profile.Recovery is { } recovery
             ? recovery.Paused
                 ? $"Protection is paused; the application is left running. {recovery.ReservedAutomaticAttempts} automatic attempt(s) remain charged."
                 : recovery.HoldReason == Relight.Core.RecoveryHoldReason.InterruptedExplicitLaunch
@@ -337,6 +348,13 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
         if (page == ShellPage.History)
             HistoryRefreshRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    public void ShowHistoryFor(Guid profileId)
+    {
+        SelectedHistoryProfile = _historyProfiles.FirstOrDefault(option =>
+            option.Id == profileId) ?? _historyProfiles[0];
+        Navigate(ShellPage.History);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

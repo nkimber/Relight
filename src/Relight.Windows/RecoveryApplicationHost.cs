@@ -11,7 +11,8 @@ public sealed record HostedProfileStatus(
     bool AutomaticActionsAllowed,
     Detection? Detection,
     RecoverySnapshot? Recovery,
-    string? Problem);
+    string? Problem,
+    bool ConfiguredEnabled = true);
 
 /// <summary>
 /// Composes existing executable profiles without inventing recovery state.
@@ -30,7 +31,8 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     private readonly IMonotonicClock _clock;
     private readonly Dictionary<Guid, HostedProfileStatus> _statuses = new();
     private readonly Dictionary<Guid, ProfileCoordinator> _coordinators = new();
-    private readonly HashSet<Task> _activeCommands = [];
+    private readonly Dictionary<Task, Guid> _activeCommands = new();
+    private readonly HashSet<Guid> _closingProfiles = [];
     private readonly object _statusSync = new();
     private readonly SemaphoreSlim _changes = new(1, 1);
     private bool _disposed;
@@ -101,8 +103,19 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             cancellationToken.ThrowIfCancellationRequested();
             if (!profile.Enabled)
             {
+                RecoverySnapshot? disabledRecovery = null;
+                string? problem = null;
+                try
+                {
+                    disabledRecovery = RecoveryMachine.Restore(profile.Policy,
+                        _stateStore.Load(profile.Id).Checkpoint).Snapshot;
+                }
+                catch (Exception error) when (error is IOException or InvalidOperationException or ArgumentException)
+                {
+                    problem = $"Recovery state is unavailable; re-enable is blocked. {error.Message}";
+                }
                 _statuses[profile.Id] = new(profile.Id, profile.Name, false, false,
-                    null, null, null);
+                    null, disabledRecovery, problem, ConfiguredEnabled: false);
                 continue;
             }
             if (profile.Target.Kind != TargetKind.Executable)
@@ -313,6 +326,193 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         RunProfileCommandAsync(profileId,
             coordinator => coordinator.StartNowAsync(cancellationToken));
 
+    public Task SetProfileEnabledAsync(Guid profileId, bool enabled,
+        CancellationToken cancellationToken = default) =>
+        Task.Run(() => ChangeProfileAsync(profileId, enabled, remove: false,
+            cancellationToken), CancellationToken.None);
+
+    public Task RemoveProfileAsync(Guid profileId,
+        CancellationToken cancellationToken = default) =>
+        Task.Run(() => ChangeProfileAsync(profileId, enabled: false, remove: true,
+            cancellationToken), CancellationToken.None);
+
+    private async Task ChangeProfileAsync(Guid profileId, bool enabled, bool remove,
+        CancellationToken cancellationToken)
+    {
+        await _changes.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(RecoveryApplicationHost));
+            StoredConfiguration current = Configuration ??
+                throw new ConfigurationUnavailableException("Configuration is unavailable.");
+            if (!current.AutomaticActionsAllowed)
+                throw new ConfigurationUnavailableException(
+                    "Repair configuration before changing profiles.");
+            ProfileConfiguration profile = current.Configuration.Profiles.SingleOrDefault(
+                item => item.Id == profileId) ??
+                throw new InvalidOperationException("Profile no longer exists.");
+            if (!remove && profile.Enabled == enabled) return;
+
+            var updatedProfiles = remove
+                ? current.Configuration.Profiles.Where(item => item.Id != profileId).ToList()
+                : current.Configuration.Profiles.Select(item => item.Id == profileId
+                    ? item with { Enabled = enabled } : item).ToList();
+            var updated = current.Configuration with { Profiles = updatedProfiles };
+            ConfigurationStore.ValidateConfiguration(updated);
+
+            if (enabled)
+                await EnableProfileAsync(current, updated, profile, cancellationToken)
+                    .ConfigureAwait(false);
+            else
+                await DisableOrRemoveProfileAsync(current, updated, profile, remove,
+                    cancellationToken).ConfigureAwait(false);
+        }
+        finally { _changes.Release(); }
+    }
+
+    private async Task EnableProfileAsync(StoredConfiguration current,
+        RelightConfiguration updated, ProfileConfiguration profile,
+        CancellationToken cancellationToken)
+    {
+        if (profile.Target.Kind != TargetKind.Executable)
+            throw new InvalidOperationException("Installed-app activation is not available yet.");
+        var target = new ExecutableTarget(profile.Target.Identity, profile.Target.Arguments,
+            profile.Target.WorkingDirectory, profile.Target.RequiredArgument,
+            profile.Target.ExcludedArgument);
+        target.Validate();
+        if (!File.Exists(target.CanonicalPath))
+            throw new FileNotFoundException("The target executable is missing.", target.CanonicalPath);
+        var discovery = new ExecutableDiscovery(target);
+        Detection found = await discovery.DetectAsync(cancellationToken).ConfigureAwait(false);
+        if (found.Kind == DetectionKind.Unavailable)
+            throw new InvalidOperationException(
+                $"Target identity cannot be verified: {found.Reason}");
+        lock (_statusSync)
+            if (_coordinators.ContainsKey(profile.Id))
+                throw new InvalidOperationException("This profile is already scheduled.");
+        ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(profile.Id,
+            profile.Policy, _stateStore, discovery, new ExecutableLauncher(target),
+            _clock, _launchGate, _recorder);
+        RecoveryState previousState = coordinator.Snapshot.State;
+        bool schedulerOwnsCoordinator = false;
+        try
+        {
+            await coordinator.SetEnabledAsync(true, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                StoredConfiguration saved = _configurationStore.Save(current, updated);
+                Configuration = saved;
+            }
+            catch
+            {
+                await coordinator.SetEnabledAsync(false, CancellationToken.None)
+                    .ConfigureAwait(false);
+                throw;
+            }
+            try
+            {
+                _scheduler.Add(profile.Id, coordinator, profile.Policy);
+                schedulerOwnsCoordinator = true;
+                lock (_statusSync)
+                {
+                    _coordinators.Add(profile.Id, coordinator);
+                    _statuses[profile.Id] = new(profile.Id, profile.Name, true, true,
+                        found, coordinator.Snapshot, null);
+                }
+                _scheduler.RequestImmediate(profile.Id);
+                _recorder?.TryRecord(new(DateTimeOffset.UtcNow, Guid.NewGuid(),
+                    EventSeverity.Information, OperationalEventKind.ProtectionEnabled,
+                    ProfileId: profile.Id, ProfileName: profile.Name,
+                    EpisodeId: coordinator.Snapshot.EpisodeId,
+                    PreviousState: previousState, NewState: coordinator.Snapshot.State));
+            }
+            catch (Exception error)
+            {
+                if (schedulerOwnsCoordinator)
+                {
+                    await _scheduler.RemoveAsync(profile.Id).ConfigureAwait(false);
+                }
+                lock (_statusSync)
+                {
+                    _coordinators.Remove(profile.Id);
+                    _statuses[profile.Id] = new(profile.Id, profile.Name, false, false,
+                        found, coordinator.Snapshot,
+                        $"Monitoring could not start: {error.Message}");
+                }
+                throw;
+            }
+        }
+        finally
+        {
+            if (!schedulerOwnsCoordinator) coordinator.Dispose();
+        }
+    }
+
+    private async Task DisableOrRemoveProfileAsync(StoredConfiguration current,
+        RelightConfiguration updated, ProfileConfiguration profile, bool remove,
+        CancellationToken cancellationToken)
+    {
+        ProfileCoordinator? coordinator;
+        lock (_statusSync)
+        {
+            _closingProfiles.Add(profile.Id);
+            _coordinators.TryGetValue(profile.Id, out coordinator);
+        }
+        bool stateChanged = false;
+        RecoveryState? previousState = coordinator?.Snapshot.State;
+        try
+        {
+            if (coordinator is not null)
+            {
+                await coordinator.SetEnabledAsync(false, cancellationToken)
+                    .ConfigureAwait(false);
+                stateChanged = true;
+            }
+            Task[] active;
+            lock (_statusSync)
+                active = _activeCommands.Where(pair => pair.Value == profile.Id)
+                    .Select(pair => pair.Key).ToArray();
+            try { await Task.WhenAll(active).ConfigureAwait(false); }
+            catch { /* Each command caller receives its own failure. */ }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            StoredConfiguration saved = _configurationStore.Save(current, updated);
+            // After the durable configuration commit, cancellation cannot leave
+            // the old scheduler or profile visible as though it were enabled.
+            Configuration = saved;
+            lock (_statusSync)
+            {
+                if (remove) _statuses.Remove(profile.Id);
+                else _statuses[profile.Id] = new(profile.Id, profile.Name,
+                    false, false, null, coordinator?.Snapshot, null,
+                    ConfiguredEnabled: false);
+            }
+            await _scheduler.RemoveAsync(profile.Id).ConfigureAwait(false);
+            lock (_statusSync)
+            {
+                _coordinators.Remove(profile.Id);
+            }
+            _recorder?.TryRecord(new(DateTimeOffset.UtcNow, Guid.NewGuid(),
+                EventSeverity.Information, remove ? OperationalEventKind.ProfileRemoved :
+                    OperationalEventKind.ProtectionDisabled,
+                ProfileId: profile.Id, ProfileName: profile.Name,
+                EpisodeId: coordinator?.Snapshot.EpisodeId,
+                PreviousState: previousState, NewState: coordinator?.Snapshot.State));
+        }
+        catch
+        {
+            if (stateChanged && coordinator is not null &&
+                Configuration?.Revision == current.Revision)
+                await coordinator.SetEnabledAsync(true, CancellationToken.None)
+                    .ConfigureAwait(false);
+            throw;
+        }
+        finally
+        {
+            lock (_statusSync) _closingProfiles.Remove(profile.Id);
+        }
+    }
+
     private Task RunProfileCommandAsync(Guid profileId,
         Func<ProfileCoordinator, Task> action)
     {
@@ -320,14 +520,19 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         lock (_statusSync)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(RecoveryApplicationHost));
+            if (_closingProfiles.Contains(profileId))
+                throw new InvalidOperationException("This profile is being changed.");
             if (!_coordinators.TryGetValue(profileId, out ProfileCoordinator? coordinator))
                 throw new InvalidOperationException("This profile cannot accept recovery commands.");
             command = Task.Run(async () =>
             {
+                lock (_statusSync)
+                    if (_closingProfiles.Contains(profileId))
+                        throw new InvalidOperationException("This profile is being changed.");
                 await action(coordinator).ConfigureAwait(false);
                 _scheduler.RequestImmediate(profileId);
             });
-            _activeCommands.Add(command);
+            _activeCommands.Add(command, profileId);
         }
         return ObserveCommandAsync(command);
     }
@@ -348,15 +553,20 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         lock (_statusSync)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(RecoveryApplicationHost));
+            if (_closingProfiles.Contains(profileId))
+                throw new InvalidOperationException("This profile is being changed.");
             if (!_coordinators.TryGetValue(profileId, out ProfileCoordinator? coordinator))
                 throw new InvalidOperationException("This profile cannot accept recovery commands.");
             command = Task.Run(async () =>
             {
+                lock (_statusSync)
+                    if (_closingProfiles.Contains(profileId))
+                        throw new InvalidOperationException("This profile is being changed.");
                 TResult result = await action(coordinator).ConfigureAwait(false);
                 _scheduler.RequestImmediate(profileId);
                 return result;
             });
-            _activeCommands.Add(command);
+            _activeCommands.Add(command, profileId);
         }
         return ObserveCommandAsync(command);
     }
@@ -396,7 +606,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         }
         finally { _changes.Release(); }
         Task[] commands;
-        lock (_statusSync) commands = _activeCommands.ToArray();
+        lock (_statusSync) commands = _activeCommands.Keys.ToArray();
         try { await Task.WhenAll(commands).ConfigureAwait(false); }
         catch
         {

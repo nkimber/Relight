@@ -230,6 +230,30 @@ public sealed class ProfileCoordinatorTests
     }
 
     [Fact]
+    public async Task Disable_while_waiting_for_launch_slot_does_not_dispatch()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var queue = new BlockingLaunchGate();
+        var launcher = new CountingLauncher();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id, AutoPolicy,
+            store, new ConstantDiscovery(Detection.Absent()), launcher, clock, queue);
+        await TickAt(coordinator, clock, 0);
+        await TickAt(coordinator, clock, 2);
+        clock.Elapsed = TimeSpan.FromSeconds(32);
+        Task<CoordinatorResult> waiting = coordinator.TickAsync();
+        await queue.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Task disable = coordinator.SetEnabledAsync(false);
+        await Task.WhenAll(waiting, disable).WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.Equal(0, launcher.Dispatches);
+        Assert.False(store.Load(id).Checkpoint.Enabled);
+        Assert.Equal(0, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+    }
+
+    [Fact]
     public async Task Pause_and_resume_preserve_lockout_until_explicit_durable_reset()
     {
         using var directory = new TestDirectory();
@@ -323,6 +347,35 @@ public sealed class ProfileCoordinatorTests
         Assert.Equal(1, real.Load(id).Checkpoint.ReservedAutomaticAttempts);
         await TickAt(coordinator, clock, 100);
         Assert.Equal(1, launcher.Dispatches);
+    }
+
+    [Fact]
+    public async Task Disable_and_reenable_preserve_lockout_without_dispatching_again()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var launcher = new FailingLauncher();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id,
+            AutoPolicy with { MaximumAutomaticAttempts = 1 }, store,
+            new ConstantDiscovery(Detection.Absent()), launcher, clock);
+        await TickAt(coordinator, clock, 0);
+        await TickAt(coordinator, clock, 2);
+        await TickAt(coordinator, clock, 32);
+        Assert.True(coordinator.Snapshot.LockedOut);
+
+        await coordinator.SetEnabledAsync(false);
+        RecoveryCheckpoint disabled = store.Load(id).Checkpoint;
+        Assert.False(disabled.Enabled);
+        Assert.True(disabled.LockedOut);
+        Assert.Equal(1, disabled.ReservedAutomaticAttempts);
+
+        await coordinator.SetEnabledAsync(true);
+        Assert.Equal(RecoveryState.AwaitingIntervention, coordinator.Snapshot.State);
+        await TickAt(coordinator, clock, 100);
+        Assert.Equal(1, launcher.Dispatches);
+        Assert.Equal(1, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
     }
 
     [Fact]

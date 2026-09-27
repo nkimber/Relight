@@ -44,7 +44,8 @@ public partial class App : Application
             _viewModel = new ShellViewModel(HideDashboard, RequestExit, ShowAddApplication);
             _viewModel.HistoryRefreshRequested += OnHistoryRefreshRequested;
             _dashboard = new MainWindow(SetProfilePausedAsync, ResetProfileRecoveryAsync,
-                StartProfileNowAsync, ExportHistoryAsync)
+                StartProfileNowAsync, ExportHistoryAsync, SetProfileEnabledAsync,
+                RemoveProfileAsync)
             {
                 DataContext = _viewModel
             };
@@ -233,6 +234,22 @@ public partial class App : Application
         RecoveryApplicationHost host = Volatile.Read(ref _host) ??
             throw new InvalidOperationException("Monitoring is unavailable.");
         return host.StartProfileNowAsync(profileId,
+            _monitoringCancellation?.Token ?? CancellationToken.None);
+    }
+
+    private Task SetProfileEnabledAsync(Guid profileId, bool enabled)
+    {
+        RecoveryApplicationHost host = Volatile.Read(ref _host) ??
+            throw new InvalidOperationException("Monitoring is unavailable.");
+        return host.SetProfileEnabledAsync(profileId, enabled,
+            _monitoringCancellation?.Token ?? CancellationToken.None);
+    }
+
+    private Task RemoveProfileAsync(Guid profileId)
+    {
+        RecoveryApplicationHost host = Volatile.Read(ref _host) ??
+            throw new InvalidOperationException("Monitoring is unavailable.");
+        return host.RemoveProfileAsync(profileId,
             _monitoringCancellation?.Token ?? CancellationToken.None);
     }
 

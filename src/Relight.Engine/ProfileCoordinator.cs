@@ -235,6 +235,8 @@ public sealed class ProfileCoordinator : IDisposable
         {
             if (_storageDegraded)
                 throw new RecoveryStateUnavailableException("Recovery state is degraded; policy change cannot be trusted.");
+            if (!_machine.Snapshot.Enabled)
+                throw new InvalidOperationException("Enable protection before changing its pause state.");
             RecoverySnapshot previous = _machine.Snapshot;
             _machine.SetPaused(paused);
             if (!Persist())
@@ -246,6 +248,35 @@ public sealed class ProfileCoordinator : IDisposable
         finally { _gate.Release(); }
     }
 
+    public async Task SetEnabledAsync(bool enabled,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!enabled)
+        {
+            CancellationTokenSource? pending;
+            lock (_launchSync)
+            {
+                _commandGeneration++;
+                pending = _launchCancellation;
+            }
+            try { pending?.Cancel(); }
+            catch (ObjectDisposedException) { /* Dispatch finished as disable was requested. */ }
+        }
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_storageDegraded)
+                throw new RecoveryStateUnavailableException(
+                    "Recovery state is degraded; enablement cannot be trusted.");
+            if (_machine.Snapshot.Enabled == enabled) return;
+            _machine.SetEnabled(enabled);
+            if (!Persist())
+                throw new RecoveryStateUnavailableException(_storageError ?? "State write failed.");
+        }
+        finally { _gate.Release(); }
+    }
+
     public async Task ResetRecoveryAsync(CancellationToken cancellationToken = default)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -253,6 +284,8 @@ public sealed class ProfileCoordinator : IDisposable
         {
             if (_storageDegraded)
                 throw new RecoveryStateUnavailableException("Recovery state is degraded; reset cannot be trusted.");
+            if (!_machine.Snapshot.Enabled)
+                throw new InvalidOperationException("Enable protection before resetting recovery.");
             if (_machine.Snapshot.State == RecoveryState.Starting)
                 throw new InvalidOperationException("Wait for the current launch to finish before resetting recovery.");
 

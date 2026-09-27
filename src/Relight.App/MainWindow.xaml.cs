@@ -17,16 +17,22 @@ public partial class MainWindow : Window
     private readonly Func<Guid, Task> _startNow;
     private readonly Func<EventHistoryQuery, string, EventHistoryExportFormat,
         Task<EventHistoryExportResult>> _exportHistory;
+    private readonly Func<Guid, bool, Task> _setEnabled;
+    private readonly Func<Guid, Task> _removeProfile;
 
     public MainWindow(Func<Guid, bool, Task> setPaused, Func<Guid, Task> resetRecovery,
         Func<Guid, Task> startNow,
         Func<EventHistoryQuery, string, EventHistoryExportFormat,
-            Task<EventHistoryExportResult>> exportHistory)
+            Task<EventHistoryExportResult>> exportHistory,
+        Func<Guid, bool, Task> setEnabled,
+        Func<Guid, Task> removeProfile)
     {
         _setPaused = setPaused;
         _resetRecovery = resetRecovery;
         _startNow = startNow;
         _exportHistory = exportHistory;
+        _setEnabled = setEnabled;
+        _removeProfile = removeProfile;
         InitializeComponent();
     }
 
@@ -139,6 +145,46 @@ public partial class MainWindow : Window
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally { button.IsEnabled = row.CanPauseResume; }
+    }
+
+    private async void EnableDisableClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: ApplicationStatusRow row } button) return;
+        button.IsEnabled = false;
+        try { await _setEnabled(row.Id, !row.ConfiguredEnabled); }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Protection change failed",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally { button.IsEnabled = row.CanToggleEnabled; }
+    }
+
+    private async void RemoveProfileClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: ApplicationStatusRow row } button) return;
+        if (MessageBox.Show(this,
+                $"Remove '{row.Name}' from Relight? Its application will keep running. Existing history and recovery-state evidence will be retained.",
+                "Remove profile?", MessageBoxButton.OKCancel,
+                MessageBoxImage.Warning, MessageBoxResult.Cancel) != MessageBoxResult.OK)
+            return;
+        button.IsEnabled = false;
+        try { await _removeProfile(row.Id); }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Profile removal failed",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally { button.IsEnabled = row.CanRemove; }
+    }
+
+    private void ViewProfileHistoryClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: ApplicationStatusRow row } &&
+            DataContext is ShellViewModel model)
+            model.ShowHistoryFor(row.Id);
     }
 
     private async void ResetRecoveryClick(object sender, RoutedEventArgs e)
