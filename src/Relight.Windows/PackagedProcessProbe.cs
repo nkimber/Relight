@@ -4,11 +4,13 @@ using System.Management;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.Win32.SafeHandles;
 
 namespace Relight.Windows;
 
-public sealed record PackagedProcessCandidate(int ProcessId, long StartedUtcTicks);
+public sealed record PackagedProcessCandidate(int ProcessId, long StartedUtcTicks,
+    bool HasTypeSwitch);
 public sealed record PackagedProcessInspection(
     IReadOnlyList<PackagedProcessCandidate> Candidates, string? Problem);
 
@@ -70,16 +72,21 @@ public sealed class PackagedProcessProbe
                         string? family = GetFamilyName(handle);
                         if (family is null || !string.Equals(family, _familyName,
                                 StringComparison.OrdinalIgnoreCase)) continue;
-                        string? owner = GetOwnerSid(process.Id);
-                        if (owner is null)
+                        ProcessMetadata? metadata = GetProcessMetadata(process.Id);
+                        if (metadata is null)
                         {
                             if (process.HasExited) continue;
-                            throw new InvalidOperationException(
-                                "A packaged process owner could not be verified.");
+                            throw new InvalidOperationException("A packaged process disappeared during inspection.");
                         }
-                        if (!string.Equals(owner, _userSid, StringComparison.Ordinal)) continue;
+                        if (metadata.OwnerSid is null)
+                            throw new InvalidOperationException("A packaged process owner could not be verified.");
+                        if (!string.Equals(metadata.OwnerSid, _userSid, StringComparison.Ordinal)) continue;
+                        if (metadata.CommandLine is null)
+                            throw new InvalidOperationException("A packaged process command line could not be read.");
                         candidates.Add(new(process.Id,
-                            process.StartTime.ToUniversalTime().Ticks));
+                            process.StartTime.ToUniversalTime().Ticks,
+                            Regex.IsMatch(metadata.CommandLine, @"(?:^|\s)--type=\S+",
+                                RegexOptions.CultureInvariant)));
                     }
                     catch (InvalidOperationException) when (process.HasExited) { }
                     catch (Exception error) when (error is Win32Exception or
@@ -112,7 +119,9 @@ public sealed class PackagedProcessProbe
         return buffer.ToString();
     }
 
-    private static string? GetOwnerSid(int processId)
+    private sealed record ProcessMetadata(string? OwnerSid, string? CommandLine);
+
+    private static ProcessMetadata? GetProcessMetadata(int processId)
     {
         using var process = new ManagementObject($"Win32_Process.Handle='{processId}'");
         try { process.Get(); }
@@ -121,8 +130,9 @@ public sealed class PackagedProcessProbe
             return null;
         }
         using ManagementBaseObject? owner = process.InvokeMethod("GetOwnerSid", null, null);
-        return owner?["ReturnValue"] is uint result && result == 0
+        string? sid = owner?["ReturnValue"] is uint result && result == 0
             ? owner["Sid"] as string : null;
+        return new(sid, process["CommandLine"] as string);
     }
 
     [DllImport("kernel32.dll", SetLastError = true)]
