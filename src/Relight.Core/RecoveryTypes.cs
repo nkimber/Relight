@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Relight.Core;
 
 public enum RecoveryState
@@ -18,6 +20,8 @@ public enum ObservationOrigin
     ExplicitStart,
     ExternalStart
 }
+
+public enum RecoveryHoldReason { InterruptedExplicitLaunch }
 
 public enum DetectionKind { Present, Absent, Unavailable }
 
@@ -60,7 +64,8 @@ public sealed record RecoverySnapshot(
     TimeSpan? LastVerifiedAt,
     TimeSpan? AbsenceStartedAt,
     TimeSpan? RetryDeadline,
-    TimeSpan? AppearanceDeadline);
+    TimeSpan? AppearanceDeadline,
+    RecoveryHoldReason? HoldReason = null);
 
 /// <summary>
 /// Durable safety fields. Monotonic deadlines and process identity are intentionally
@@ -74,4 +79,8 @@ public sealed record RecoveryCheckpoint(
     int ReservedAutomaticAttempts,
     Guid? EpisodeId,
     RecoveryState LastState,
-    Guid? PendingOperationId);
+    Guid? PendingOperationId,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? PendingExplicitStart = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    RecoveryHoldReason? HoldReason = null);

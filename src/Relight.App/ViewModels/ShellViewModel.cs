@@ -12,7 +12,8 @@ namespace Relight.ViewModels;
 internal enum ShellPage { Applications, History, Settings }
 
 internal sealed record ApplicationStatusRow(Guid Id, string Name, string State,
-    string Detail, bool IsPaused, bool CanPauseResume, bool CanReset)
+    string Detail, bool IsPaused, bool CanPauseResume, bool CanReset,
+    bool CanStartNow)
 {
     public string PauseResumeLabel => IsPaused ? "Resume protection" : "Pause protection";
 }
@@ -91,7 +92,13 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
                 profile.Recovery is not null && profile.AutomaticActionsAllowed &&
                     profile.Problem is null,
                 profile.Recovery is { State: not Relight.Core.RecoveryState.Starting } recovery &&
-                    (recovery.LockedOut || recovery.ReservedAutomaticAttempts > 0) &&
+                    (recovery.LockedOut || recovery.ReservedAutomaticAttempts > 0 ||
+                     recovery.HoldReason is not null) &&
+                    profile.AutomaticActionsAllowed && profile.Problem is null,
+                profile.Recovery is { Paused: false, DetectionUnavailable: false,
+                    HoldReason: null, State: Relight.Core.RecoveryState.WaitingForFirstStart or
+                        Relight.Core.RecoveryState.RetryWaiting or
+                        Relight.Core.RecoveryState.AwaitingIntervention } &&
                     profile.AutomaticActionsAllowed && profile.Problem is null))
             .ToArray();
         int active = profiles.Count(profile => profile.AutomaticActionsAllowed);
@@ -147,6 +154,8 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         profile.Recovery is { } recovery
             ? recovery.Paused
                 ? $"Protection is paused; the application is left running. {recovery.ReservedAutomaticAttempts} automatic attempt(s) remain charged."
+                : recovery.HoldReason == Relight.Core.RecoveryHoldReason.InterruptedExplicitLaunch
+                    ? "A previous Start now was interrupted. Its outcome is unknown, so automatic recovery is suspended. Verify the app before resetting recovery."
                 : recovery.LockedOut
                     ? $"Automatic recovery is locked after {recovery.ReservedAutomaticAttempts} attempt(s). Reset recovery is an explicit choice."
                     : $"{recovery.ReservedAutomaticAttempts} automatic attempt(s) reserved in this episode."

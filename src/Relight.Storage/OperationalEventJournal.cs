@@ -29,6 +29,9 @@ public enum OperationalEventKind
     ProtectionPaused,
     ProtectionResumed,
     RecoveryReset,
+    ExplicitStartRequested,
+    ExplicitStartDispatched,
+    ExplicitStartUncertain,
     PolicyChanged,
     MonitoringGap,
     StorageDegraded

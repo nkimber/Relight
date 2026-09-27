@@ -10,12 +10,35 @@ public partial class MainWindow : Window
 {
     private readonly Func<Guid, bool, Task> _setPaused;
     private readonly Func<Guid, Task> _resetRecovery;
+    private readonly Func<Guid, Task> _startNow;
 
-    public MainWindow(Func<Guid, bool, Task> setPaused, Func<Guid, Task> resetRecovery)
+    public MainWindow(Func<Guid, bool, Task> setPaused, Func<Guid, Task> resetRecovery,
+        Func<Guid, Task> startNow)
     {
         _setPaused = setPaused;
         _resetRecovery = resetRecovery;
+        _startNow = startNow;
         InitializeComponent();
+    }
+
+    private async void StartNowClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: ApplicationStatusRow row } button) return;
+        button.IsEnabled = false;
+        string original = button.Content?.ToString() ?? "Start now";
+        button.Content = "Checking and starting…";
+        try { await _startNow(row.Id); }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Start now failed",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            button.Content = original;
+            button.IsEnabled = row.CanStartNow;
+        }
     }
 
     private async void PauseResumeClick(object sender, RoutedEventArgs e)

@@ -326,6 +326,156 @@ public sealed class ProfileCoordinatorTests
     }
 
     [Fact]
+    public async Task Explicit_start_adopts_existing_instance_without_dispatch()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var launcher = new CountingLauncher();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id,
+            RecoveryPolicy.Default, store,
+            new ConstantDiscovery(Detection.Present("session|app|100|start")),
+            launcher, clock);
+
+        CoordinatorResult result = await coordinator.StartNowAsync();
+        Assert.False(result.LaunchDispatched);
+        Assert.Equal(RecoveryState.Observing, result.Snapshot.State);
+        Assert.Equal(0, launcher.Dispatches);
+        Assert.Equal(0, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+    }
+
+    [Fact]
+    public async Task Explicit_start_dispatches_without_charging_budget_and_observes_appearance()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var discovery = new MutableDiscovery(Detection.Absent());
+        var launcher = new CountingLauncher();
+        var recorder = new CapturingRecorder();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id,
+            RecoveryPolicy.Default, store, discovery, launcher, clock,
+            recorder: recorder);
+
+        CoordinatorResult result = await coordinator.StartNowAsync();
+        Assert.True(result.LaunchDispatched);
+        Assert.Equal(1, launcher.Dispatches);
+        RecoveryCheckpoint pending = store.Load(id).Checkpoint;
+        Assert.Equal(0, pending.ReservedAutomaticAttempts);
+        Assert.True(pending.PendingExplicitStart);
+        Assert.True(pending.Armed);
+        Assert.Equal(RecoveryState.Starting, pending.LastState);
+
+        discovery.Result = Detection.Present("session|app|101|start");
+        await TickAt(coordinator, clock, 1);
+        Assert.Equal(ObservationOrigin.ExplicitStart,
+            coordinator.Snapshot.ObservationOrigin);
+        Assert.Null(store.Load(id).Checkpoint.PendingExplicitStart);
+        Assert.Contains(recorder.Events, entry =>
+            entry.Kind == OperationalEventKind.ExplicitStartRequested);
+        Assert.Contains(recorder.Events, entry =>
+            entry.Kind == OperationalEventKind.ExplicitStartDispatched);
+    }
+
+    [Fact]
+    public async Task Explicit_start_during_zero_budget_lockout_keeps_lockout()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var discovery = new MutableDiscovery(Detection.Absent());
+        var launcher = new CountingLauncher();
+        Guid id = Guid.NewGuid();
+        RecoveryPolicy policy = AutoPolicy with { MaximumAutomaticAttempts = 0 };
+        using var coordinator = ProfileCoordinator.CreateNew(id, policy, store,
+            discovery, launcher, clock);
+        await TickAt(coordinator, clock, 0);
+        await TickAt(coordinator, clock, 2);
+        Assert.True(coordinator.Snapshot.LockedOut);
+
+        CoordinatorResult result = await coordinator.StartNowAsync();
+        Assert.True(result.LaunchDispatched);
+        Assert.Equal(1, launcher.Dispatches);
+        Assert.Equal(0, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+        discovery.Result = Detection.Present("session|app|101|start");
+        await TickAt(coordinator, clock, 3);
+        Assert.True(coordinator.Snapshot.LockedOut);
+    }
+
+    [Fact]
+    public async Task Uncertain_explicit_dispatch_stays_pending_without_auto_duplicate()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var launcher = new FailingLauncher();
+        var recorder = new CapturingRecorder();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id,
+            RecoveryPolicy.Default, store, new ConstantDiscovery(Detection.Absent()),
+            launcher, clock, recorder: recorder);
+
+        await Assert.ThrowsAsync<IOException>(() => coordinator.StartNowAsync());
+        Assert.Equal(RecoveryState.Starting, coordinator.Snapshot.State);
+        Assert.True(store.Load(id).Checkpoint.PendingExplicitStart);
+        Assert.Equal(0, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+        Assert.Equal(1, launcher.Dispatches);
+        Assert.Contains(recorder.Events, entry =>
+            entry.Kind == OperationalEventKind.ExplicitStartUncertain);
+        RecoveryMachine restored = RecoveryMachine.Restore(RecoveryPolicy.Default,
+            store.Load(id).Checkpoint);
+        Assert.True(restored.Snapshot.LockedOut);
+        Assert.Equal(RecoveryHoldReason.InterruptedExplicitLaunch,
+            restored.Snapshot.HoldReason);
+        Assert.Equal(RecoverySignal.None,
+            restored.Advance(Detection.Absent(), TimeSpan.Zero).Signal);
+    }
+
+    [Fact]
+    public async Task Failed_explicit_reservation_write_prevents_dispatch()
+    {
+        using var directory = new TestDirectory();
+        var real = new RecoveryStateStore(directory.Path);
+        var store = new FailReservationStore(real);
+        var clock = new FakeClock();
+        var launcher = new CountingLauncher();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id,
+            RecoveryPolicy.Default, store,
+            new ConstantDiscovery(Detection.Absent()), launcher, clock);
+
+        await Assert.ThrowsAsync<RecoveryStateUnavailableException>(() =>
+            coordinator.StartNowAsync());
+        Assert.True(coordinator.StorageDegraded);
+        Assert.Equal(0, launcher.Dispatches);
+        Assert.Null(real.Load(id).Checkpoint.PendingExplicitStart);
+    }
+
+    [Fact]
+    public async Task Explicit_appearance_timeout_retains_automatic_budget()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var launcher = new CountingLauncher();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id,
+            RecoveryPolicy.Default, store,
+            new ConstantDiscovery(Detection.Absent()), launcher, clock);
+
+        await coordinator.StartNowAsync();
+        await TickAt(coordinator, clock, 60);
+        Assert.Equal(RecoveryState.RetryWaiting, coordinator.Snapshot.State);
+        Assert.Equal(0, coordinator.Snapshot.ReservedAutomaticAttempts);
+        Assert.Null(store.Load(id).Checkpoint.PendingExplicitStart);
+        await TickAt(coordinator, clock, 90);
+        Assert.Equal(2, launcher.Dispatches);
+        Assert.Equal(1, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+    }
+
+    [Fact]
     public async Task Reserved_attempt_and_dispatch_failure_emit_distinct_structured_events()
     {
         using var directory = new TestDirectory();

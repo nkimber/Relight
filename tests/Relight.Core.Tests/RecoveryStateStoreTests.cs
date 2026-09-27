@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Relight.Core;
 using Relight.Storage;
 
@@ -53,6 +56,65 @@ public sealed class RecoveryStateStoreTests
             restored.Advance(Detection.Absent(), TimeSpan.FromSeconds(32)).Signal);
         Assert.Equal(1, restored.Snapshot.ReservedAutomaticAttempts);
         Assert.Equal(1, state.Revision);
+    }
+
+    [Fact]
+    public void Interrupted_explicit_start_keeps_budget_but_requires_intervention()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        Guid profile = Guid.NewGuid();
+        var machine = new RecoveryMachine(RecoveryPolicy.Default);
+        StoredRecoveryState initial = store.Create(profile, machine.ExportCheckpoint());
+        machine.StartExplicitly(TimeSpan.Zero, Guid.NewGuid());
+        store.Save(profile, initial.Revision, machine.ExportCheckpoint());
+
+        RecoveryMachine restored = RecoveryMachine.Restore(RecoveryPolicy.Default,
+            store.Load(profile).Checkpoint);
+        Assert.Equal(0, restored.Snapshot.ReservedAutomaticAttempts);
+        Assert.True(restored.Snapshot.LockedOut);
+        Assert.Equal(RecoveryHoldReason.InterruptedExplicitLaunch,
+            restored.Snapshot.HoldReason);
+        Assert.Equal(RecoveryState.AwaitingIntervention, restored.Snapshot.State);
+        Assert.Equal(RecoverySignal.None,
+            restored.Advance(Detection.Absent(), TimeSpan.Zero).Signal);
+
+        StoredRecoveryState committed = store.Load(profile);
+        store.Save(profile, committed.Revision, restored.ExportCheckpoint());
+        RecoveryMachine restartedAgain = RecoveryMachine.Restore(RecoveryPolicy.Default,
+            store.Load(profile).Checkpoint);
+        Assert.Equal(RecoveryHoldReason.InterruptedExplicitLaunch,
+            restartedAgain.Snapshot.HoldReason);
+        restartedAgain.ResetRecovery(TimeSpan.FromSeconds(1));
+        Assert.Null(restartedAgain.Snapshot.HoldReason);
+    }
+
+    [Fact]
+    public void Legacy_state_without_manual_start_fields_remains_checksum_valid()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        Guid profile = Guid.NewGuid();
+        var checkpoint = new LegacyCheckpoint(true, false, true, false, 1,
+            Guid.NewGuid(), RecoveryState.RetryWaiting, null);
+        var json = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            WriteIndented = true,
+            RespectRequiredConstructorParameters = true
+        };
+        json.Converters.Add(new JsonStringEnumConverter(allowIntegerValues: false));
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
+            new LegacyChecksumPayload(profile, 1, checkpoint), json);
+        string checksum = Convert.ToHexString(SHA256.HashData(payload));
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(
+            new LegacyStateFile(1, profile, 1, checkpoint, checksum), json);
+        string path = Path.Combine(directory.Path, "State", profile.ToString("N") + ".json");
+        File.WriteAllBytes(path, bytes);
+
+        StoredRecoveryState loaded = store.Load(profile);
+        Assert.Equal(1, loaded.Checkpoint.ReservedAutomaticAttempts);
+        Assert.Null(loaded.Checkpoint.PendingExplicitStart);
+        Assert.Null(loaded.Checkpoint.HoldReason);
     }
 
     [Fact]
@@ -118,4 +180,14 @@ public sealed class RecoveryStateStoreTests
             if (Directory.Exists(Path)) Directory.Delete(Path, recursive: true);
         }
     }
+
+    private sealed record LegacyCheckpoint(bool Enabled, bool Paused, bool Armed,
+        bool LockedOut, int ReservedAutomaticAttempts, Guid? EpisodeId,
+        RecoveryState LastState, Guid? PendingOperationId);
+
+    private sealed record LegacyChecksumPayload(Guid ProfileId, long Revision,
+        LegacyCheckpoint Checkpoint);
+
+    private sealed record LegacyStateFile(int SchemaVersion, Guid ProfileId,
+        long Revision, LegacyCheckpoint Checkpoint, string Checksum);
 }

@@ -26,7 +26,10 @@ public sealed class RecoveryMachine
     public RecoveryCheckpoint ExportCheckpoint() => new(
         Snapshot.Enabled, Snapshot.Paused, Snapshot.Armed, Snapshot.LockedOut,
         Snapshot.ReservedAutomaticAttempts, Snapshot.EpisodeId,
-        Snapshot.State, Snapshot.OperationId);
+        Snapshot.State, Snapshot.OperationId,
+        Snapshot.State == RecoveryState.Starting &&
+            Snapshot.ObservationOrigin == ObservationOrigin.ExplicitStart ? true : null,
+        Snapshot.HoldReason);
 
     public static RecoveryMachine Restore(RecoveryPolicy policy, RecoveryCheckpoint checkpoint)
     {
@@ -36,20 +39,24 @@ public sealed class RecoveryMachine
             throw new ArgumentException("Recovery checkpoint is invalid.", nameof(checkpoint));
 
         var machine = new RecoveryMachine(policy, checkpoint.Enabled);
-        bool exhausted = checkpoint.LockedOut ||
+        bool uncertainExplicit = checkpoint.LastState == RecoveryState.Starting &&
+            checkpoint.PendingExplicitStart == true;
+        bool exhausted = checkpoint.LockedOut || uncertainExplicit ||
             (checkpoint.LastState == RecoveryState.Starting &&
              checkpoint.ReservedAutomaticAttempts >= policy.MaximumAutomaticAttempts);
         RecoveryState state = !checkpoint.Enabled
             ? RecoveryState.Disabled
-            : !checkpoint.Armed
-                ? RecoveryState.WaitingForFirstStart
-                : exhausted ? RecoveryState.AwaitingIntervention : RecoveryState.RetryWaiting;
+            : exhausted ? RecoveryState.AwaitingIntervention
+            : !checkpoint.Armed ? RecoveryState.WaitingForFirstStart
+            : RecoveryState.RetryWaiting;
         machine.Snapshot = machine.Snapshot with
         {
             State = state,
             Paused = checkpoint.Paused,
             Armed = checkpoint.Armed,
             LockedOut = exhausted,
+            HoldReason = uncertainExplicit
+                ? RecoveryHoldReason.InterruptedExplicitLaunch : checkpoint.HoldReason,
             ReservedAutomaticAttempts = checkpoint.ReservedAutomaticAttempts,
             EpisodeId = checkpoint.EpisodeId,
             // A persisted PID, observation interval or pending deadline proves nothing
@@ -126,6 +133,7 @@ public sealed class RecoveryMachine
         Snapshot = Snapshot with
         {
             State = RecoveryState.Starting,
+            Armed = true,
             OperationId = operationId,
             ObservationOrigin = ObservationOrigin.AutomaticLaunch,
             ReservedAutomaticAttempts = Snapshot.ReservedAutomaticAttempts + 1,
@@ -147,6 +155,7 @@ public sealed class RecoveryMachine
         Snapshot = Snapshot with
         {
             State = RecoveryState.Starting,
+            Armed = true,
             OperationId = operationId,
             ObservationOrigin = ObservationOrigin.ExplicitStart,
             AppearanceDeadline = now + _policy.AppearanceTimeout,
@@ -205,6 +214,7 @@ public sealed class RecoveryMachine
             LockedOut = false,
             ReservedAutomaticAttempts = 0,
             EpisodeId = null,
+            HoldReason = null,
             OperationId = null,
             TargetIdentity = null,
             ObservationOrigin = null,
@@ -255,6 +265,7 @@ public sealed class RecoveryMachine
                     State = RecoveryState.Healthy,
                     Armed = true,
                     LockedOut = !rearm,
+                    HoldReason = rearm ? null : Snapshot.HoldReason,
                     ReservedAutomaticAttempts = rearm ? 0 : Snapshot.ReservedAutomaticAttempts,
                     EpisodeId = rearm ? null : Snapshot.EpisodeId,
                     ObservationStartedAt = null,

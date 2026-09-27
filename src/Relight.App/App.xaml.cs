@@ -40,7 +40,8 @@ public partial class App : Application
             ApplyAccessibilityColors();
             SystemParameters.StaticPropertyChanged += OnSystemParametersChanged;
             _viewModel = new ShellViewModel(HideDashboard, RequestExit, ShowAddApplication);
-            _dashboard = new MainWindow(SetProfilePausedAsync, ResetProfileRecoveryAsync)
+            _dashboard = new MainWindow(SetProfilePausedAsync, ResetProfileRecoveryAsync,
+                StartProfileNowAsync)
             {
                 DataContext = _viewModel
             };
@@ -189,6 +190,14 @@ public partial class App : Application
         RecoveryApplicationHost host = Volatile.Read(ref _host) ??
             throw new InvalidOperationException("Monitoring is unavailable.");
         return host.ResetProfileRecoveryAsync(profileId,
+            _monitoringCancellation?.Token ?? CancellationToken.None);
+    }
+
+    private Task StartProfileNowAsync(Guid profileId)
+    {
+        RecoveryApplicationHost host = Volatile.Read(ref _host) ??
+            throw new InvalidOperationException("Monitoring is unavailable.");
+        return host.StartProfileNowAsync(profileId,
             _monitoringCancellation?.Token ?? CancellationToken.None);
     }
 

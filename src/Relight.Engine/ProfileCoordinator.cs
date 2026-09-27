@@ -269,6 +269,102 @@ public sealed class ProfileCoordinator : IDisposable
         finally { _gate.Release(); }
     }
 
+    public async Task<CoordinatorResult> StartNowAsync(
+        CancellationToken cancellationToken = default)
+    {
+        int commandGeneration = Volatile.Read(ref _commandGeneration);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_storageDegraded)
+                throw new RecoveryStateUnavailableException("Recovery state is degraded; explicit launch is suspended.");
+            if (!_machine.Snapshot.Enabled || _machine.Snapshot.Paused)
+                throw new InvalidOperationException("Resume protection before starting this application.");
+            if (_machine.Snapshot.HoldReason == RecoveryHoldReason.InterruptedExplicitLaunch)
+                throw new InvalidOperationException(
+                    "An interrupted explicit launch may still appear. Verify the target and reset recovery before starting again.");
+            if (_machine.Snapshot.State == RecoveryState.Starting)
+                throw new InvalidOperationException("A launch is already in progress.");
+
+            using var launchCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken);
+            lock (_launchSync)
+            {
+                _launchCancellation = launchCancellation;
+                if (commandGeneration != _commandGeneration)
+                    launchCancellation.Cancel();
+            }
+            try
+            {
+                using IDisposable permit = await _launchGate.EnterAsync(
+                    launchCancellation.Token).ConfigureAwait(false);
+                Detection found = await Discover(launchCancellation.Token).ConfigureAwait(false);
+                RecoveryCheckpoint before = _machine.ExportCheckpoint();
+                RecoverySnapshot previous = _machine.Snapshot;
+                RecoveryTransition transition = _machine.Advance(found, _clock.Elapsed);
+                if (!PersistIfChanged(before))
+                    throw new RecoveryStateUnavailableException(_storageError ?? "State write failed.");
+                RecordTransition(previous, _machine.Snapshot);
+                if (found.Kind == DetectionKind.Unavailable)
+                    throw new InvalidOperationException(
+                        $"Target identity cannot be verified: {found.Reason}");
+                if (found.Kind == DetectionKind.Present)
+                    return Result(new(previous.State, _machine.Snapshot.State,
+                        RecoverySignal.None, "Existing matching instance adopted; no launch dispatched"));
+                if (_machine.Snapshot.State is RecoveryState.Healthy or RecoveryState.Observing)
+                    throw new InvalidOperationException(
+                        "Wait for target absence to be confirmed before starting another instance.");
+
+                launchCancellation.Token.ThrowIfCancellationRequested();
+                Guid operationId = Guid.NewGuid();
+                previous = _machine.Snapshot;
+                _machine.StartExplicitly(_clock.Elapsed, operationId);
+                if (!Persist())
+                    throw new RecoveryStateUnavailableException(_storageError ?? "State write failed.");
+                RecordTransition(previous, _machine.Snapshot);
+                Record(OperationalEventKind.ExplicitStartRequested, EventSeverity.Information,
+                    previous, _machine.Snapshot, operationId);
+
+                bool enteredDispatch = false;
+                try
+                {
+                    launchCancellation.Token.ThrowIfCancellationRequested();
+                    enteredDispatch = true;
+                    await _launcher.LaunchAsync(operationId, launchCancellation.Token)
+                        .ConfigureAwait(false);
+                    Record(OperationalEventKind.ExplicitStartDispatched, EventSeverity.Information,
+                        _machine.Snapshot, _machine.Snapshot, operationId);
+                    return Result(new(previous.State, RecoveryState.Starting,
+                        RecoverySignal.None, "Explicit launch dispatched"), dispatched: true);
+                }
+                catch (OperationCanceledException) when (!enteredDispatch &&
+                    launchCancellation.IsCancellationRequested)
+                {
+                    previous = _machine.Snapshot;
+                    _machine.FailLaunch(operationId, _clock.Elapsed);
+                    if (!Persist())
+                        throw new RecoveryStateUnavailableException(_storageError ?? "State write failed.");
+                    RecordTransition(previous, _machine.Snapshot);
+                    throw;
+                }
+                catch (Exception)
+                {
+                    // The adapter may have dispatched before reporting failure.
+                    // Keep Starting until discovery or the full appearance timeout
+                    // resolves the uncertainty; do not authorize a duplicate now.
+                    Record(OperationalEventKind.ExplicitStartUncertain, EventSeverity.Warning,
+                        _machine.Snapshot, _machine.Snapshot, operationId);
+                    throw;
+                }
+            }
+            finally
+            {
+                lock (_launchSync) _launchCancellation = null;
+            }
+        }
+        finally { _gate.Release(); }
+    }
+
     private async Task<Detection> Discover(CancellationToken cancellationToken)
     {
         try { return await _discovery.DetectAsync(cancellationToken).ConfigureAwait(false); }

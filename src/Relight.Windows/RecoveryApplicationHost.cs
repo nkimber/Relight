@@ -308,6 +308,11 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         RunProfileCommandAsync(profileId,
             coordinator => coordinator.ResetRecoveryAsync(cancellationToken));
 
+    public Task<CoordinatorResult> StartProfileNowAsync(Guid profileId,
+        CancellationToken cancellationToken = default) =>
+        RunProfileCommandAsync(profileId,
+            coordinator => coordinator.StartNowAsync(cancellationToken));
+
     private Task RunProfileCommandAsync(Guid profileId,
         Func<ProfileCoordinator, Task> action)
     {
@@ -330,6 +335,35 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     private async Task ObserveCommandAsync(Task command)
     {
         try { await command.ConfigureAwait(false); }
+        finally
+        {
+            lock (_statusSync) _activeCommands.Remove(command);
+        }
+    }
+
+    private Task<TResult> RunProfileCommandAsync<TResult>(Guid profileId,
+        Func<ProfileCoordinator, Task<TResult>> action)
+    {
+        Task<TResult> command;
+        lock (_statusSync)
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(RecoveryApplicationHost));
+            if (!_coordinators.TryGetValue(profileId, out ProfileCoordinator? coordinator))
+                throw new InvalidOperationException("This profile cannot accept recovery commands.");
+            command = Task.Run(async () =>
+            {
+                TResult result = await action(coordinator).ConfigureAwait(false);
+                _scheduler.RequestImmediate(profileId);
+                return result;
+            });
+            _activeCommands.Add(command);
+        }
+        return ObserveCommandAsync(command);
+    }
+
+    private async Task<TResult> ObserveCommandAsync<TResult>(Task<TResult> command)
+    {
+        try { return await command.ConfigureAwait(false); }
         finally
         {
             lock (_statusSync) _activeCommands.Remove(command);
