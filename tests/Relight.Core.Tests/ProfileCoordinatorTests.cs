@@ -61,6 +61,30 @@ public sealed class ProfileCoordinatorTests
     }
 
     [Fact]
+    public async Task Late_tick_reconfirms_absence_before_reserving_automatic_launch()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var launcher = new CountingLauncher();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id, AutoPolicy,
+            store, new ConstantDiscovery(Detection.Absent()), launcher, clock);
+        await TickAt(coordinator, clock, 0);
+        await TickAt(coordinator, clock, 2);
+
+        CoordinatorResult resumed = await TickAt(coordinator, clock, 300);
+        Assert.False(resumed.LaunchDispatched);
+        Assert.Equal(0, launcher.Dispatches);
+        Assert.Equal(0, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+
+        await TickAt(coordinator, clock, 302);
+        CoordinatorResult due = await TickAt(coordinator, clock, 332);
+        Assert.True(due.LaunchDispatched);
+        Assert.Equal(1, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+    }
+
+    [Fact]
     public async Task Second_discovery_adopts_external_start_before_dispatch()
     {
         using var directory = new TestDirectory();
