@@ -1,0 +1,124 @@
+using System.Text.Json;
+using Relight.Storage;
+
+namespace Relight.Core.Tests;
+
+public sealed class OperationalEventJournalTests
+{
+    [Fact]
+    public async Task Append_writes_structured_UTC_events_without_unstructured_process_data()
+    {
+        using var directory = new TestDirectory();
+        using var journal = new OperationalEventJournal(directory.Path, GlobalConfiguration.Default);
+        Guid profile = Guid.NewGuid();
+        Guid operation = Guid.NewGuid();
+        OperationalEvent entry = NewEvent() with
+        {
+            ProfileId = profile,
+            OperationId = operation,
+            Kind = OperationalEventKind.LaunchReserved,
+            AttemptNumber = 1,
+            AttemptLimit = 3
+        };
+
+        EventJournalStatus result = await journal.AppendAsync(entry);
+        Assert.False(result.Degraded);
+        string path = Assert.Single(Directory.GetFiles(Path.Combine(directory.Path, "Logs")));
+        using JsonDocument parsed = JsonDocument.Parse(Assert.Single(File.ReadAllLines(path)));
+        JsonElement root = parsed.RootElement;
+        Assert.Equal(entry.EventId.ToString(), root.GetProperty("eventId").GetString());
+        Assert.Equal("LaunchReserved", root.GetProperty("kind").GetString());
+        Assert.Equal(profile.ToString(), root.GetProperty("profileId").GetString());
+        Assert.Equal(operation.ToString(), root.GetProperty("operationId").GetString());
+        Assert.False(root.TryGetProperty("arguments", out _));
+        Assert.False(root.TryGetProperty("environment", out _));
+    }
+
+    [Fact]
+    public async Task Failure_buffers_with_a_bound_and_replays_when_log_directory_recovers()
+    {
+        using var directory = new TestDirectory();
+        string logs = Path.Combine(directory.Path, "Logs");
+        File.WriteAllText(logs, "Controlled obstruction");
+        using var journal = new OperationalEventJournal(directory.Path,
+            GlobalConfiguration.Default, bufferLimit: 2);
+        for (int i = 0; i < 3; i++)
+        {
+            EventJournalStatus failed = await journal.AppendAsync(NewEvent());
+            Assert.True(failed.Degraded);
+        }
+        EventJournalStatus buffered = await journal.GetStatusAsync();
+        Assert.Equal(2, buffered.BufferedCount);
+        Assert.Equal(1, buffered.DroppedCount);
+
+        File.Delete(logs);
+        EventJournalStatus recovered = await journal.AppendAsync(NewEvent());
+        Assert.False(recovered.Degraded);
+        Assert.Equal(0, recovered.BufferedCount);
+        Assert.Equal(1, recovered.DroppedCount);
+        string path = Assert.Single(Directory.GetFiles(logs));
+        Assert.Equal(3, File.ReadAllLines(path).Length);
+    }
+
+    [Fact]
+    public async Task Retention_deletes_only_old_owned_logs()
+    {
+        using var directory = new TestDirectory();
+        string logs = Path.Combine(directory.Path, "Logs");
+        Directory.CreateDirectory(logs);
+        string owned = Path.Combine(logs,
+            $"events-20200101T0000000000000Z-{Guid.NewGuid():N}.jsonl");
+        string unowned = Path.Combine(logs, "events-my-notes.jsonl");
+        string configuration = Path.Combine(directory.Path, "configuration.json");
+        File.WriteAllText(owned, "Old journal");
+        File.SetLastWriteTimeUtc(owned, DateTime.UtcNow.AddDays(-40));
+        File.WriteAllText(unowned, "Do not delete");
+        File.SetLastWriteTimeUtc(unowned, DateTime.UtcNow.AddDays(-40));
+        File.WriteAllText(configuration, "User configuration");
+
+        using var journal = new OperationalEventJournal(directory.Path, GlobalConfiguration.Default);
+        Assert.False((await journal.AppendAsync(NewEvent())).Degraded);
+        Assert.False(File.Exists(owned));
+        Assert.True(File.Exists(unowned));
+        Assert.True(File.Exists(configuration));
+    }
+
+    [Fact]
+    public async Task Rotation_and_total_size_retention_keep_owned_logs_bounded()
+    {
+        using var directory = new TestDirectory();
+        var settings = GlobalConfiguration.Default with
+        {
+            MaximumLogBytes = 1_048_576,
+            LogRotationBytes = 65_536
+        };
+        using var journal = new OperationalEventJournal(directory.Path, settings);
+        for (int i = 0; i < 30; i++)
+        {
+            EventJournalStatus status = await journal.AppendAsync(NewEvent() with
+            {
+                ProcessIdentity = new string('x', 40_000)
+            });
+            Assert.False(status.Degraded);
+        }
+        string[] files = Directory.GetFiles(Path.Combine(directory.Path, "Logs"), "*.jsonl");
+        Assert.True(files.Length > 1);
+        Assert.True(files.Length < 30);
+        Assert.True(files.Sum(path => new FileInfo(path).Length) <= settings.MaximumLogBytes);
+    }
+
+    private static OperationalEvent NewEvent() =>
+        new(DateTimeOffset.UtcNow, Guid.NewGuid(), EventSeverity.Information,
+            OperationalEventKind.Startup);
+
+    private sealed class TestDirectory : IDisposable
+    {
+        public string Path { get; } = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(), $"relight-journal-{Guid.NewGuid():N}");
+        public TestDirectory() => Directory.CreateDirectory(Path);
+        public void Dispose()
+        {
+            if (Directory.Exists(Path)) Directory.Delete(Path, recursive: true);
+        }
+    }
+}
