@@ -147,11 +147,14 @@ public sealed class RecoveryApplicationHostIntegrationTests
                 string executable = TestExecutable();
                 Detection detection = await RecoveryApplicationHost.InspectExecutableAsync(executable);
                 Assert.NotEqual(DetectionKind.Unavailable, detection.Kind);
-                Guid id = await host.RegisterExecutableAsync("Disposable target", executable);
+                Guid id = await host.RegisterExecutableAsync("Disposable target", executable,
+                    ["--label", "hello world"], root);
 
                 ProfileConfiguration saved = Assert.Single(
                     new ConfigurationStore(root).Load().Configuration.Profiles);
                 Assert.Equal(id, saved.Id);
+                Assert.Equal(new[] { "--label", "hello world" }, saved.Target.Arguments);
+                Assert.Equal(root, saved.Target.WorkingDirectory);
                 Assert.True(saved.Enabled);
                 Assert.False(saved.Policy.StartAutomaticallyWhenInitiallyAbsent);
                 Assert.Equal(0, new RecoveryStateStore(root).Load(id)

@@ -1,12 +1,11 @@
 <Window x:Class="Relight.AddApplicationWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Add application · Relight" Width="620" Height="550"
+        Title="Add application · Relight" Width="650" Height="650"
         MinWidth="520" MinHeight="500" WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False" UseLayoutRounding="True" Closing="WindowClosing">
     <Grid Margin="24">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -28,27 +27,40 @@
             <RadioButton x:Name="ChatGptOption" Content="Installed ChatGPT"
                          Checked="TargetChanged" GroupName="TargetKind" />
         </StackPanel>
-        <Grid Grid.Row="4">
-            <StackPanel x:Name="ExecutableFields">
-                <TextBlock Text="Executable file" FontWeight="SemiBold" Margin="0,0,0,6" />
-                <DockPanel>
-                    <Button x:Name="BrowseButton" DockPanel.Dock="Right" Content="Browse…" Click="BrowseClick" Margin="8,0,0,0" />
-                    <TextBox x:Name="PathInput" MinHeight="32" TextChanged="PathChanged"
-                             AutomationProperties.Name="Executable file path" />
-                </DockPanel>
+        <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="0,0,12,0">
+                <Grid>
+                    <StackPanel x:Name="ExecutableFields">
+                        <TextBlock Text="Executable file" FontWeight="SemiBold" Margin="0,0,0,6" />
+                        <DockPanel>
+                            <Button x:Name="BrowseButton" DockPanel.Dock="Right" Content="Browse…" Click="BrowseClick" Margin="8,0,0,0" />
+                            <TextBox x:Name="PathInput" MinHeight="32" TextChanged="PathChanged"
+                                     AutomationProperties.Name="Executable file path" />
+                        </DockPanel>
+                        <TextBlock Text="Launch arguments · one argument per line (optional; outer spaces trimmed)"
+                                   FontWeight="SemiBold" Margin="0,16,0,6" />
+                        <TextBox x:Name="ArgumentsInput" MinHeight="62" MaxHeight="110"
+                                 AcceptsReturn="True" VerticalScrollBarVisibility="Auto"
+                                 AutomationProperties.Name="Launch arguments, one per line" />
+                        <TextBlock Text="Working directory · full path (optional)"
+                                   FontWeight="SemiBold" Margin="0,16,0,6" />
+                        <TextBox x:Name="WorkingDirectoryInput" MinHeight="32"
+                                 AutomationProperties.Name="Working directory" />
+                    </StackPanel>
+                    <TextBlock x:Name="InstalledIdentityText" Visibility="Collapsed" TextWrapping="Wrap"
+                               Text="Windows installed app: OpenAI.Codex_2p2nqsd0c76g0!App. Relight identifies the main process by package family and current session; helper processes are not treated as the app." />
+                </Grid>
+                <StackPanel Margin="0,14,0,12">
+                    <Button x:Name="DetectButton" Content="Detect now" Click="DetectClick"
+                            HorizontalAlignment="Left" Margin="0,0,0,12" />
+                    <TextBlock x:Name="DetectionText" Text="Select a file, then choose Detect now."
+                               TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock Margin="0,16,0,0" Style="{StaticResource Muted}" TextWrapping="Wrap"
+                               Text="Protection waits for your first launch if the app is not running. Automatic recovery uses the documented defaults. Adding it will not close or start the app." />
+                </StackPanel>
             </StackPanel>
-            <TextBlock x:Name="InstalledIdentityText" Visibility="Collapsed" TextWrapping="Wrap"
-                       Text="Windows installed app: OpenAI.Codex_2p2nqsd0c76g0!App. Relight identifies the main process by package family and current session; helper processes are not treated as the app." />
-        </Grid>
-        <StackPanel Grid.Row="5" Margin="0,14,0,12">
-            <Button x:Name="DetectButton" Content="Detect now" Click="DetectClick"
-                    HorizontalAlignment="Left" Margin="0,0,0,12" />
-            <TextBlock x:Name="DetectionText" Text="Select a file, then choose Detect now."
-                       TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
-            <TextBlock Margin="0,16,0,0" Style="{StaticResource Muted}" TextWrapping="Wrap"
-                       Text="Protection waits for your first launch if the app is not running. Automatic recovery uses the documented defaults. Adding it will not close or start the app." />
-        </StackPanel>
-        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right">
+        </ScrollViewer>
+        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
             <Button x:Name="CancelButton" Content="Cancel" IsCancel="True" Margin="0,0,10,0" />
             <Button x:Name="AddButton" Content="Add and protect" IsEnabled="False"
                     Click="AddClick" IsDefault="True" />

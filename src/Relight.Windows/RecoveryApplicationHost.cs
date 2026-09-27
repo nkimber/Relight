@@ -298,22 +298,33 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     /// an unreferenced ledger; it is intentionally preserved rather than
     /// risking reuse of its identity or a fresh budget.
     /// </summary>
+    public Task<Guid> RegisterExecutableAsync(string name, string executablePath,
+        CancellationToken cancellationToken = default) =>
+        RegisterExecutableAsync(name, executablePath, [], null, cancellationToken);
+
     public async Task<Guid> RegisterExecutableAsync(string name, string executablePath,
+        IReadOnlyList<string> arguments, string? workingDirectory,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(name) || name.Length > 100)
             throw new ArgumentException("Choose a name of 1–100 characters.", nameof(name));
-        var target = new ExecutableTarget(executablePath, []);
+        ArgumentNullException.ThrowIfNull(arguments);
+        var target = new ExecutableTarget(executablePath, arguments.ToArray(),
+            string.IsNullOrWhiteSpace(workingDirectory) ? null : workingDirectory.Trim());
         target.Validate();
         if (!File.Exists(target.CanonicalPath))
             throw new FileNotFoundException("The executable file does not exist.", target.CanonicalPath);
+        if (target.WorkingDirectory is { } directory &&
+            !Directory.Exists(Environment.ExpandEnvironmentVariables(directory)))
+            throw new DirectoryNotFoundException("The working directory does not exist.");
         var discovery = new ExecutableDiscovery(target);
         Detection detected = await discovery.DetectAsync(cancellationToken).ConfigureAwait(false);
         if (detected.Kind == DetectionKind.Unavailable)
             throw new InvalidOperationException($"Target identity cannot be verified: {detected.Reason}");
 
         return await RegisterNewProfileAsync(name,
-            new(TargetKind.Executable, target.CanonicalPath, []), discovery,
+            new(TargetKind.Executable, target.CanonicalPath, target.Arguments.ToList(),
+                target.WorkingDirectory), discovery,
             new ExecutableLauncher(target), new ExecutableStopper(target), detected,
             cancellationToken).ConfigureAwait(false);
     }

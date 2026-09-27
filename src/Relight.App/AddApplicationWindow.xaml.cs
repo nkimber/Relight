@@ -111,7 +111,11 @@ public partial class AddApplicationWindow : Window
             if (ChatGptOption.IsChecked == true)
                 await _host.RegisterSelectedChatGptAsync(NameInput.Text);
             else
-                await _host.RegisterExecutableAsync(NameInput.Text, _inspectedPath!);
+                await _host.RegisterExecutableAsync(NameInput.Text, _inspectedPath!,
+                    ArgumentsInput.Text.Split(['\r', '\n'],
+                        StringSplitOptions.RemoveEmptyEntries |
+                        StringSplitOptions.TrimEntries),
+                    WorkingDirectoryInput.Text);
             _saving = false;
             DialogResult = true;
         }
@@ -136,6 +140,8 @@ public partial class AddApplicationWindow : Window
         _busy = busy;
         NameInput.IsEnabled = !busy;
         PathInput.IsEnabled = !busy;
+        ArgumentsInput.IsEnabled = !busy;
+        WorkingDirectoryInput.IsEnabled = !busy;
         BrowseButton.IsEnabled = !busy;
         ExecutableOption.IsEnabled = !busy;
         ChatGptOption.IsEnabled = !busy;
