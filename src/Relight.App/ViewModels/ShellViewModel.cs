@@ -18,6 +18,7 @@ internal sealed record ApplicationSortOption(string Label, ApplicationSortMode M
 internal sealed class ApplicationStatusRow(
     Guid id, string name, string state, string detail,
     bool isPaused, bool canPauseResume, bool canReset, bool canStartNow,
+    bool canStopAndPause,
     bool configuredEnabled, bool canToggleEnabled, bool canRemove, bool canEdit,
     ApplicationStatusCategory category, int reservedAttempts,
     ProfileTimingPresentation timing, string lastOutage,
@@ -31,6 +32,7 @@ internal sealed class ApplicationStatusRow(
     public bool CanPauseResume { get; private set; } = canPauseResume;
     public bool CanReset { get; private set; } = canReset;
     public bool CanStartNow { get; private set; } = canStartNow;
+    public bool CanStopAndPause { get; private set; } = canStopAndPause;
     public bool ConfiguredEnabled { get; private set; } = configuredEnabled;
     public bool CanToggleEnabled { get; private set; } = canToggleEnabled;
     public bool CanRemove { get; private set; } = canRemove;
@@ -53,6 +55,7 @@ internal sealed class ApplicationStatusRow(
         bool changed = Name != next.Name || State != next.State || Detail != next.Detail ||
             IsPaused != next.IsPaused || CanPauseResume != next.CanPauseResume ||
             CanReset != next.CanReset || CanStartNow != next.CanStartNow ||
+            CanStopAndPause != next.CanStopAndPause ||
             ConfiguredEnabled != next.ConfiguredEnabled ||
             CanToggleEnabled != next.CanToggleEnabled || CanRemove != next.CanRemove ||
             CanEdit != next.CanEdit || Category != next.Category ||
@@ -68,6 +71,7 @@ internal sealed class ApplicationStatusRow(
         CanPauseResume = next.CanPauseResume;
         CanReset = next.CanReset;
         CanStartNow = next.CanStartNow;
+        CanStopAndPause = next.CanStopAndPause;
         ConfiguredEnabled = next.ConfiguredEnabled;
         CanToggleEnabled = next.CanToggleEnabled;
         CanRemove = next.CanRemove;
@@ -295,6 +299,10 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
                     HoldReason: null, State: Relight.Core.RecoveryState.WaitingForFirstStart or
                         Relight.Core.RecoveryState.RetryWaiting or
                         Relight.Core.RecoveryState.AwaitingIntervention } &&
+                    profile.AutomaticActionsAllowed && profile.Problem is null,
+                profile.ConfiguredEnabled &&
+                    profile.Recovery is { Enabled: true, DetectionUnavailable: false,
+                        TargetIdentity: not null, State: not Relight.Core.RecoveryState.Starting } &&
                     profile.AutomaticActionsAllowed && profile.Problem is null,
                 profile.ConfiguredEnabled,
                 configurationProblem is null &&

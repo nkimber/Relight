@@ -167,7 +167,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             {
                 ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(profile.Id,
                     profile.Policy, _stateStore, discovery, new ExecutableLauncher(target),
-                    _clock, _launchGate, _recorder);
+                    _clock, _launchGate, _recorder, new ExecutableStopper(target));
                 _scheduler.Add(profile.Id, coordinator, profile.Policy);
                 _coordinators.Add(profile.Id, coordinator);
                 _statuses[profile.Id] = new(profile.Id, profile.Name, true, true,
@@ -289,7 +289,8 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             ConfigurationStore.ValidateConfiguration(updated);
             ProfileCoordinator coordinator = await Task.Run(() =>
                 ProfileCoordinator.CreateNew(id, policy, _stateStore, discovery,
-                    new ExecutableLauncher(target), _clock, _launchGate, _recorder),
+                    new ExecutableLauncher(target), _clock, _launchGate, _recorder,
+                    new ExecutableStopper(target)),
                 CancellationToken.None).ConfigureAwait(false);
             try
             {
@@ -517,6 +518,18 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         RunProfileCommandAsync(profileId,
             coordinator => coordinator.StartNowAsync(cancellationToken));
 
+    public Task<StopCommandResult> StopProfileAndPauseAsync(Guid profileId,
+        TimeSpan gracefulTimeout, CancellationToken cancellationToken = default) =>
+        RunProfileCommandAsync(profileId,
+            coordinator => coordinator.StopAndPauseAsync(gracefulTimeout, cancellationToken));
+
+    public Task<TargetStopResult> ForceClosePausedProfileAsync(Guid profileId,
+        Guid operationId, string selectedIdentity,
+        CancellationToken cancellationToken = default) =>
+        RunProfileCommandAsync(profileId,
+            coordinator => coordinator.ForceClosePausedAsync(operationId,
+                selectedIdentity, cancellationToken));
+
     public Task SetProfileEnabledAsync(Guid profileId, bool enabled,
         CancellationToken cancellationToken = default) =>
         Task.Run(() => ChangeProfileAsync(profileId, enabled, remove: false,
@@ -583,7 +596,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 throw new InvalidOperationException("This profile is already scheduled.");
         ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(profile.Id,
             profile.Policy, _stateStore, discovery, new ExecutableLauncher(target),
-            _clock, _launchGate, _recorder);
+            _clock, _launchGate, _recorder, new ExecutableStopper(target));
         RecoveryState previousState = coordinator.Snapshot.State;
         bool schedulerOwnsCoordinator = false;
         try

@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
+using Relight.Engine;
 using Relight.Services;
 using Relight.Storage;
 using Relight.ViewModels;
@@ -66,7 +67,8 @@ public partial class App : Application
             _dashboard = new MainWindow(SetProfilePausedAsync, ResetProfileRecoveryAsync,
                 StartProfileNowAsync, ExportHistoryAsync, SetProfileEnabledAsync,
                 RemoveProfileAsync, ShowEditProfile, SetStartAtSignInAsync,
-                ExportDiagnosticsAsync)
+                ExportDiagnosticsAsync, StopProfileAndPauseAsync,
+                ForceClosePausedProfileAsync)
             {
                 DataContext = _viewModel
             };
@@ -457,6 +459,23 @@ public partial class App : Application
         RecoveryApplicationHost host = Volatile.Read(ref _host) ??
             throw new InvalidOperationException("Monitoring is unavailable.");
         return host.StartProfileNowAsync(profileId,
+            _monitoringCancellation?.Token ?? CancellationToken.None);
+    }
+
+    private Task<StopCommandResult> StopProfileAndPauseAsync(Guid profileId)
+    {
+        RecoveryApplicationHost host = Volatile.Read(ref _host) ??
+            throw new InvalidOperationException("Monitoring is unavailable.");
+        return host.StopProfileAndPauseAsync(profileId, TimeSpan.FromSeconds(10),
+            _monitoringCancellation?.Token ?? CancellationToken.None);
+    }
+
+    private Task<TargetStopResult> ForceClosePausedProfileAsync(Guid profileId,
+        Guid operationId, string selectedIdentity)
+    {
+        RecoveryApplicationHost host = Volatile.Read(ref _host) ??
+            throw new InvalidOperationException("Monitoring is unavailable.");
+        return host.ForceClosePausedProfileAsync(profileId, operationId, selectedIdentity,
             _monitoringCancellation?.Token ?? CancellationToken.None);
     }
 

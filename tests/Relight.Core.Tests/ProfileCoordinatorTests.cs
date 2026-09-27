@@ -634,6 +634,77 @@ public sealed class ProfileCoordinatorTests
         Assert.DoesNotContain("LaunchDispatched", kinds);
     }
 
+    [Fact]
+    public async Task Stop_and_pause_commits_pause_before_graceful_request_and_requires_separate_force()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var stopper = new FakeStopper();
+        var recorder = new CapturingRecorder();
+        Guid id = Guid.NewGuid();
+        stopper.OnGraceful = () => Assert.True(store.Load(id).Checkpoint.Paused);
+        using var coordinator = ProfileCoordinator.CreateNew(id, RecoveryPolicy.Default,
+            store, new ConstantDiscovery(Detection.Present("selected-instance")),
+            new CountingLauncher(), clock, recorder: recorder, stopper: stopper);
+        await TickAt(coordinator, clock, 0);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            coordinator.ForceClosePausedAsync(Guid.NewGuid(), "selected-instance"));
+
+        StopCommandResult first = await coordinator.StopAndPauseAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(TargetStopOutcome.NeedsForceChoice, first.Stop.Outcome);
+        Assert.Equal("selected-instance", first.SelectedIdentity);
+        Assert.Equal(1, stopper.GracefulCalls);
+        Assert.Equal(0, stopper.ForceCalls);
+        Assert.True(coordinator.Snapshot.Paused);
+        Assert.Equal(0, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+
+        TargetStopResult forced = await coordinator.ForceClosePausedAsync(
+            first.OperationId, first.SelectedIdentity!);
+        Assert.Equal(TargetStopOutcome.Stopped, forced.Outcome);
+        Assert.Equal(1, stopper.ForceCalls);
+        Assert.True(store.Load(id).Checkpoint.Paused);
+        Assert.Contains(recorder.Events, entry => entry.Kind ==
+            OperationalEventKind.ExplicitStopRequested &&
+            entry.OperationId == first.OperationId);
+        Assert.Contains(recorder.Events, entry => entry.Kind ==
+            OperationalEventKind.ExplicitStopNeedsForceChoice &&
+            entry.OperationId == first.OperationId);
+        Assert.Contains(recorder.Events, entry => entry.Kind ==
+            OperationalEventKind.ExplicitForceCloseRequested &&
+            entry.OperationId == first.OperationId);
+        Assert.Contains(recorder.Events, entry => entry.Kind ==
+            OperationalEventKind.ExplicitStopCompleted &&
+            entry.OperationId == first.OperationId);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            coordinator.ForceClosePausedAsync(first.OperationId,
+                first.SelectedIdentity!));
+        Assert.Equal(1, stopper.ForceCalls);
+    }
+
+    [Fact]
+    public async Task Failed_pause_write_prevents_explicit_stop_request()
+    {
+        using var directory = new TestDirectory();
+        var real = new RecoveryStateStore(directory.Path);
+        var store = new SwitchableFailureStore(real);
+        var stopper = new FakeStopper();
+        var clock = new FakeClock();
+        using var coordinator = ProfileCoordinator.CreateNew(Guid.NewGuid(),
+            RecoveryPolicy.Default, store,
+            new ConstantDiscovery(Detection.Present("selected-instance")),
+            new CountingLauncher(), clock, stopper: stopper);
+        await TickAt(coordinator, clock, 0);
+        store.FailWrites = true;
+
+        await Assert.ThrowsAsync<RecoveryStateUnavailableException>(() =>
+            coordinator.StopAndPauseAsync(TimeSpan.FromSeconds(1)));
+
+        Assert.Equal(0, stopper.GracefulCalls);
+        Assert.Equal(0, stopper.ForceCalls);
+    }
+
     private static async Task<CoordinatorResult> TickAt(ProfileCoordinator coordinator,
         FakeClock clock, int seconds)
     {
@@ -726,6 +797,26 @@ public sealed class ProfileCoordinatorTests
     private sealed class RejectingRecorder : IEventRecorder
     {
         public bool TryRecord(OperationalEvent entry) => false;
+    }
+
+    private sealed class FakeStopper : IProcessStopper
+    {
+        public Action? OnGraceful { get; set; }
+        public int GracefulCalls { get; private set; }
+        public int ForceCalls { get; private set; }
+        public Task<TargetStopResult> TryGracefulCloseAsync(string selectedIdentity,
+            TimeSpan timeout, CancellationToken cancellationToken = default)
+        {
+            GracefulCalls++;
+            OnGraceful?.Invoke();
+            return Task.FromResult(new TargetStopResult(TargetStopOutcome.NeedsForceChoice));
+        }
+        public Task<TargetStopResult> ForceCloseAsync(string selectedIdentity,
+            CancellationToken cancellationToken = default)
+        {
+            ForceCalls++;
+            return Task.FromResult(new TargetStopResult(TargetStopOutcome.Stopped));
+        }
     }
 
     private sealed class DisposableDocuments(IEnumerable<JsonDocument> documents) : IDisposable

@@ -39,7 +39,12 @@ public enum OperationalEventKind
     PolicyChanged,
     MonitoringGap,
     MonitoringRestored,
-    StorageDegraded
+    StorageDegraded,
+    ExplicitStopRequested,
+    ExplicitStopNeedsForceChoice,
+    ExplicitForceCloseRequested,
+    ExplicitStopCompleted,
+    ExplicitStopUnresolved
 }
 
 /// <summary>

@@ -26,6 +26,28 @@ public interface IProcessLauncher
     Task LaunchAsync(Guid operationId, CancellationToken cancellationToken);
 }
 
+public enum TargetStopOutcome
+{
+    Stopped,
+    AlreadyAbsent,
+    NeedsForceChoice,
+    IdentityChanged,
+    Unavailable
+}
+
+public sealed record TargetStopResult(TargetStopOutcome Outcome, string? Reason = null);
+
+public interface IProcessStopper
+{
+    Task<TargetStopResult> TryGracefulCloseAsync(string selectedIdentity,
+        TimeSpan timeout, CancellationToken cancellationToken = default);
+    Task<TargetStopResult> ForceCloseAsync(string selectedIdentity,
+        CancellationToken cancellationToken = default);
+}
+
+public sealed record StopCommandResult(TargetStopResult Stop,
+    Guid OperationId, string? SelectedIdentity);
+
 public sealed record CoordinatorResult(
     RecoverySnapshot Snapshot,
     RecoveryTransition Transition,
@@ -45,6 +67,7 @@ public sealed class ProfileCoordinator : IDisposable
     private readonly IRecoveryStateStore _store;
     private readonly IProcessDiscovery _discovery;
     private readonly IProcessLauncher _launcher;
+    private readonly IProcessStopper? _stopper;
     private readonly ILaunchGate _launchGate;
     private readonly IEventRecorder _recorder;
     private readonly IMonotonicClock _clock;
@@ -59,16 +82,18 @@ public sealed class ProfileCoordinator : IDisposable
     private bool _loggingDegraded;
     private string? _loggingError;
     private bool _storageEventEmitted;
+    private (Guid OperationId, string Identity)? _pendingForceChoice;
 
     private ProfileCoordinator(Guid profileId, IRecoveryStateStore store,
         IProcessDiscovery discovery, IProcessLauncher launcher,
         IMonotonicClock clock, RecoveryMachine machine, long revision,
-        ILaunchGate launchGate, IEventRecorder recorder)
+        ILaunchGate launchGate, IEventRecorder recorder, IProcessStopper? stopper)
     {
         _profileId = profileId;
         _store = store;
         _discovery = discovery;
         _launcher = launcher;
+        _stopper = stopper;
         _launchGate = launchGate;
         _recorder = recorder;
         _clock = clock;
@@ -79,25 +104,25 @@ public sealed class ProfileCoordinator : IDisposable
     public static ProfileCoordinator CreateNew(Guid profileId, RecoveryPolicy policy,
         IRecoveryStateStore store, IProcessDiscovery discovery, IProcessLauncher launcher,
         IMonotonicClock clock, ILaunchGate? launchGate = null,
-        IEventRecorder? recorder = null)
+        IEventRecorder? recorder = null, IProcessStopper? stopper = null)
     {
         var machine = new RecoveryMachine(policy);
         StoredRecoveryState initial = store.Create(profileId, machine.ExportCheckpoint());
         return new(profileId, store, discovery, launcher, clock, machine, initial.Revision,
             launchGate ?? UnboundedLaunchGate.Instance,
-            recorder ?? NullEventRecorder.Instance);
+            recorder ?? NullEventRecorder.Instance, stopper);
     }
 
     public static ProfileCoordinator OpenExisting(Guid profileId, RecoveryPolicy policy,
         IRecoveryStateStore store, IProcessDiscovery discovery, IProcessLauncher launcher,
         IMonotonicClock clock, ILaunchGate? launchGate = null,
-        IEventRecorder? recorder = null)
+        IEventRecorder? recorder = null, IProcessStopper? stopper = null)
     {
         StoredRecoveryState saved = store.Load(profileId);
         var machine = RecoveryMachine.Restore(policy, saved.Checkpoint);
         return new(profileId, store, discovery, launcher, clock, machine, saved.Revision,
             launchGate ?? UnboundedLaunchGate.Instance,
-            recorder ?? NullEventRecorder.Instance);
+            recorder ?? NullEventRecorder.Instance, stopper);
     }
 
     public RecoverySnapshot Snapshot => _machine.Snapshot;
@@ -240,6 +265,7 @@ public sealed class ProfileCoordinator : IDisposable
                 throw new InvalidOperationException("Enable protection before changing its pause state.");
             RecoverySnapshot previous = _machine.Snapshot;
             _machine.SetPaused(paused);
+            if (!paused) _pendingForceChoice = null;
             if (!Persist())
                 throw new RecoveryStateUnavailableException(_storageError ?? "State write failed.");
             Record(paused ? OperationalEventKind.ProtectionPaused :
@@ -247,6 +273,113 @@ public sealed class ProfileCoordinator : IDisposable
                 previous, _machine.Snapshot);
         }
         finally { _gate.Release(); }
+    }
+
+    public async Task<StopCommandResult> StopAndPauseAsync(TimeSpan gracefulTimeout,
+        CancellationToken cancellationToken = default)
+    {
+        if (_stopper is null)
+            throw new InvalidOperationException("This target has no verified stop adapter.");
+        if (gracefulTimeout <= TimeSpan.Zero || gracefulTimeout > TimeSpan.FromMinutes(5))
+            throw new ArgumentOutOfRangeException(nameof(gracefulTimeout));
+        cancellationToken.ThrowIfCancellationRequested();
+        CancellationTokenSource? pending;
+        lock (_launchSync)
+        {
+            _commandGeneration++;
+            pending = _launchCancellation;
+        }
+        try { pending?.Cancel(); }
+        catch (ObjectDisposedException) { }
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_storageDegraded)
+                throw new RecoveryStateUnavailableException(
+                    "Recovery state is degraded; protection cannot be paused safely.");
+            if (!_machine.Snapshot.Enabled)
+                throw new InvalidOperationException("Enable protection before stopping the target.");
+            RecoverySnapshot before = _machine.Snapshot;
+            if (!before.Paused)
+            {
+                _machine.SetPaused(true);
+                if (!Persist())
+                    throw new RecoveryStateUnavailableException(_storageError ?? "State write failed.");
+                Record(OperationalEventKind.ProtectionPaused, EventSeverity.Information,
+                    before, _machine.Snapshot);
+            }
+            Guid operationId = Guid.NewGuid();
+            string? selectedIdentity = _machine.Snapshot.TargetIdentity;
+            _pendingForceChoice = null;
+            Record(OperationalEventKind.ExplicitStopRequested, EventSeverity.Information,
+                before, _machine.Snapshot, operationId);
+            TargetStopResult stop;
+            if (selectedIdentity is null)
+            {
+                Detection found = await Discover(cancellationToken).ConfigureAwait(false);
+                stop = found.Kind == DetectionKind.Absent
+                    ? new(TargetStopOutcome.AlreadyAbsent)
+                    : new(TargetStopOutcome.Unavailable,
+                        "There is no previously verified selected instance to stop.");
+            }
+            else
+                stop = await _stopper.TryGracefulCloseAsync(selectedIdentity,
+                    gracefulTimeout, cancellationToken).ConfigureAwait(false);
+            if (stop.Outcome == TargetStopOutcome.NeedsForceChoice &&
+                selectedIdentity is not null)
+                _pendingForceChoice = (operationId, selectedIdentity);
+            RecordStopOutcome(stop, operationId);
+            return new(stop, operationId,
+                stop.Outcome == TargetStopOutcome.NeedsForceChoice ? selectedIdentity : null);
+        }
+        finally { _gate.Release(); }
+    }
+
+    public async Task<TargetStopResult> ForceClosePausedAsync(Guid operationId,
+        string selectedIdentity, CancellationToken cancellationToken = default)
+    {
+        if (_stopper is null)
+            throw new InvalidOperationException("This target has no verified stop adapter.");
+        if (operationId == Guid.Empty || string.IsNullOrWhiteSpace(selectedIdentity))
+            throw new ArgumentException("A selected stop operation is required.");
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_storageDegraded || !_machine.Snapshot.Enabled ||
+                !_machine.Snapshot.Paused ||
+                _pendingForceChoice is not { } choice ||
+                choice.OperationId != operationId ||
+                !string.Equals(choice.Identity, selectedIdentity,
+                    StringComparison.Ordinal) ||
+                !string.Equals(_machine.Snapshot.TargetIdentity, selectedIdentity,
+                    StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    "The selected paused target changed; force close was not attempted.");
+            _pendingForceChoice = null;
+            Record(OperationalEventKind.ExplicitForceCloseRequested,
+                EventSeverity.Warning, _machine.Snapshot, _machine.Snapshot, operationId);
+            TargetStopResult stop = await _stopper.ForceCloseAsync(selectedIdentity,
+                cancellationToken).ConfigureAwait(false);
+            RecordStopOutcome(stop, operationId);
+            return stop;
+        }
+        finally { _gate.Release(); }
+    }
+
+    private void RecordStopOutcome(TargetStopResult stop, Guid operationId)
+    {
+        OperationalEventKind kind = stop.Outcome switch
+        {
+            TargetStopOutcome.Stopped or TargetStopOutcome.AlreadyAbsent =>
+                OperationalEventKind.ExplicitStopCompleted,
+            TargetStopOutcome.NeedsForceChoice =>
+                OperationalEventKind.ExplicitStopNeedsForceChoice,
+            _ => OperationalEventKind.ExplicitStopUnresolved
+        };
+        Record(kind, kind == OperationalEventKind.ExplicitStopCompleted
+                ? EventSeverity.Information : EventSeverity.Warning,
+            _machine.Snapshot, _machine.Snapshot, operationId);
     }
 
     public async Task SetEnabledAsync(bool enabled,
@@ -271,6 +404,7 @@ public sealed class ProfileCoordinator : IDisposable
                 throw new RecoveryStateUnavailableException(
                     "Recovery state is degraded; enablement cannot be trusted.");
             if (_machine.Snapshot.Enabled == enabled) return;
+            if (!enabled) _pendingForceChoice = null;
             _machine.SetEnabled(enabled);
             if (!Persist())
                 throw new RecoveryStateUnavailableException(_storageError ?? "State write failed.");

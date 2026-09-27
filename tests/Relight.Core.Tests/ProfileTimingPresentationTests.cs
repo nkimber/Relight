@@ -123,6 +123,25 @@ public sealed class ProfileTimingPresentationTests
         Assert.Same(lockedRow, viewModel.ApplicationRows[0]);
     }
 
+    [Fact]
+    public void Stop_and_pause_requires_a_verified_current_instance()
+    {
+        var viewModel = new ShellViewModel(() => { }, () => { }, () => { }, () => { });
+        RecoverySnapshot snapshot = new RecoveryMachine(RecoveryPolicy.Default).Snapshot with
+        {
+            State = RecoveryState.Healthy,
+            TargetIdentity = "verified-instance"
+        };
+        HostedProfileStatus profile = Profile(snapshot);
+        viewModel.UpdateMonitoring(null, false, [profile], null, TimeSpan.Zero);
+        Assert.True(Assert.Single(viewModel.ApplicationRows).CanStopAndPause);
+
+        viewModel.UpdateMonitoring(null, false,
+            [profile with { Recovery = snapshot with { DetectionUnavailable = true } }],
+            null, TimeSpan.Zero);
+        Assert.False(Assert.Single(viewModel.ApplicationRows).CanStopAndPause);
+    }
+
     private static HostedProfileStatus Profile(RecoverySnapshot recovery) =>
         new(Guid.NewGuid(), "Disposable target", true, true, null, recovery, null,
             Policy: RecoveryPolicy.Default);

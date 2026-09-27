@@ -425,6 +425,72 @@ public sealed class RecoveryApplicationHostIntegrationTests
         }
     }
 
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Host_stop_and_pause_requires_force_choice_for_blocked_test_target()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-host-stop-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        string ready = Path.Combine(root, "target.ready");
+        string label = $"host-stop-{Guid.NewGuid():N}";
+        int? pid = null;
+        try
+        {
+            Guid id = Guid.NewGuid();
+            var policy = RecoveryPolicy.Default;
+            string[] arguments = ["--label", label, "--ready-file", ready,
+                "--exit-after-ms", "30000", "--block-close"];
+            var target = new ExecutableTarget(TestExecutable(), arguments,
+                RequiredArgument: label);
+            new ConfigurationStore(root).Initialize(new(
+                [new(id, "Blocked disposable target", true,
+                    new(TargetKind.Executable, target.CanonicalPath, [.. arguments],
+                        RequiredArgument: label), policy)], GlobalConfiguration.Default));
+            new RecoveryStateStore(root).Create(id,
+                new RecoveryMachine(policy).ExportCheckpoint());
+            await new ExecutableLauncher(target).LaunchAsync(Guid.NewGuid(),
+                CancellationToken.None);
+            pid = int.Parse((await WaitForFile(ready)).Split('|')[0]);
+
+            await using var host = await RecoveryApplicationHost.OpenAsync(root,
+                new FakeClock());
+            await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotNull(Assert.Single(host.GetProfiles()).Recovery?.TargetIdentity);
+
+            StopCommandResult result = await host.StopProfileAndPauseAsync(id,
+                TimeSpan.FromMilliseconds(300));
+            Assert.Equal(TargetStopOutcome.NeedsForceChoice, result.Stop.Outcome);
+            Assert.True(new RecoveryStateStore(root).Load(id).Checkpoint.Paused);
+            using (Process running = Process.GetProcessById(pid.Value))
+                Assert.False(running.HasExited);
+
+            TargetStopResult forced = await host.ForceClosePausedProfileAsync(id,
+                result.OperationId, result.SelectedIdentity!);
+            Assert.Equal(TargetStopOutcome.Stopped, forced.Outcome);
+            Assert.Equal(0, new RecoveryStateStore(root).Load(id)
+                .Checkpoint.ReservedAutomaticAttempts);
+            Assert.Equal(DetectionKind.Absent, (await new ExecutableDiscovery(target)
+                .DetectAsync(CancellationToken.None)).Kind);
+        }
+        finally
+        {
+            if (pid is not null)
+            {
+                try
+                {
+                    using Process process = Process.GetProcessById(pid.Value);
+                    if (!process.HasExited)
+                    {
+                        process.Kill();
+                        await process.WaitForExitAsync();
+                    }
+                }
+                catch (ArgumentException) { }
+            }
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static string TestExecutable()
     {
         string? root = AppContext.BaseDirectory;

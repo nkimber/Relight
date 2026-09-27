@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
+using Relight.Engine;
 using Relight.Storage;
 using Relight.ViewModels;
 
@@ -22,6 +23,8 @@ public partial class MainWindow : Window
     private readonly Action<Guid> _editProfile;
     private readonly Func<bool, Task> _setStartAtSignIn;
     private readonly Func<string, Task<DiagnosticBundleResult>> _exportDiagnostics;
+    private readonly Func<Guid, Task<StopCommandResult>> _stopAndPause;
+    private readonly Func<Guid, Guid, string, Task<TargetStopResult>> _forceClosePaused;
     private bool _changingStartAtSignIn;
 
     public MainWindow(Func<Guid, bool, Task> setPaused, Func<Guid, Task> resetRecovery,
@@ -32,7 +35,9 @@ public partial class MainWindow : Window
         Func<Guid, Task> removeProfile,
         Action<Guid> editProfile,
         Func<bool, Task> setStartAtSignIn,
-        Func<string, Task<DiagnosticBundleResult>> exportDiagnostics)
+        Func<string, Task<DiagnosticBundleResult>> exportDiagnostics,
+        Func<Guid, Task<StopCommandResult>> stopAndPause,
+        Func<Guid, Guid, string, Task<TargetStopResult>> forceClosePaused)
     {
         _setPaused = setPaused;
         _resetRecovery = resetRecovery;
@@ -43,6 +48,8 @@ public partial class MainWindow : Window
         _editProfile = editProfile;
         _setStartAtSignIn = setStartAtSignIn;
         _exportDiagnostics = exportDiagnostics;
+        _stopAndPause = stopAndPause;
+        _forceClosePaused = forceClosePaused;
         InitializeComponent();
     }
 
@@ -63,6 +70,56 @@ public partial class MainWindow : Window
         {
             button.Content = original;
             button.IsEnabled = row.CanStartNow;
+        }
+    }
+
+    private async void StopAndPauseClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: ApplicationStatusRow row } button) return;
+        if (MessageBox.Show(this,
+                $"Ask '{row.Name}' to close and pause its protection? Relight will leave its recovery budget unchanged. If it does not exit gracefully, you can choose whether to force close it.",
+                "Stop and pause?", MessageBoxButton.OKCancel,
+                MessageBoxImage.Warning, MessageBoxResult.Cancel) != MessageBoxResult.OK)
+            return;
+        button.IsEnabled = false;
+        button.Content = "Closing gracefully…";
+        try
+        {
+            StopCommandResult command = await _stopAndPause(row.Id);
+            TargetStopResult result = command.Stop;
+            if (result.Outcome == TargetStopOutcome.NeedsForceChoice)
+            {
+                if (command.SelectedIdentity is null)
+                    throw new InvalidOperationException("The selected instance is unavailable.");
+                bool force = MessageBox.Show(this,
+                    $"'{row.Name}' did not exit gracefully. Force closing can discard unsaved work. Protection remains paused if you choose No.\n\n{result.Reason}",
+                    "Force close this application?", MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes;
+                if (!force) return;
+                button.Content = "Verifying and force closing…";
+                result = await _forceClosePaused(row.Id, command.OperationId,
+                    command.SelectedIdentity);
+            }
+            string message = result.Outcome switch
+            {
+                TargetStopOutcome.Stopped => "The selected application closed. Protection is paused.",
+                TargetStopOutcome.AlreadyAbsent => "The selected application was already absent. Protection is paused.",
+                _ => $"Protection is paused, but the application was not closed. {result.Reason}"
+            };
+            MessageBox.Show(this, message, "Stop and pause", MessageBoxButton.OK,
+                result.Outcome is TargetStopOutcome.Stopped or TargetStopOutcome.AlreadyAbsent
+                    ? MessageBoxImage.Information : MessageBoxImage.Warning);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Stop and pause failed",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            button.Content = "Stop and pause";
+            button.IsEnabled = row.CanStopAndPause;
         }
     }
 
