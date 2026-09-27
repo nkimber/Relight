@@ -3,10 +3,15 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Relight.Core;
 
 namespace Relight.Storage;
 
 public sealed record DiagnosticBundleResult(int ExportedEvents, int SkippedMalformedLines);
+public sealed record DiagnosticTargetStatus(Guid ProfileId, TargetKind TargetKind,
+    bool Monitoring, bool AutomaticActionsAllowed, DetectionKind? Detection,
+    RecoveryState? RecoveryState, bool? DetectionUnavailable, bool? LockedOut,
+    bool HasProblem);
 
 /// <summary>
 /// Creates a local, bounded diagnostic bundle. Configuration arguments, working
@@ -20,7 +25,8 @@ public sealed class DiagnosticBundleExporter(string dataDirectory)
 
     public async Task<DiagnosticBundleResult> ExportAsync(string destination,
         StoredConfiguration? configuration, EventRecorderStatus? logging,
-        string applicationVersion, CancellationToken cancellationToken = default)
+        string applicationVersion, CancellationToken cancellationToken = default,
+        IReadOnlyList<DiagnosticTargetStatus>? targets = null)
     {
         if (string.IsNullOrWhiteSpace(destination))
             throw new ArgumentException("Choose an export destination.", nameof(destination));
@@ -81,6 +87,7 @@ public sealed class DiagnosticBundleExporter(string dataDirectory)
                             logging.Journal.BufferedCount,
                             logging.Journal.DroppedCount
                         },
+                        Targets = targets?.ToArray(),
                         Events = new
                         {
                             Exported = history.Events.Count,

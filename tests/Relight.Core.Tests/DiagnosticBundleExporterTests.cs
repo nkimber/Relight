@@ -26,7 +26,13 @@ public sealed class DiagnosticBundleExporterTests
         string destination = Path.Combine(exports.Path, "diagnostics.zip");
 
         DiagnosticBundleResult result = await new DiagnosticBundleExporter(data.Path)
-            .ExportAsync(destination, configuration, null, "1.2.3");
+            .ExportAsync(destination, configuration, null, "1.2.3",
+                targets: [new DiagnosticTargetStatus(profileId, TargetKind.Executable,
+                    Monitoring: true, AutomaticActionsAllowed: false,
+                    Detection: DetectionKind.Unavailable,
+                    RecoveryState: RecoveryState.AwaitingIntervention,
+                    DetectionUnavailable: true, LockedOut: true,
+                    HasProblem: true)]);
 
         Assert.Equal(1, result.ExportedEvents);
         Assert.Equal(0, result.SkippedMalformedLines);
@@ -35,6 +41,9 @@ public sealed class DiagnosticBundleExporterTests
         string events = await Read(bundle, "events.jsonl");
         Assert.Contains("1.2.3", metadata);
         Assert.Contains("Executable", metadata);
+        Assert.Contains("Unavailable", metadata);
+        Assert.Contains("AwaitingIntervention", metadata);
+        Assert.Contains("hasProblem", metadata);
         Assert.DoesNotContain("app.exe", metadata);
         Assert.Contains("TargetDisappeared", events);
         foreach (string secret in new[] { "folder-secret", "working-secret",

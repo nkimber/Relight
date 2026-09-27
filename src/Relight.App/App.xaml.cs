@@ -558,9 +558,16 @@ public partial class App : Application
         EventRecorderStatus? logging = host is null ? null :
             await host.GetLoggingStatusAsync(cancellationToken);
         StoredConfiguration? configuration = host?.Configuration;
+        DiagnosticTargetStatus[]? targets = host?.GetProfiles().Select(profile =>
+            new DiagnosticTargetStatus(profile.Id, profile.TargetKind,
+                profile.Monitoring, profile.AutomaticActionsAllowed,
+                profile.Detection?.Kind, profile.Recovery?.State,
+                profile.Recovery?.DetectionUnavailable, profile.Recovery?.LockedOut,
+                profile.Problem is not null)).ToArray();
         string version = typeof(App).Assembly.GetName().Version?.ToString() ?? "unknown";
         return await Task.Run(() => new DiagnosticBundleExporter(directory)
-            .ExportAsync(destination, configuration, logging, version, cancellationToken),
+            .ExportAsync(destination, configuration, logging, version,
+                cancellationToken, targets),
             cancellationToken);
     }
 
