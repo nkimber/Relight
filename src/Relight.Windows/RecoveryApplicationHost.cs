@@ -29,6 +29,8 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     private readonly RecoveryScheduler _scheduler;
     private readonly IMonotonicClock _clock;
     private readonly Dictionary<Guid, HostedProfileStatus> _statuses = new();
+    private readonly object _statusSync = new();
+    private readonly SemaphoreSlim _changes = new(1, 1);
     private bool _disposed;
 
     private RecoveryApplicationHost(string dataDirectory, IMonotonicClock clock)
@@ -177,8 +179,11 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         return new(profile.Id, profile.Name, true, false, detection, null, problem);
     }
 
-    public IReadOnlyList<HostedProfileStatus> GetProfiles() =>
-        _statuses.Values.Select(status =>
+    public IReadOnlyList<HostedProfileStatus> GetProfiles()
+    {
+        HostedProfileStatus[] statuses;
+        lock (_statusSync) statuses = _statuses.Values.ToArray();
+        return statuses.Select(status =>
         {
             (CoordinatorResult? Result, string? Error)? last = _scheduler.GetLast(status.Id);
             if (last is null)
@@ -194,6 +199,87 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 Problem = last.Value.Error ?? last.Value.Result?.Error ?? status.Problem
             };
         }).ToArray();
+    }
+
+    public static async Task<Detection> InspectExecutableAsync(string executablePath,
+        CancellationToken cancellationToken = default)
+    {
+        var target = new ExecutableTarget(executablePath, []);
+        target.Validate();
+        if (!File.Exists(target.CanonicalPath))
+            return Detection.Unavailable("The executable file does not exist.");
+        return await new ExecutableDiscovery(target).DetectAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Creates a new executable profile with a durable initial ledger before
+    /// publishing enabled configuration. A failed configuration save may leave
+    /// an unreferenced ledger; it is intentionally preserved rather than
+    /// risking reuse of its identity or a fresh budget.
+    /// </summary>
+    public async Task<Guid> RegisterExecutableAsync(string name, string executablePath,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(name) || name.Length > 100)
+            throw new ArgumentException("Choose a name of 1–100 characters.", nameof(name));
+        var target = new ExecutableTarget(executablePath, []);
+        target.Validate();
+        if (!File.Exists(target.CanonicalPath))
+            throw new FileNotFoundException("The executable file does not exist.", target.CanonicalPath);
+        var discovery = new ExecutableDiscovery(target);
+        Detection detected = await discovery.DetectAsync(cancellationToken).ConfigureAwait(false);
+        if (detected.Kind == DetectionKind.Unavailable)
+            throw new InvalidOperationException($"Target identity cannot be verified: {detected.Reason}");
+
+        await _changes.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(RecoveryApplicationHost));
+            StoredConfiguration current = Configuration ??
+                throw new ConfigurationUnavailableException("Configuration is unavailable.");
+            if (!current.AutomaticActionsAllowed)
+                throw new ConfigurationUnavailableException("Repair configuration before adding a profile.");
+
+            Guid id = Guid.NewGuid();
+            RecoveryPolicy policy = RecoveryPolicy.Default;
+            var profile = new ProfileConfiguration(id, name.Trim(), true,
+                new(TargetKind.Executable, target.CanonicalPath, []), policy);
+            var updated = current.Configuration with
+            {
+                Profiles = [.. current.Configuration.Profiles, profile]
+            };
+            // Validate overlaps and the on-disk revision before reserving a new
+            // profile ID. The final Save repeats both checks atomically.
+            ConfigurationStore.ValidateConfiguration(updated);
+            ProfileCoordinator coordinator = await Task.Run(() =>
+                ProfileCoordinator.CreateNew(id, policy, _stateStore, discovery,
+                    new ExecutableLauncher(target), _clock, _launchGate, _recorder),
+                CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                StoredConfiguration saved = await Task.Run(() =>
+                    _configurationStore.Save(current, updated), CancellationToken.None)
+                    .ConfigureAwait(false);
+                _scheduler.Add(id, coordinator, policy);
+                Configuration = saved;
+                lock (_statusSync)
+                    _statuses[id] = new(id, profile.Name, true, true, detected,
+                        coordinator.Snapshot, null);
+                _scheduler.RequestImmediate(id);
+                _recorder?.TryRecord(new(DateTimeOffset.UtcNow, Guid.NewGuid(),
+                    EventSeverity.Information, OperationalEventKind.ManualAction,
+                    ProfileId: id, ProfileName: profile.Name));
+                return id;
+            }
+            catch
+            {
+                coordinator.Dispose();
+                throw;
+            }
+        }
+        finally { _changes.Release(); }
+    }
 
     public IReadOnlyDictionary<Guid, Task> Pulse() => _scheduler.Pulse();
 
@@ -215,12 +301,19 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (_disposed) return;
-        _disposed = true;
+        await _changes.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_disposed) return;
+            _disposed = true;
+        }
+        finally { _changes.Release(); }
         _recorder?.TryRecord(new(DateTimeOffset.UtcNow, Guid.NewGuid(),
             EventSeverity.Information, OperationalEventKind.Shutdown));
         await _scheduler.DisposeAsync().ConfigureAwait(false);
         if (_recorder is not null) await _recorder.DisposeAsync().ConfigureAwait(false);
         _journal?.Dispose();
         _launchGate.Dispose();
+        _changes.Dispose();
     }
 }

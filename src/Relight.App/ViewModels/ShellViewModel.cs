@@ -20,13 +20,14 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     private string _monitoringBanner = "Loading monitoring configuration…";
     private string _footerStatus = "Relight is in the tray · Loading monitoring status";
 
-    public ShellViewModel(Action hide, Action exit)
+    public ShellViewModel(Action hide, Action exit, Action add)
     {
         ApplicationsCommand = new RelayCommand(() => Navigate(ShellPage.Applications));
         HistoryCommand = new RelayCommand(() => Navigate(ShellPage.History));
         SettingsCommand = new RelayCommand(() => Navigate(ShellPage.Settings));
         HideCommand = new RelayCommand(hide);
         ExitCommand = new RelayCommand(exit);
+        AddCommand = new RelayCommand(add);
     }
 
     public ICommand ApplicationsCommand { get; }
@@ -34,6 +35,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     public ICommand SettingsCommand { get; }
     public ICommand HideCommand { get; }
     public ICommand ExitCommand { get; }
+    public ICommand AddCommand { get; }
     public IReadOnlyList<ApplicationStatusRow> ApplicationRows => _applicationRows;
     public bool HasApplications => _applicationRows.Count > 0;
     public bool HasNoApplications => !HasApplications;

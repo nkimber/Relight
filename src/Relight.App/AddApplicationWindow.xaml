@@ -1,0 +1,46 @@
+<Window x:Class="Relight.AddApplicationWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Add executable application · Relight" Width="620" Height="510"
+        MinWidth="520" MinHeight="470" WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False" UseLayoutRounding="True" Closing="WindowClosing">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <TextBlock Text="Add an executable" FontSize="24" FontWeight="SemiBold" />
+        <TextBlock Grid.Row="1" Margin="0,8,0,20" Style="{StaticResource Muted}"
+                   Text="Choose the actual application executable. Relight will verify its running identity before protection starts." />
+        <StackPanel Grid.Row="2" Margin="0,0,0,16">
+            <TextBlock Text="Application name" FontWeight="SemiBold" Margin="0,0,0,6" />
+            <TextBox x:Name="NameInput" MinHeight="32" MaxLength="100" TextChanged="NameChanged"
+                     AutomationProperties.Name="Application name" />
+        </StackPanel>
+        <StackPanel Grid.Row="3">
+            <TextBlock Text="Executable file" FontWeight="SemiBold" Margin="0,0,0,6" />
+            <DockPanel>
+                <Button x:Name="BrowseButton" DockPanel.Dock="Right" Content="Browse…" Click="BrowseClick" Margin="8,0,0,0" />
+                <TextBox x:Name="PathInput" MinHeight="32" TextChanged="PathChanged"
+                         AutomationProperties.Name="Executable file path" />
+            </DockPanel>
+            <Button x:Name="DetectButton" Content="Detect now" Click="DetectClick"
+                    HorizontalAlignment="Left" Margin="0,12,0,0" />
+        </StackPanel>
+        <StackPanel Grid.Row="4" Margin="0,18,0,12">
+            <TextBlock x:Name="DetectionText" Text="Select a file, then choose Detect now."
+                       TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+            <TextBlock Margin="0,16,0,0" Style="{StaticResource Muted}"
+                       Text="Protection waits for your first launch if the app is not running. Automatic recovery uses the documented defaults. Adding it will not close or start the app." />
+        </StackPanel>
+        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="CancelButton" Content="Cancel" IsCancel="True" Margin="0,0,10,0" />
+            <Button x:Name="AddButton" Content="Add and protect" IsEnabled="False"
+                    Click="AddClick" IsDefault="True" />
+        </StackPanel>
+    </Grid>
+</Window>

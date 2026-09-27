@@ -18,7 +18,7 @@ public sealed record ExecutableTarget(
     {
         if (string.IsNullOrWhiteSpace(ExecutablePath))
             throw new ArgumentException("Executable path is required.");
-        if (!Path.IsPathFullyQualified(CanonicalPath) ||
+        if (!Path.IsPathFullyQualified(Environment.ExpandEnvironmentVariables(ExecutablePath)) ||
             !string.Equals(Path.GetExtension(CanonicalPath), ".exe", StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("A fully qualified executable path is required.");
         if (Arguments is null || Arguments.Any(value => value is null || value.Contains('\0')))

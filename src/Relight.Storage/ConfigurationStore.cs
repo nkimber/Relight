@@ -89,6 +89,9 @@ public sealed class ConfigurationStore
         return new(1, Hash(bytes), configuration, false, null);
     }
 
+    public static void ValidateConfiguration(RelightConfiguration configuration) =>
+        Validate(configuration);
+
     public StoredConfiguration Load()
     {
         using FileStream guard = Lock();

@@ -11,6 +11,71 @@ public sealed class RecoveryApplicationHostIntegrationTests
 {
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Registration_creates_ledger_before_enabling_and_rejects_overlap()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-register-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            await using (var host = await RecoveryApplicationHost.OpenAsync(root, new FakeClock()))
+            {
+                string executable = TestExecutable();
+                Detection detection = await RecoveryApplicationHost.InspectExecutableAsync(executable);
+                Assert.NotEqual(DetectionKind.Unavailable, detection.Kind);
+                Guid id = await host.RegisterExecutableAsync("Disposable target", executable);
+
+                ProfileConfiguration saved = Assert.Single(
+                    new ConfigurationStore(root).Load().Configuration.Profiles);
+                Assert.Equal(id, saved.Id);
+                Assert.True(saved.Enabled);
+                Assert.False(saved.Policy.StartAutomaticallyWhenInitiallyAbsent);
+                Assert.Equal(0, new RecoveryStateStore(root).Load(id)
+                    .Checkpoint.ReservedAutomaticAttempts);
+                Assert.True(Assert.Single(host.GetProfiles()).AutomaticActionsAllowed);
+                await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.Equal(RecoveryState.WaitingForFirstStart,
+                    Assert.Single(host.GetProfiles()).Recovery?.State);
+                await Assert.ThrowsAsync<ArgumentException>(() =>
+                    host.RegisterExecutableAsync("Duplicate", executable));
+            }
+
+            await using var reopened = await RecoveryApplicationHost.OpenAsync(root, new FakeClock());
+            Assert.True(Assert.Single(reopened.GetProfiles()).AutomaticActionsAllowed);
+            Assert.Single(new ConfigurationStore(root).Load().Configuration.Profiles);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Stale_configuration_does_not_publish_new_profile_or_refund_its_ledger()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-register-stale-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            await using var host = await RecoveryApplicationHost.OpenAsync(root, new FakeClock());
+            var store = new ConfigurationStore(root);
+            StoredConfiguration current = store.Load();
+            store.Save(current, current.Configuration);
+
+            await Assert.ThrowsAsync<StaleConfigurationException>(() =>
+                host.RegisterExecutableAsync("Disposable target", TestExecutable()));
+            Assert.Empty(host.GetProfiles());
+            Assert.Empty(store.Load().Configuration.Profiles);
+            Assert.Single(Directory.GetFiles(Path.Combine(root, "State"), "*.json"));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Host_recovers_disposable_target_and_leaves_it_running_on_exit()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-host-{Guid.NewGuid():N}");

@@ -4,7 +4,7 @@ A Windows tray application that will watch selected desktop apps and bring them 
 
 [Public repository](https://github.com/nkimber/Relight)
 
-**Current status: WPF development preview (0.1.0) with an executable recovery host.** The resident shell now starts the host and shows live status for existing configured profiles. The host can monitor and recover a validated executable profile when its durable recovery state is available. Application registration, packaged-app activation, profile controls, notifications and sign-in startup are still in development; this is not ready for unattended protection of a valuable job.
+**Current status: WPF development preview (0.1.0) with executable recovery.** The resident shell starts the host and shows live profile status. You can browse for an executable, verify whether it is already running, and add it with a durable recovery ledger. The default waits for the first user launch when the target is absent. Packaged-app activation, advanced profile editing, manual controls, notifications and sign-in startup are still in development; this is not ready for unattended protection of a valuable job.
 
 ## Build and run
 
@@ -21,10 +21,11 @@ Or run `src\Relight.App\bin\Release\net10.0-windows\Relight.exe` after building.
 ## Use the preview
 
 - Navigate Applications, History and Settings, or press **Ctrl+1**, **Ctrl+2** and **Ctrl+3**.
+- Choose **Add application**, browse to the actual `.exe`, select **Detect now**, then **Add and protect**. A running match is adopted for observation; an absent target waits for your first launch. Adding does not start or close the target. Duplicate enabled identities are rejected.
 - Close the dashboard or press **Ctrl+W** to hide it and keep Relight resident.
 - Double-click the flame in the notification area, choose **Open dashboard** from its menu, or launch Relight again to return to the existing instance. Windows may place the icon in its tray overflow.
 - Choose **Exit Relight** or press **Ctrl+Q** to quit. The confirmation defaults to Cancel. Other applications stay running.
-- The Applications page shows configured profiles and monitoring status. Unimplemented controls are disabled and labeled. First run creates empty local configuration; the host records structured operational events under `%LOCALAPPDATA%\Relight\Logs`. It does not register sign-in startup.
+- The Applications page shows configured profiles and monitoring status. Unimplemented controls are disabled and labeled. First run creates empty local configuration; profile state is stored separately under `%LOCALAPPDATA%\Relight\State`, and operational events under `Logs`. It does not register sign-in startup.
 
 ## Verify
 
@@ -59,6 +60,6 @@ This is a development preview, not the production release or overnight pilot des
 | `docs` | Requirements, delivery plan, architecture and verification evidence |
 | `AGENTS.md` | Engineering and recovery rules for contributors/agents |
 
-Start with [the docs index](docs/index.md) and [development plan](docs/development-plan.md). Recovery policy remains independent of WPF. The dashboard displays host snapshots but does not yet expose profile setup or commands.
+Start with [the docs index](docs/index.md) and [development plan](docs/development-plan.md). Recovery policy remains independent of WPF. The dashboard displays host snapshots and supports basic executable registration; policy editing and recovery commands are still pending.
 
 The flame artwork is original to this repository. WPF and Windows Forms are provided by the Microsoft .NET Windows Desktop framework; no Resurrector code or assets are copied into the shell.

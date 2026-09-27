@@ -11,13 +11,13 @@ internal sealed class TrayService : IDisposable
     private readonly Forms.ContextMenuStrip _menu;
     private readonly Icon _image;
 
-    public TrayService(Action open, Action history, Action exit)
+    public TrayService(Action open, Action add, Action history, Action exit)
     {
         using var resource = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/Relight.ico"))!.Stream;
         _image = new Icon(resource);
         _menu = new Forms.ContextMenuStrip();
         _menu.Items.Add("Open dashboard", null, (_, _) => open());
-        _menu.Items.Add(Unavailable("Add application"));
+        _menu.Items.Add("Add application", null, (_, _) => add());
         _menu.Items.Add(new Forms.ToolStripSeparator());
         _menu.Items.Add(Unavailable("Pause all"));
         _menu.Items.Add(Unavailable("Resume all"));

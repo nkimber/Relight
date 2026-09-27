@@ -1,6 +1,6 @@
 # Initial architecture decisions
 
-**Status:** WPF shell starts the executable recovery host; product controls and target integration remain open.  
+**Status:** WPF shell starts the executable recovery host and supports basic executable registration; target integration and remaining controls are open.  
 **Decision date:** 27 September 2026
 
 ## Platform and toolchain
@@ -13,7 +13,9 @@ The solution uses the SDK's `.slnx` format, nullable analysis, deterministic bui
 
 `Relight.App` is the single executable. `App` is the composition root and owns the dashboard, tray service and singleton. `ShutdownMode.OnExplicitShutdown` separates process lifetime from window visibility. Closing the dashboard cancels window close and hides the retained window. Explicit exit shows an informational confirmation, then disposes the tray and singleton resources.
 
-`ShellViewModel` owns page selection, navigation commands and presentation of host snapshots. It contains no process discovery or recovery policy. `App` starts `RecoveryApplicationHost` off the dispatcher after claiming the session singleton, refreshes status through a dispatcher timer, and cancels and awaits monitoring on explicit exit. Closing the dashboard only hides it. The host creates empty configuration on a genuine first run and records operational events; the UI cannot yet create/edit profiles or browse history. No startup-registration changes are made.
+`ShellViewModel` owns page selection, navigation commands and presentation of host snapshots. It contains no process discovery or recovery policy. `App` starts `RecoveryApplicationHost` off the dispatcher after claiming the session singleton, refreshes status through a dispatcher timer, and cancels and awaits monitoring on explicit exit. Closing the dashboard only hides it. The host creates empty configuration on a genuine first run and records operational events. The Add dialog delegates executable inspection and registration to the host; it cannot yet edit policy or browse history. No startup-registration changes are made.
+
+For a new executable profile, the host validates its canonical path and current-session discovery, then creates the initial durable recovery state before saving enabled configuration with a revision check. It adds the coordinator to the live scheduler only after configuration commits. A failed save can leave an unreferenced state file, deliberately preserved rather than reused as a fresh budget. The default waits for the first user launch if no target is present.
 
 `--shell-test` bypasses the host solely for the destructive process-level shell smoke check. Normal launches, including `--tray`, start monitoring. The smoke check uses this mode so its forced process interruption cannot affect a configured target.
 
@@ -27,7 +29,7 @@ The solution uses the SDK's `.slnx` format, nullable analysis, deterministic bui
 
 ## Boundaries for subsequent work
 
-The domain, coordination, Windows adapters and storage components are separate projects. `RecoveryApplicationHost` composes executable profiles from existing configuration and state; it does not create a new budget for an existing profile. Recovery policy remains independent of `Relight.App`, WPF and tray callbacks. The host still needs session-scoped state coordination, packaged-app support and UI commands.
+The domain, coordination, Windows adapters and storage components are separate projects. `RecoveryApplicationHost` composes executable profiles from existing configuration and state; it does not create a new budget for an existing profile. Recovery policy remains independent of `Relight.App`, WPF and tray callbacks. The host still needs session-scoped state coordination, packaged-app support and most UI commands.
 
 The shell singleton only prevents duplicate UI processes within a user session. It does **not** implement shared configuration coordination, persisted lockout across sign-ins, target-process identity or a durable attempt ledger. Those decisions and implementations remain M0–M3 work.
 

@@ -1,6 +1,6 @@
 # Relight — Product Requirements Document
 
-**Status:** Draft requirements; initial WPF/tray shell implemented, recovery engine not yet implemented  
+**Status:** Draft requirements; WPF/tray shell and executable recovery foundation implemented, acceptance incomplete  
 **Date:** 27 September 2026  
 **Product name:** Relight (confirmed)  
 **Platform:** Windows desktop; C# implementation  

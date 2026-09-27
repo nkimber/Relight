@@ -10,6 +10,13 @@ namespace Relight.Core.Tests;
 public sealed class ExecutableAdapterTests
 {
     [Fact]
+    public void Executable_identity_rejects_relative_paths()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            new ExecutableTarget(@"tools\app.exe", []).Validate());
+    }
+
+    [Fact]
     [Trait("Category", "WindowsDesktop")]
     public async Task Coordinator_recovers_real_test_target_and_leaves_it_alive_on_dispose()
     {
