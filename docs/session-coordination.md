@@ -1,0 +1,40 @@
+# Session and recovery-budget coordination design
+
+**Status:** Design for M0/M2; not implemented or validated.  
+**Requirements:** [PRD Section 10](PRD.md#10-persistence-and-data-model), [AGENTS.md](../AGENTS.md), [development plan M2](development-plan.md#m2--make-configuration-and-recovery-state-durable).
+
+Relight currently stores one revision-checked recovery snapshot per profile under `State`. A file lock serializes each read/replace, and a stale revision stops a second writer. This prevents two simultaneous commits from both succeeding, but it does not give each signed-in Windows session its own observation state. A second session can restore a snapshot based on another session's process, then fail later with a stale revision. The current implementation is therefore a safety foundation, not fulfillment of the multi-session requirement.
+
+## Ownership and records
+
+- Identify a live session by the current user's SID plus the Windows logon SID and session ID. The logon SID distinguishes a new sign-in that reuses a numeric session ID. Verify that this identity remains stable across a Relight restart within the same sign-in before using it as a storage key.
+- Retain one revision-checked shared configuration. Every edit uses the revision and content hash; a stale edit reloads and asks the user to apply it again. The active hosts must reconcile added, removed, enabled and edited profiles after another session commits a new revision. A host that cannot reconcile must suspend affected automatic actions.
+- Introduce one **shared per-profile budget ledger** as the authority for episode ID, reserved automatic attempts, limit-independent lockout, manual reset, pending dispatch and revision. Only this ledger can authorize an automatic dispatch. It must be valid before a session starts recovery; missing/corrupt shared state for an existing profile suspends launches.
+- Introduce **per-logon-session live state** for target instance, observation provenance, pause/armed state, monitoring gaps and monotonic deadlines. It never authorizes an attempt from its own counter. A new sign-in begins with fresh discovery and observation while importing the shared budget/lockout. A Relight restart in the same sign-in restores conservatively and starts new monotonic deadlines.
+- Keep process identity tagged with its source logon session. An instance from another session is never adopted, closed or used to earn stability in this one. Persisted PID/start time is diagnostic only, never authority for termination.
+
+## Automatic dispatch transaction
+
+1. Serialize this profile in the local coordinator, acquire the global launch gate, and discover the current session again. Unknown or ambiguous detection stops here.
+2. Under an exclusive per-profile cross-session ledger lock, reload and validate the shared ledger. Check lockout and the exact cap against its current revision. A stale local view must rebase or suspend; it cannot dispatch using its earlier count.
+3. Reserve the next attempt and operation ID in the shared ledger with a durable flush and atomic replacement. Do not dispatch if that commit fails. A crash after this point consumes the attempt, even if no launch call was made.
+4. Recheck current-session absence immediately before dispatch. If the target appeared after reservation, adopt it and retain the charged attempt; record that the dispatch was averted. If detection became unknown, retain the charge and suspend. This ordering favors a possible charged non-dispatch over an unaccounted launch.
+5. Dispatch once, then write session observation status. A dispatch error still consumes the reservation; an uncertain result holds the outstanding operation until a full appearance timeout and reconciliation. A later host never refunds a pending reservation merely because its session checkpoint is absent.
+
+Explicit Start now uses its own durable pending-operation marker and the same fresh-discovery/global launch gate, but does not increment the automatic count. Reset recovery is an explicit ledger transaction. Stable observation may clear the shared budget only after qualifying uninterrupted verification in the current session and under the same ledger lock. A session that was already healthy before another session's lockout must not clear that lockout from stale local observation; it must begin a new qualification against the current episode/revision. Increasing the configured limit alone never clears lockout.
+
+## Migration and failure handling
+
+The existing `State/<profile>.json` is a schema-1 mixed snapshot. Migration must preserve that original file and its backup as evidence. The first upgraded host takes the exclusive profile lock, validates the old checksum/revision, creates the shared ledger with at least the old reserved count and lockout, then creates a fresh session checkpoint. It records a migration marker only after both new records are durable. If interrupted, subsequent hosts must detect partial migration and suspend automatic dispatch pending a documented repair path; they must never initialize a zero budget. A migration from a damaged old file is not automatic.
+
+Cross-file updates cannot be one atomic filesystem replacement. The shared ledger is written first at every budget or dispatch boundary; a session file may lag and must be reconstructed from the ledger. During rollout, hosts that use the old schema and hosts that use the new schema must not write concurrently. A versioned ownership gate should reject the old writer once migration begins.
+
+## Evidence required before enabling multi-session recovery
+
+- Two real concurrently signed-in interactive sessions on Windows, with one target instance in each. Show each host sees only its own target and never terminates the other's process.
+- Competing automatic launch attempts at the final available count. Exactly one reservation succeeds; neither session can dispatch beyond the shared cap. Inject crashes before reservation, after reservation and before dispatch.
+- Lockout in session A, sign-in to B, pause/resume and policy-limit edits in both, then Relight restart. The lockout persists until explicit reset or a newly qualified stable observation under the rearm rule.
+- Configuration edits in both sessions. Demonstrate stale revision rejection and live reconciliation or a visible suspended state.
+- Session ID reuse, logoff, sleep/unlock, clock changes and unavailable/corrupt ledger files. No gap or wall-clock change grants observation time or extra attempts.
+
+Until that evidence exists, M2, AT-11/AT-14/AT-15 and M8 cross-session acceptance remain open. This design does not claim that the present shared snapshot implementation meets them.

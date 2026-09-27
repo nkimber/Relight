@@ -15,7 +15,7 @@ This plan expands PRD Section 14 without changing Version 1 scope. Proposed defa
 |---|---|---|---|---|
 | M0 | Actual target can be identified and activated in a controlled spike | — | In progress: toolchain and both installed package identities recorded; chosen-target activation pending | 0: target validation |
 | M1 | Deterministic recovery model and controllable test application | M0 | In progress: model and controllable test target implemented; full exit coverage pending | 1: recovery engine |
-| M2 | Trustworthy state persistence and restart reconstruction | M1 | In progress: runtime state and configuration stores, coordinator event recording, bounded journal and last-good repair; session coordination and no-backup repair path pending | 1: recovery engine |
+| M2 | Trustworthy state persistence and restart reconstruction | M1 | In progress: runtime state and configuration stores, coordinator event recording, bounded journal and last-good repair; session protocol designed but not implemented, no-backup repair path pending | 1: recovery engine |
 | M3 | Working executable recovery loop with exact attempt limits | M2 | In progress: coordinator, scheduler, launch gate, executable host and durable Start now/pause/reset commands tested; full acceptance pending | 1: recovery engine |
 | M4 | Production target adapter handles real application identity | M3 | Not started | 1 / 2: engine and integration |
 | M5 | Resident WPF tray shell displays live protection status | M3 | In progress: live host status/countdowns, event-backed last-outage/stable-auto-recovery fields, dashboard status filters/sorts, prioritized tray tooltip/icon, current-user sign-in and independent pause/resume-all controls; full acceptance pending | 2: native tray application |
@@ -29,6 +29,8 @@ The default execution order is the table order. M5 may follow M3 while target-ad
 **Authorized initial slice:** The user requested building through the first shell and publishing its GitHub repository. Solution scaffolding and the basic WPF/tray shell were therefore brought forward. See [the shell checkpoint](shell-checkpoint.md) for delivered behavior and verification, and [architecture decisions](architecture.md) for the selected foundation. This does not waive target-validation, engine or full M5 exit criteria.
 
 **Recovery foundation in progress:** See [engine checkpoint](engine-checkpoint.md) for the model, stores, coordinator, scheduler and executable host, and [installed target findings](target-findings.md) for the two distinct packaged apps found on this machine. Neither document establishes that M0–M3 exit gates have passed.
+
+The [session-coordination design](session-coordination.md) describes the remaining M0/M2 cross-sign-in protocol and its validation gate. It is not an implementation claim.
 
 For each milestone, record status, delivered changes, acceptance evidence and unresolved issues here or in a linked result document. Use Not started, In progress, Blocked or Complete. A completed milestone needs its exit criteria met; a prototype or passing subset is not a release claim. Add newly created evidence/design documents to [index.md](index.md).
 
