@@ -13,7 +13,7 @@ This plan expands PRD Section 14 without changing Version 1 scope. Proposed defa
 
 | Milestone | Demonstrable outcome | Depends on | Status | PRD delivery phase |
 |---|---|---|---|---|
-| M0 | Actual target can be identified and activated in a controlled spike | — | In progress: toolchain and both installed package identities recorded; chosen-target activation pending | 0: target validation |
+| M0 | Actual target can be identified and activated in a controlled spike | — | In progress: toolchain and both installed package identities recorded; read-only package-family process probe verified, chosen-target activation pending | 0: target validation |
 | M1 | Deterministic recovery model and controllable test application | M0 | In progress: model and controllable test target implemented; full exit coverage pending | 1: recovery engine |
 | M2 | Trustworthy state persistence and restart reconstruction | M1 | In progress: runtime state and configuration stores, coordinator event recording, bounded journal and last-good repair; session protocol designed but not implemented, no-backup repair path pending | 1: recovery engine |
 | M3 | Working executable recovery loop with exact attempt limits | M2 | In progress: coordinator, scheduler, launch gate, executable host and durable Start now/pause/reset commands tested; full acceptance pending | 1: recovery engine |
