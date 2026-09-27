@@ -71,6 +71,17 @@
                                         <TextBlock Text="{Binding ApplicationCountText}" Style="{StaticResource Muted}" Margin="0,4,0,0" />
                                     </StackPanel>
                                 </DockPanel>
+                                <WrapPanel Margin="0,0,0,16"
+                                           Visibility="{Binding HasApplications, Converter={StaticResource VisibleWhenTrue}}">
+                                    <ComboBox ItemsSource="{Binding ApplicationFilters}"
+                                              SelectedItem="{Binding SelectedApplicationFilter}"
+                                              DisplayMemberPath="Label" Width="190" Margin="0,0,12,0"
+                                              AutomationProperties.Name="Filter applications by status" />
+                                    <ComboBox ItemsSource="{Binding ApplicationSorts}"
+                                              SelectedItem="{Binding SelectedApplicationSort}"
+                                              DisplayMemberPath="Label" Width="165"
+                                              AutomationProperties.Name="Sort applications" />
+                                </WrapPanel>
                                 <Border BorderBrush="{DynamicResource LineBrush}" BorderThickness="0,1,0,0" />
                                 <StackPanel HorizontalAlignment="Center" MaxWidth="430" Margin="16,42,16,42"
                                             Visibility="{Binding HasNoApplications, Converter={StaticResource VisibleWhenTrue}}">
@@ -79,6 +90,9 @@
                                     <TextBlock Text="Add an executable application to begin. Installed-app selection and advanced settings are still in development."
                                                Style="{StaticResource Muted}" TextAlignment="Center" Margin="0,12,0,0" />
                                 </StackPanel>
+                                <TextBlock Text="No applications match this filter."
+                                           Style="{StaticResource Muted}" Margin="8,22,8,12"
+                                           Visibility="{Binding HasNoVisibleApplications, Converter={StaticResource VisibleWhenTrue}}" />
                                 <ItemsControl ItemsSource="{Binding ApplicationRows}"
                                               Visibility="{Binding HasApplications, Converter={StaticResource VisibleWhenTrue}}">
                                     <ItemsControl.ItemTemplate>

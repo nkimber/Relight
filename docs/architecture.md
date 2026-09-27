@@ -19,7 +19,7 @@ For a new executable profile, the host validates its canonical path and current-
 
 `--shell-test` bypasses the host solely for the destructive process-level shell smoke check. Normal launches, including `--tray`, start monitoring. The smoke check uses this mode so its forced process interruption cannot affect a configured target.
 
-Dashboard rows display attempt accounting, an in-session verified-instance summary and monotonic countdowns for retry eligibility, appearance timeout and stability qualification. The wording leaves discovery/confirmation as a separate step and marks overdue observation as unverified. Rows update in place under the dispatcher so one-second countdown updates do not replace focused controls. Last-outage and last-success timestamps still need durable event-backed presentation.
+Dashboard rows display attempt accounting, an in-session verified-instance summary and monotonic countdowns for retry eligibility, appearance timeout and stability qualification. The wording leaves discovery/confirmation as a separate step and marks overdue observation as unverified. Rows update in place under the dispatcher so one-second countdown updates do not replace focused controls. The Applications view filters by live status and sorts by name, priority or attempt count without changing the underlying profile list or History choices. Last-outage and last-success timestamps still need durable event-backed presentation.
 
 ## Windows integration
 

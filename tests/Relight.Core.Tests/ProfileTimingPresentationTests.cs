@@ -78,6 +78,51 @@ public sealed class ProfileTimingPresentationTests
         Assert.True(changes > 0);
     }
 
+    [Fact]
+    public void Dashboard_filters_and_sorts_by_live_status_without_losing_profile_rows()
+    {
+        var viewModel = new ShellViewModel(() => { }, () => { }, () => { }, () => { });
+        RecoverySnapshot initial = new RecoveryMachine(RecoveryPolicy.Default).Snapshot;
+        HostedProfileStatus healthy = Profile(initial with
+        {
+            State = RecoveryState.Healthy,
+            ReservedAutomaticAttempts = 1
+        }) with { Name = "Zulu" };
+        HostedProfileStatus locked = Profile(initial with
+        {
+            State = RecoveryState.AwaitingIntervention,
+            LockedOut = true,
+            ReservedAutomaticAttempts = 3
+        }) with { Name = "Alpha" };
+        HostedProfileStatus paused = Profile(initial with
+        {
+            State = RecoveryState.Healthy,
+            Paused = true
+        }) with { Name = "Mike" };
+        viewModel.UpdateMonitoring(null, false, [healthy, locked, paused], null,
+            TimeSpan.Zero);
+        Assert.Equal(["Alpha", "Mike", "Zulu"],
+            viewModel.ApplicationRows.Select(row => row.Name));
+
+        viewModel.SelectedApplicationFilter = viewModel.ApplicationFilters.Single(option =>
+            option.Category == ApplicationStatusCategory.Attention);
+        ApplicationStatusRow lockedRow = Assert.Single(viewModel.ApplicationRows);
+        Assert.Equal("Alpha", lockedRow.Name);
+        Assert.Equal("1 shown of 3 configured", viewModel.ApplicationCountText);
+
+        viewModel.SelectedApplicationFilter = viewModel.ApplicationFilters.Single(option =>
+            option.Category == ApplicationStatusCategory.Recovering);
+        Assert.Empty(viewModel.ApplicationRows);
+        Assert.True(viewModel.HasNoVisibleApplications);
+
+        viewModel.SelectedApplicationFilter = viewModel.ApplicationFilters[0];
+        viewModel.SelectedApplicationSort = viewModel.ApplicationSorts.Single(option =>
+            option.Mode == ApplicationSortMode.Attempts);
+        Assert.Equal(["Alpha", "Zulu", "Mike"],
+            viewModel.ApplicationRows.Select(row => row.Name));
+        Assert.Same(lockedRow, viewModel.ApplicationRows[0]);
+    }
+
     private static HostedProfileStatus Profile(RecoverySnapshot recovery) =>
         new(Guid.NewGuid(), "Disposable target", true, true, null, recovery, null,
             Policy: RecoveryPolicy.Default);

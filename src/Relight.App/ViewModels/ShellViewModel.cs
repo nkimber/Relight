@@ -10,11 +10,16 @@ using Relight.Windows;
 namespace Relight.ViewModels;
 
 internal enum ShellPage { Applications, History, Settings }
+internal enum ApplicationStatusCategory { Attention, Recovering, Protected, PausedOrDisabled }
+internal enum ApplicationSortMode { Name, Status, Attempts }
+internal sealed record ApplicationFilterOption(string Label, ApplicationStatusCategory? Category);
+internal sealed record ApplicationSortOption(string Label, ApplicationSortMode Mode);
 
 internal sealed class ApplicationStatusRow(
     Guid id, string name, string state, string detail,
     bool isPaused, bool canPauseResume, bool canReset, bool canStartNow,
     bool configuredEnabled, bool canToggleEnabled, bool canRemove, bool canEdit,
+    ApplicationStatusCategory category, int reservedAttempts,
     ProfileTimingPresentation timing) : INotifyPropertyChanged
 {
     public Guid Id { get; } = id;
@@ -29,6 +34,8 @@ internal sealed class ApplicationStatusRow(
     public bool CanToggleEnabled { get; private set; } = canToggleEnabled;
     public bool CanRemove { get; private set; } = canRemove;
     public bool CanEdit { get; private set; } = canEdit;
+    public ApplicationStatusCategory Category { get; private set; } = category;
+    public int ReservedAttempts { get; private set; } = reservedAttempts;
     public string NextAction { get; private set; } = timing.NextAction;
     public string LastSeen { get; private set; } = timing.LastSeen;
     public string Attempts { get; private set; } = timing.Attempts;
@@ -45,7 +52,8 @@ internal sealed class ApplicationStatusRow(
             CanReset != next.CanReset || CanStartNow != next.CanStartNow ||
             ConfiguredEnabled != next.ConfiguredEnabled ||
             CanToggleEnabled != next.CanToggleEnabled || CanRemove != next.CanRemove ||
-            CanEdit != next.CanEdit || NextAction != next.NextAction ||
+            CanEdit != next.CanEdit || Category != next.Category ||
+            ReservedAttempts != next.ReservedAttempts || NextAction != next.NextAction ||
             LastSeen != next.LastSeen || Attempts != next.Attempts ||
             Instance != next.Instance;
         if (!changed) return false;
@@ -60,6 +68,8 @@ internal sealed class ApplicationStatusRow(
         CanToggleEnabled = next.CanToggleEnabled;
         CanRemove = next.CanRemove;
         CanEdit = next.CanEdit;
+        Category = next.Category;
+        ReservedAttempts = next.ReservedAttempts;
         NextAction = next.NextAction;
         LastSeen = next.LastSeen;
         Attempts = next.Attempts;
@@ -82,6 +92,9 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
 {
     private ShellPage _page;
     private IReadOnlyList<ApplicationStatusRow> _applicationRows = [];
+    private IReadOnlyList<ApplicationStatusRow> _visibleApplicationRows = [];
+    private ApplicationFilterOption _selectedApplicationFilter;
+    private ApplicationSortOption _selectedApplicationSort;
     private string _monitoringBanner = "Loading monitoring configuration…";
     private string _footerStatus = "Relight is in the tray · Loading monitoring status";
     private string _trayStatus = "Relight · Loading monitoring status";
@@ -113,6 +126,8 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         RepairConfigurationCommand = new RelayCommand(repairConfiguration);
         RefreshHistoryCommand = new RelayCommand(() => HistoryRefreshRequested?.Invoke(this, EventArgs.Empty));
         _selectedHistoryProfile = _historyProfiles[0];
+        _selectedApplicationFilter = ApplicationFilters[0];
+        _selectedApplicationSort = ApplicationSorts[0];
         _selectedHistorySeverity = HistorySeverities[0];
         _selectedHistoryKind = HistoryKinds[0];
         _selectedHistoryRange = HistoryRanges[0];
@@ -171,10 +186,44 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         set { _historyEpisodeText = value; PropertyChanged?.Invoke(this,
             new PropertyChangedEventArgs(nameof(HistoryEpisodeText))); }
     }
-    public IReadOnlyList<ApplicationStatusRow> ApplicationRows => _applicationRows;
+    public IReadOnlyList<ApplicationFilterOption> ApplicationFilters { get; } =
+        [new("All applications", null),
+         new("Needs attention", ApplicationStatusCategory.Attention),
+         new("Recovering", ApplicationStatusCategory.Recovering),
+         new("Protected", ApplicationStatusCategory.Protected),
+         new("Paused or disabled", ApplicationStatusCategory.PausedOrDisabled)];
+    public IReadOnlyList<ApplicationSortOption> ApplicationSorts { get; } =
+        [new("Name", ApplicationSortMode.Name),
+         new("Status priority", ApplicationSortMode.Status),
+         new("Most attempts", ApplicationSortMode.Attempts)];
+    public ApplicationFilterOption SelectedApplicationFilter
+    {
+        get => _selectedApplicationFilter;
+        set
+        {
+            if (value is null || value == _selectedApplicationFilter) return;
+            _selectedApplicationFilter = value;
+            RefreshVisibleApplications();
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectedApplicationFilter)));
+        }
+    }
+    public ApplicationSortOption SelectedApplicationSort
+    {
+        get => _selectedApplicationSort;
+        set
+        {
+            if (value is null || value == _selectedApplicationSort) return;
+            _selectedApplicationSort = value;
+            RefreshVisibleApplications();
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectedApplicationSort)));
+        }
+    }
+    public IReadOnlyList<ApplicationStatusRow> ApplicationRows => _visibleApplicationRows;
     public bool HasApplications => _applicationRows.Count > 0;
     public bool HasNoApplications => !HasApplications;
-    public string ApplicationCountText => $"{_applicationRows.Count} configured";
+    public bool HasNoVisibleApplications => HasApplications && _visibleApplicationRows.Count == 0;
+    public string ApplicationCountText =>
+        $"{_visibleApplicationRows.Count} shown of {_applicationRows.Count} configured";
     public string MonitoringBanner => _monitoringBanner;
     public bool CanRepairConfiguration => _canRepairConfiguration;
     public bool StartAtSignIn => _startAtSignIn;
@@ -245,6 +294,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
                     (profile.ConfiguredEnabled || profile.Problem is null),
                 configurationProblem is null,
                 configurationProblem is null,
+                Category(profile), profile.Recovery?.ReservedAutomaticAttempts ?? 0,
                 ProfileTimingPresentation.FromProfile(profile, elapsed)))
             .ToArray();
         bool structureChanged = !_applicationRows.Select(row => row.Id)
@@ -254,6 +304,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
             for (int i = 0; i < rows.Length; i++)
                 _applicationRows[i].UpdateFrom(rows[i]);
         RefreshHistoryProfiles(_applicationRows);
+        RefreshVisibleApplications();
         TraySnapshotSummary tray = TraySnapshotSummary.FromProfiles(profiles,
             configurationProblem is not null, logging?.Degraded == true);
         int active = tray.Protected;
@@ -285,6 +336,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         _canRepairConfiguration = false;
         _canChangeStartAtSignIn = false;
         _applicationRows = [];
+        RefreshVisibleApplications();
         _monitoringBanner = $"Monitoring could not start: {problem}";
         _footerStatus = "Relight is in the tray · Monitoring unavailable";
         _trayStatus = "Relight · Monitoring unavailable";
@@ -300,6 +352,42 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         _canChangeStartAtSignIn = canChange;
         _startAtSignInStatus = status;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
+    }
+
+    private void RefreshVisibleApplications()
+    {
+        IEnumerable<ApplicationStatusRow> filtered = _selectedApplicationFilter.Category is { } category
+            ? _applicationRows.Where(row => row.Category == category)
+            : _applicationRows;
+        filtered = _selectedApplicationSort.Mode switch
+        {
+            ApplicationSortMode.Status => filtered.OrderBy(row => row.Category)
+                .ThenBy(row => row.Name, StringComparer.CurrentCultureIgnoreCase),
+            ApplicationSortMode.Attempts => filtered.OrderByDescending(row => row.ReservedAttempts)
+                .ThenBy(row => row.Name, StringComparer.CurrentCultureIgnoreCase),
+            _ => filtered.OrderBy(row => row.Name, StringComparer.CurrentCultureIgnoreCase)
+        };
+        ApplicationStatusRow[] next = filtered.ToArray();
+        if (_visibleApplicationRows.Select(row => row.Id).SequenceEqual(next.Select(row => row.Id)))
+            return;
+        _visibleApplicationRows = next;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ApplicationRows)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasNoVisibleApplications)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ApplicationCountText)));
+    }
+
+    private static ApplicationStatusCategory Category(HostedProfileStatus profile)
+    {
+        if (profile.Problem is not null || profile.Recovery?.DetectionUnavailable == true ||
+            profile.Recovery?.LockedOut == true || profile.Recovery?.HoldReason is not null)
+            return ApplicationStatusCategory.Attention;
+        if (!profile.ConfiguredEnabled || !profile.AutomaticActionsAllowed ||
+            profile.Recovery?.Paused == true)
+            return ApplicationStatusCategory.PausedOrDisabled;
+        if (profile.Recovery?.State is Relight.Core.RecoveryState.Starting or
+            Relight.Core.RecoveryState.Observing or Relight.Core.RecoveryState.RetryWaiting)
+            return ApplicationStatusCategory.Recovering;
+        return ApplicationStatusCategory.Protected;
     }
 
     public EventHistoryQuery CreateHistoryQuery(DateTimeOffset nowUtc)
