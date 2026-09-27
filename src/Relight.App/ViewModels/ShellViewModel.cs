@@ -20,7 +20,8 @@ internal sealed class ApplicationStatusRow(
     bool isPaused, bool canPauseResume, bool canReset, bool canStartNow,
     bool configuredEnabled, bool canToggleEnabled, bool canRemove, bool canEdit,
     ApplicationStatusCategory category, int reservedAttempts,
-    ProfileTimingPresentation timing) : INotifyPropertyChanged
+    ProfileTimingPresentation timing, string lastOutage,
+    string lastAutomaticRecovery) : INotifyPropertyChanged
 {
     public Guid Id { get; } = id;
     public string Name { get; private set; } = name;
@@ -40,6 +41,8 @@ internal sealed class ApplicationStatusRow(
     public string LastSeen { get; private set; } = timing.LastSeen;
     public string Attempts { get; private set; } = timing.Attempts;
     public string Instance { get; private set; } = timing.Instance;
+    public string LastOutage { get; private set; } = lastOutage;
+    public string LastAutomaticRecovery { get; private set; } = lastAutomaticRecovery;
     public string PauseResumeLabel => IsPaused ? "Resume protection" : "Pause protection";
     public string EnableDisableLabel => ConfiguredEnabled ? "Disable protection" :
         "Enable protection";
@@ -55,7 +58,8 @@ internal sealed class ApplicationStatusRow(
             CanEdit != next.CanEdit || Category != next.Category ||
             ReservedAttempts != next.ReservedAttempts || NextAction != next.NextAction ||
             LastSeen != next.LastSeen || Attempts != next.Attempts ||
-            Instance != next.Instance;
+            Instance != next.Instance || LastOutage != next.LastOutage ||
+            LastAutomaticRecovery != next.LastAutomaticRecovery;
         if (!changed) return false;
         Name = next.Name;
         State = next.State;
@@ -74,6 +78,8 @@ internal sealed class ApplicationStatusRow(
         LastSeen = next.LastSeen;
         Attempts = next.Attempts;
         Instance = next.Instance;
+        LastOutage = next.LastOutage;
+        LastAutomaticRecovery = next.LastAutomaticRecovery;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
         return true;
     }
@@ -266,7 +272,8 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
 
     public void UpdateMonitoring(string? configurationProblem, bool canRepairConfiguration,
         IReadOnlyList<HostedProfileStatus> profiles, EventRecorderStatus? logging,
-        TimeSpan elapsed)
+        TimeSpan elapsed, DashboardEventHistory? eventHistory = null,
+        string? eventHistoryProblem = null)
     {
         if (_canRepairConfiguration != canRepairConfiguration)
         {
@@ -295,7 +302,11 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
                 configurationProblem is null,
                 configurationProblem is null,
                 Category(profile), profile.Recovery?.ReservedAutomaticAttempts ?? 0,
-                ProfileTimingPresentation.FromProfile(profile, elapsed)))
+                ProfileTimingPresentation.FromProfile(profile, elapsed),
+                MilestoneText("Last recorded outage", eventHistory, eventHistoryProblem,
+                    profile.Id, outage: true),
+                MilestoneText("Last stable auto recovery", eventHistory, eventHistoryProblem,
+                    profile.Id, outage: false)))
             .ToArray();
         bool structureChanged = !_applicationRows.Select(row => row.Id)
             .SequenceEqual(rows.Select(row => row.Id));
@@ -318,6 +329,10 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
                     : $"Monitoring {active} application(s). Closing this window keeps protection running.";
         if (logging?.Degraded == true)
             banner += " Event logging is degraded; review diagnostics before unattended use.";
+        if (eventHistoryProblem is not null)
+            banner += $" Dashboard event history is unavailable: {eventHistoryProblem}";
+        else if (eventHistory?.SkippedMalformedLines > 0)
+            banner += $" {eventHistory.SkippedMalformedLines} malformed history line(s) were skipped; displayed event times may be incomplete.";
         string footer = profiles.Count == 0
             ? "Relight is in the tray · No applications are configured"
             : $"Relight is in the tray · {active} protected · {attention} need attention";
@@ -329,6 +344,19 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         _trayStatus = tray.Tooltip;
         _trayIconState = tray.IconState;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
+    }
+
+    private static string MilestoneText(string label, DashboardEventHistory? history,
+        string? problem, Guid profileId, bool outage)
+    {
+        if (problem is not null) return $"{label}: history unavailable";
+        if (history is null) return $"{label}: loading history";
+        history.Profiles.TryGetValue(profileId, out DashboardEventMilestones? milestones);
+        DateTimeOffset? occurred = outage ? milestones?.LastOutageUtc :
+            milestones?.LastAutomaticRecoveryUtc;
+        return occurred is { } time
+            ? $"{label}: {time.ToLocalTime():g}"
+            : $"{label}: none in retained history";
     }
 
     public void ShowMonitoringProblem(string problem)

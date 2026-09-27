@@ -35,6 +35,11 @@ public sealed record EventHistoryProfile(Guid Id, string? Name);
 public sealed record EventHistoryOverview(EventHistoryResult Results,
     EventHistorySummary Summary, IReadOnlyList<EventHistoryProfile> Profiles);
 
+public sealed record DashboardEventMilestones(DateTimeOffset? LastOutageUtc,
+    DateTimeOffset? LastAutomaticRecoveryUtc);
+public sealed record DashboardEventHistory(
+    IReadOnlyDictionary<Guid, DashboardEventMilestones> Profiles, int SkippedMalformedLines);
+
 public enum EventHistoryExportFormat { Text, Csv }
 public sealed record EventHistoryExportResult(int ExportedEvents, int SkippedMalformedLines);
 
@@ -46,6 +51,31 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
 {
     private readonly string _dataDirectory = Path.GetFullPath(dataDirectory);
     private readonly string _directory = Path.Combine(Path.GetFullPath(dataDirectory), "Logs");
+
+    public async Task<DashboardEventHistory> ReadDashboardMilestonesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var milestones = new Dictionary<Guid, DashboardEventMilestones>();
+        ScanSummary result = await ScanAsync(new EventHistoryQuery(), entry =>
+        {
+            if (entry.ProfileId is not { } id) return Task.CompletedTask;
+            if (entry.Kind != OperationalEventKind.TargetDisappeared &&
+                !(entry.Kind == OperationalEventKind.ObservationCompleted &&
+                  entry.Origin == Relight.Core.ObservationOrigin.AutomaticLaunch))
+                return Task.CompletedTask;
+            milestones.TryGetValue(id, out DashboardEventMilestones? prior);
+            prior ??= new(null, null);
+            milestones[id] = entry.Kind == OperationalEventKind.TargetDisappeared
+                ? prior with { LastOutageUtc = Later(prior.LastOutageUtc, entry.OccurredUtc) }
+                : prior with { LastAutomaticRecoveryUtc = Later(
+                    prior.LastAutomaticRecoveryUtc, entry.OccurredUtc) };
+            return Task.CompletedTask;
+        }, cancellationToken).ConfigureAwait(false);
+        return new(milestones, result.Malformed);
+    }
+
+    private static DateTimeOffset Later(DateTimeOffset? previous, DateTimeOffset candidate)
+        => previous is { } time && time > candidate ? time : candidate;
 
     public async Task<EventHistoryResult> ReadAsync(EventHistoryQuery query,
         CancellationToken cancellationToken = default)

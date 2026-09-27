@@ -215,6 +215,46 @@ public sealed class OperationalEventJournalTests
     }
 
     [Fact]
+    public async Task Dashboard_milestones_use_latest_recorded_outage_and_stable_automatic_recovery()
+    {
+        using var directory = new TestDirectory();
+        using var journal = new OperationalEventJournal(directory.Path,
+            GlobalConfiguration.Default);
+        Guid profile = Guid.NewGuid();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        await journal.AppendAsync(NewEvent() with
+        {
+            ProfileId = profile, Kind = OperationalEventKind.TargetDisappeared,
+            OccurredUtc = now.AddMinutes(-10)
+        });
+        await journal.AppendAsync(NewEvent() with
+        {
+            ProfileId = profile, Kind = OperationalEventKind.TargetDisappeared,
+            OccurredUtc = now.AddMinutes(-5)
+        });
+        await journal.AppendAsync(NewEvent() with
+        {
+            ProfileId = profile, Kind = OperationalEventKind.ObservationCompleted,
+            Origin = Relight.Core.ObservationOrigin.ExternalStart,
+            OccurredUtc = now.AddMinutes(-4)
+        });
+        await journal.AppendAsync(NewEvent() with
+        {
+            ProfileId = profile, Kind = OperationalEventKind.ObservationCompleted,
+            Origin = Relight.Core.ObservationOrigin.AutomaticLaunch,
+            OccurredUtc = now.AddMinutes(-3)
+        });
+
+        DashboardEventHistory result = await new OperationalEventHistoryReader(directory.Path)
+            .ReadDashboardMilestonesAsync();
+
+        DashboardEventMilestones milestones = result.Profiles[profile];
+        Assert.Equal(now.AddMinutes(-5), milestones.LastOutageUtc);
+        Assert.Equal(now.AddMinutes(-3), milestones.LastAutomaticRecoveryUtc);
+        Assert.Equal(0, result.SkippedMalformedLines);
+    }
+
+    [Fact]
     public async Task Filtered_export_includes_full_episode_beyond_display_limit()
     {
         using var directory = new TestDirectory();

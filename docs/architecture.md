@@ -19,7 +19,7 @@ For a new executable profile, the host validates its canonical path and current-
 
 `--shell-test` bypasses the host solely for the destructive process-level shell smoke check. Normal launches, including `--tray`, start monitoring. The smoke check uses this mode so its forced process interruption cannot affect a configured target.
 
-Dashboard rows display attempt accounting, an in-session verified-instance summary and monotonic countdowns for retry eligibility, appearance timeout and stability qualification. The wording leaves discovery/confirmation as a separate step and marks overdue observation as unverified. Rows update in place under the dispatcher so one-second countdown updates do not replace focused controls. The Applications view filters by live status and sorts by name, priority or attempt count without changing the underlying profile list or History choices. Last-outage and last-success timestamps still need durable event-backed presentation.
+Dashboard rows display attempt accounting, an in-session verified-instance summary and monotonic countdowns for retry eligibility, appearance timeout and stability qualification. The wording leaves discovery/confirmation as a separate step and marks overdue observation as unverified. Rows update in place under the dispatcher so one-second countdown updates do not replace focused controls. The Applications view filters by live status and sorts by name, priority or attempt count without changing the underlying profile list or History choices. A separate asynchronous scan of retained operational events refreshes each row's last recorded disappearance and last stable automatic recovery every 30 seconds. These fields are limited to retained, readable history.
 
 ## Windows integration
 
@@ -34,6 +34,6 @@ Dashboard rows display attempt accounting, an in-session verified-instance summa
 
 The domain, coordination, Windows adapters and storage components are separate projects. `RecoveryApplicationHost` composes executable profiles from existing configuration and state; it does not create a new budget for an existing profile. Recovery policy remains independent of `Relight.App`, WPF and tray callbacks. The host still needs session-scoped state coordination, packaged-app support and most UI commands.
 
-The shell singleton only prevents duplicate UI processes within a user session. It does **not** implement shared configuration coordination, persisted lockout across sign-ins, target-process identity or a durable attempt ledger. Those decisions and implementations remain M0–M3 work.
+The shell singleton prevents duplicate UI processes within a user session. The separate recovery state store provides a durable, revision-checked attempt ledger and the executable adapter verifies current-session process identity. Configuration writes also use revisions. Session-scoped live-state ownership and cross-sign-in lockout coordination remain open M0–M3 work; the singleton alone provides neither.
 
 The actual target (ChatGPT desktop, Codex desktop or both), installed-app activation contract and job-continuation behavior have not been validated. Advancing the shell under the user's explicit request does not mark target-validation or engine milestones complete.

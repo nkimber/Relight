@@ -30,6 +30,9 @@ public partial class App : Application
     private CurrentUserStartupRegistration? _startupRegistration;
     private string? _startupUnavailable;
     private CancellationTokenSource? _historyCancellation;
+    private DashboardEventHistory? _dashboardHistory;
+    private string? _dashboardHistoryProblem;
+    private DateTimeOffset _nextDashboardHistoryRefreshUtc;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -148,6 +151,24 @@ public partial class App : Application
         {
             var profiles = host.GetProfiles();
             var logging = await host.GetLoggingStatusAsync();
+            if (DateTimeOffset.UtcNow >= _nextDashboardHistoryRefreshUtc)
+            {
+                _nextDashboardHistoryRefreshUtc = DateTimeOffset.UtcNow.AddSeconds(30);
+                try
+                {
+                    _dashboardHistory = await new OperationalEventHistoryReader(
+                        RecoveryApplicationHost.DefaultDataDirectory)
+                        .ReadDashboardMilestonesAsync(_monitoringCancellation?.Token ??
+                            CancellationToken.None);
+                    _dashboardHistoryProblem = null;
+                }
+                catch (OperationCanceledException) when (_exiting) { return; }
+                catch (Exception error)
+                {
+                    _dashboardHistory = null;
+                    _dashboardHistoryProblem = error.Message;
+                }
+            }
             StartupRegistrationStatus? startupStatus = null;
             string? startupProblem = _startupUnavailable;
             if (_startupRegistration is not null)
@@ -163,7 +184,7 @@ public partial class App : Application
             }
             _viewModel?.UpdateMonitoring(host.ConfigurationProblem,
                 host.Configuration?.FromLastGoodBackup == true, profiles, logging,
-                host.Elapsed);
+                host.Elapsed, _dashboardHistory, _dashboardHistoryProblem);
             bool configured = host.Configuration?.Configuration.Settings.StartAtSignIn == true;
             bool registered = startupStatus?.EnabledForThisExecutable == true;
             bool startupAvailable = host.Configuration?.AutomaticActionsAllowed == true &&
