@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>Relight</AssemblyName>
+    <RootNamespace>Relight</RootNamespace>
+    <ApplicationIcon>Assets\Relight.ico</ApplicationIcon>
+    <Version>0.1.0</Version>
+    <AssemblyTitle>Relight</AssemblyTitle>
+    <Product>Relight</Product>
+    <Description>Windows application recovery — shell preview</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets\Relight.ico" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,123 @@
+<Window x:Class="Relight.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Relight" Width="1080" Height="740" MinWidth="860" MinHeight="600"
+        WindowStartupLocation="CenterScreen" Icon="Assets/Relight.ico"
+        UseLayoutRounding="True" AutomationProperties.Name="Relight dashboard">
+    <Window.InputBindings>
+        <KeyBinding Key="D1" Modifiers="Control" Command="{Binding ApplicationsCommand}" />
+        <KeyBinding Key="D2" Modifiers="Control" Command="{Binding HistoryCommand}" />
+        <KeyBinding Key="D3" Modifiers="Control" Command="{Binding SettingsCommand}" />
+        <KeyBinding Key="W" Modifiers="Control" Command="{Binding HideCommand}" />
+        <KeyBinding Key="Q" Modifiers="Control" Command="{Binding ExitCommand}" />
+    </Window.InputBindings>
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="210" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource LineBrush}"
+                BorderThickness="0,0,1,0" Padding="20,28,20,20">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Top" Margin="8,0,0,36">
+                    <StackPanel Orientation="Horizontal">
+                        <Image Source="{StaticResource FlameImage}" Width="32" Height="32" Margin="0,0,10,0" />
+                        <TextBlock Text="Relight" FontWeight="SemiBold" FontSize="26" />
+                    </StackPanel>
+                    <TextBlock Text="A little peace of mind." Style="{StaticResource Muted}" FontSize="12" Margin="0,10,0,0" />
+                </StackPanel>
+                <StackPanel DockPanel.Dock="Bottom">
+                    <Border BorderBrush="{DynamicResource LineBrush}" BorderThickness="0,1,0,0" Margin="0,0,0,16" />
+                    <TextBlock Text="SHELL PREVIEW" Foreground="{DynamicResource AccentBrush}" FontSize="11" FontWeight="SemiBold" />
+                    <TextBlock Text="Version 0.1.0" Style="{StaticResource Muted}" FontSize="12" Margin="0,6,0,16" />
+                    <Button Content="Hide to tray" Command="{Binding HideCommand}" ToolTip="Close this window and keep Relight in the tray (Ctrl+W)." Margin="0,0,0,8" />
+                    <Button Content="E_xit Relight" Command="{Binding ExitCommand}" ToolTip="Exit Relight (Ctrl+Q)." />
+                </StackPanel>
+                <StackPanel>
+                    <RadioButton Content="_Applications" GroupName="Page" Style="{StaticResource Navigation}"
+                                 IsChecked="{Binding IsApplications, Mode=TwoWay}" ToolTip="Applications (Ctrl+1)" />
+                    <RadioButton Content="_History" GroupName="Page" Style="{StaticResource Navigation}"
+                                 IsChecked="{Binding IsHistory, Mode=TwoWay}" ToolTip="History (Ctrl+2)" />
+                    <RadioButton Content="_Settings" GroupName="Page" Style="{StaticResource Navigation}"
+                                 IsChecked="{Binding IsSettings, Mode=TwoWay}" ToolTip="Settings (Ctrl+3)" />
+                </StackPanel>
+            </DockPanel>
+        </Border>
+        <Grid Grid.Column="1" Margin="32,28,32,20">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <StackPanel Margin="0,0,0,24">
+                <TextBlock Text="{Binding Heading}" FontSize="30" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding Subtitle}" Style="{StaticResource Muted}" Margin="0,8,0,0" />
+            </StackPanel>
+            <Border Grid.Row="1" Background="{DynamicResource AccentSoftBrush}" CornerRadius="8" Padding="16,12" Margin="0,0,0,24">
+                <TextBlock Foreground="{DynamicResource AccentBrush}" Text="Shell preview · Monitoring and automatic recovery are not available yet." />
+            </Border>
+            <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <Grid>
+                    <StackPanel Visibility="{Binding IsApplications, Converter={StaticResource VisibleWhenTrue}}">
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <DockPanel Margin="0,0,0,28">
+                                    <Button DockPanel.Dock="Right" Content="+ Add application" IsEnabled="False"
+                                            ToolTip="Application registration arrives with the recovery engine." />
+                                    <StackPanel>
+                                        <TextBlock Text="Your applications" FontSize="18" FontWeight="SemiBold" />
+                                        <TextBlock Text="0 configured" Style="{StaticResource Muted}" Margin="0,4,0,0" />
+                                    </StackPanel>
+                                </DockPanel>
+                                <Border BorderBrush="{DynamicResource LineBrush}" BorderThickness="0,1,0,0" />
+                                <StackPanel HorizontalAlignment="Center" MaxWidth="430" Margin="16,42,16,42">
+                                    <Image Source="{StaticResource FlameImage}" Width="56" Height="56" Margin="0,0,0,20" />
+                                    <TextBlock Text="A place for your everyday apps" TextAlignment="Center" FontSize="22" FontWeight="SemiBold" />
+                                    <TextBlock Text="Soon, add the applications you want Relight to watch. If one stops, Relight will help bring it back."
+                                               Style="{StaticResource Muted}" TextAlignment="Center" Margin="0,12,0,0" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                        <TextBlock Text="Closing this window keeps Relight in the system tray. Double-click its tray icon to return."
+                                   Style="{StaticResource Muted}" Margin="4,18,4,0" />
+                    </StackPanel>
+                    <Border Style="{StaticResource Card}" VerticalAlignment="Top"
+                            Visibility="{Binding IsHistory, Converter={StaticResource VisibleWhenTrue}}">
+                        <StackPanel Margin="0,12">
+                            <TextBlock Text="No events yet" FontSize="22" FontWeight="SemiBold" />
+                            <TextBlock Text="Once monitoring is available, this is where you'll see outages, recovery attempts and stable restarts."
+                                       Style="{StaticResource Muted}" Margin="0,12,0,24" />
+                            <Button Content="Export history" IsEnabled="False" HorizontalAlignment="Left"
+                                    ToolTip="There is no monitoring history to export in the shell preview." />
+                        </StackPanel>
+                    </Border>
+                    <StackPanel Visibility="{Binding IsSettings, Converter={StaticResource VisibleWhenTrue}}">
+                        <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+                            <StackPanel>
+                                <TextBlock Text="Application behavior" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,16" />
+                                <TextBlock Text="Close to tray" FontWeight="SemiBold" />
+                                <TextBlock Text="The close button hides the dashboard. Use Exit Relight to quit." Style="{StaticResource Muted}" Margin="0,4,0,18" />
+                                <CheckBox Content="Start Relight when I sign in" IsEnabled="False" IsChecked="False"
+                                          ToolTipService.ShowOnDisabled="True" ToolTip="Sign-in startup will be available in a later milestone." />
+                                <TextBlock Text="Off · Not available in this preview" Style="{StaticResource Muted}" Margin="22,4,0,0" />
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="Local data" FontSize="18" FontWeight="SemiBold" />
+                                <TextBlock Text="Planned configuration and history location:" Style="{StaticResource Muted}" Margin="0,12,0,8" />
+                                <TextBox Text="{Binding DataDirectory, Mode=OneWay}" IsReadOnly="True" BorderThickness="0" Padding="4,6"
+                                         TextWrapping="Wrap" Background="{DynamicResource CanvasBrush}" Foreground="{DynamicResource TextBrush}"
+                                         AutomationProperties.Name="Planned local data directory" />
+                                <TextBlock Text="This preview does not save profiles or collect application activity." Style="{StaticResource Muted}" Margin="0,12,0,0" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </Grid>
+            </ScrollViewer>
+            <TextBlock Grid.Row="3" Text="Relight is in the tray · No applications are being monitored" Style="{StaticResource Muted}"
+                       FontSize="12" Margin="0,24,0,0" />
+        </Grid>
+    </Grid>
+</Window>

@@ -1,0 +1,24 @@
+# Build and IDE output
+**/bin/
+**/obj/
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+TestResults/
+artifacts/
+
+# Local configuration, credentials and runtime data
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.key
+*.local.json
+Logs/
+*.log
+*.jsonl
+runtime-state/
