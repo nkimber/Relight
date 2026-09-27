@@ -81,7 +81,7 @@ public partial class App : Application
             if (Array.IndexOf(e.Args, "--shell-test") >= 0)
             {
                 _viewModel.ShowMonitoringProblem("Shell test mode: monitoring is disabled.");
-                _tray.UpdateStatus("Relight · Shell test mode");
+                _tray.UpdateStatus("Relight · Shell test mode", TrayIconState.Paused);
             }
             else
             {
@@ -179,7 +179,8 @@ public partial class App : Application
                 _ => "Off · Relight will not start automatically at sign-in."
             });
             _viewModel?.UpdateStartAtSignIn(registered, startupAvailable, explanation);
-            if (_viewModel is not null) _tray?.UpdateStatus(_viewModel.TrayStatus);
+            if (_viewModel is not null)
+                _tray?.UpdateStatus(_viewModel.TrayStatus, _viewModel.TrayIconState);
             _tray?.UpdateStartupStatus(registered, startupAvailable, explanation);
             bool canPause = !_changingAllPause && profiles.Any(profile =>
                 profile.AutomaticActionsAllowed && profile.Problem is null &&
@@ -199,7 +200,7 @@ public partial class App : Application
     private void SetMonitoringProblem(string message)
     {
         _viewModel?.ShowMonitoringProblem(message);
-        _tray?.UpdateStatus("Relight · Monitoring unavailable");
+        _tray?.UpdateStatus("Relight · Monitoring unavailable", TrayIconState.Attention);
     }
 
     private async Task SetStartAtSignInAsync(bool enabled)

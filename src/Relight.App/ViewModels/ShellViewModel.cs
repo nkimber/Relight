@@ -34,6 +34,8 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     private IReadOnlyList<ApplicationStatusRow> _applicationRows = [];
     private string _monitoringBanner = "Loading monitoring configuration…";
     private string _footerStatus = "Relight is in the tray · Loading monitoring status";
+    private string _trayStatus = "Relight · Loading monitoring status";
+    private TrayIconState _trayIconState = TrayIconState.Paused;
     private bool _canRepairConfiguration;
     private bool _startAtSignIn;
     private bool _canChangeStartAtSignIn;
@@ -129,8 +131,8 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     public bool CanChangeStartAtSignIn => _canChangeStartAtSignIn;
     public string StartAtSignInStatus => _startAtSignInStatus;
     public string FooterStatus => _footerStatus;
-    public string TrayStatus => _footerStatus.Length > 63
-        ? $"Relight · {_applicationRows.Count} configured" : _footerStatus;
+    public string TrayStatus => _trayStatus;
+    public TrayIconState TrayIconState => _trayIconState;
     // Selection bindings also handle radio-button arrow keys and accessibility selection,
     // which can change IsChecked without invoking a button command.
     public bool IsApplications
@@ -208,11 +210,16 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         string footer = profiles.Count == 0
             ? "Relight is in the tray · No applications are configured"
             : $"Relight is in the tray · {active} protected · {attention} need attention";
+        TraySnapshotSummary tray = TraySnapshotSummary.FromProfiles(profiles,
+            configurationProblem is not null, logging?.Degraded == true);
         if (rows.SequenceEqual(_applicationRows) && banner == _monitoringBanner &&
-            footer == _footerStatus) return;
+            footer == _footerStatus && tray.Tooltip == _trayStatus &&
+            tray.IconState == _trayIconState) return;
         _applicationRows = rows;
         _monitoringBanner = banner;
         _footerStatus = footer;
+        _trayStatus = tray.Tooltip;
+        _trayIconState = tray.IconState;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
     }
 
@@ -223,6 +230,8 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         _applicationRows = [];
         _monitoringBanner = $"Monitoring could not start: {problem}";
         _footerStatus = "Relight is in the tray · Monitoring unavailable";
+        _trayStatus = "Relight · Monitoring unavailable";
+        _trayIconState = TrayIconState.Attention;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
     }
 

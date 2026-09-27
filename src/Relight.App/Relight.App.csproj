@@ -14,6 +14,9 @@
   </PropertyGroup>
   <ItemGroup>
     <Resource Include="Assets\Relight.ico" />
+    <Resource Include="Assets\Relight.Attention.ico" />
+    <Resource Include="Assets\Relight.Recovering.ico" />
+    <Resource Include="Assets\Relight.Paused.ico" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Relight.Windows\Relight.Windows.csproj" />

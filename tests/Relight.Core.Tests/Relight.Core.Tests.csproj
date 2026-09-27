@@ -18,6 +18,7 @@
     <ProjectReference Include="..\..\src\Relight.Engine\Relight.Engine.csproj" />
     <ProjectReference Include="..\..\src\Relight.Storage\Relight.Storage.csproj" />
     <ProjectReference Include="..\..\src\Relight.Windows\Relight.Windows.csproj" />
+    <ProjectReference Include="..\..\src\Relight.App\Relight.App.csproj" />
     <ProjectReference Include="..\Relight.TestTarget\Relight.TestTarget.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
