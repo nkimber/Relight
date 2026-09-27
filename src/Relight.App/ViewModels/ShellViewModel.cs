@@ -11,7 +11,11 @@ namespace Relight.ViewModels;
 
 internal enum ShellPage { Applications, History, Settings }
 
-internal sealed record ApplicationStatusRow(string Name, string State, string Detail);
+internal sealed record ApplicationStatusRow(Guid Id, string Name, string State,
+    string Detail, bool IsPaused, bool CanPauseResume, bool CanReset)
+{
+    public string PauseResumeLabel => IsPaused ? "Resume protection" : "Pause protection";
+}
 
 internal sealed class ShellViewModel : INotifyPropertyChanged
 {
@@ -81,8 +85,14 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     {
         IReadOnlyList<ApplicationStatusRow> rows = profiles
             .OrderBy(profile => profile.Name, StringComparer.CurrentCultureIgnoreCase)
-            .Select(profile => new ApplicationStatusRow(profile.Name,
-                StatusText(profile), profile.Problem ?? DetailText(profile)))
+            .Select(profile => new ApplicationStatusRow(profile.Id, profile.Name,
+                StatusText(profile), profile.Problem ?? DetailText(profile),
+                profile.Recovery?.Paused == true,
+                profile.Recovery is not null && profile.AutomaticActionsAllowed &&
+                    profile.Problem is null,
+                profile.Recovery is { State: not Relight.Core.RecoveryState.Starting } recovery &&
+                    (recovery.LockedOut || recovery.ReservedAutomaticAttempts > 0) &&
+                    profile.AutomaticActionsAllowed && profile.Problem is null))
             .ToArray();
         int active = profiles.Count(profile => profile.AutomaticActionsAllowed);
         int attention = profiles.Count(profile => profile.Problem is not null);
@@ -135,7 +145,11 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
 
     private static string DetailText(HostedProfileStatus profile) =>
         profile.Recovery is { } recovery
-            ? $"{recovery.ReservedAutomaticAttempts} automatic attempt(s) reserved in this episode."
+            ? recovery.Paused
+                ? $"Protection is paused; the application is left running. {recovery.ReservedAutomaticAttempts} automatic attempt(s) remain charged."
+                : recovery.LockedOut
+                    ? $"Automatic recovery is locked after {recovery.ReservedAutomaticAttempts} attempt(s). Reset recovery is an explicit choice."
+                    : $"{recovery.ReservedAutomaticAttempts} automatic attempt(s) reserved in this episode."
             : profile.Detection?.Kind.ToString() ?? "No process result yet.";
 
     public void Navigate(ShellPage page)

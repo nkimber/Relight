@@ -198,12 +198,19 @@ public sealed class RecoveryMachine
     public void ResetRecovery(TimeSpan now)
     {
         CheckTime(now);
+        if (Snapshot.State == RecoveryState.Starting)
+            throw new InvalidOperationException("Cannot reset while a launch is in flight.");
         Snapshot = Snapshot with
         {
             LockedOut = false,
             ReservedAutomaticAttempts = 0,
             EpisodeId = null,
             OperationId = null,
+            TargetIdentity = null,
+            ObservationOrigin = null,
+            ObservationStartedAt = null,
+            LastVerifiedAt = null,
+            AbsenceStartedAt = null,
             AppearanceDeadline = null,
             RetryDeadline = null,
             State = Snapshot.Enabled

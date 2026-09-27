@@ -239,7 +239,31 @@ public sealed class ProfileCoordinator : IDisposable
             _machine.SetPaused(paused);
             if (!Persist())
                 throw new RecoveryStateUnavailableException(_storageError ?? "State write failed.");
-            Record(OperationalEventKind.ManualAction, EventSeverity.Information,
+            Record(paused ? OperationalEventKind.ProtectionPaused :
+                    OperationalEventKind.ProtectionResumed, EventSeverity.Information,
+                previous, _machine.Snapshot);
+        }
+        finally { _gate.Release(); }
+    }
+
+    public async Task ResetRecoveryAsync(CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_storageDegraded)
+                throw new RecoveryStateUnavailableException("Recovery state is degraded; reset cannot be trusted.");
+            if (_machine.Snapshot.State == RecoveryState.Starting)
+                throw new InvalidOperationException("Wait for the current launch to finish before resetting recovery.");
+
+            Detection found = await Discover(cancellationToken).ConfigureAwait(false);
+            RecoverySnapshot previous = _machine.Snapshot;
+            _machine.ResetRecovery(_clock.Elapsed);
+            _machine.Advance(found, _clock.Elapsed);
+            if (!Persist())
+                throw new RecoveryStateUnavailableException(_storageError ?? "State write failed.");
+            RecordTransition(previous, _machine.Snapshot);
+            Record(OperationalEventKind.RecoveryReset, EventSeverity.Information,
                 previous, _machine.Snapshot);
         }
         finally { _gate.Release(); }

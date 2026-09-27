@@ -9,7 +9,7 @@ Relight is a new C# Windows desktop application with a **WPF/MVVM UI and a resid
 - Follow explicit user instructions first. The PRD governs product behavior; the development plan governs implementation order. This file governs engineering practice. Surface conflicts rather than silently changing requirements.
 - Treat proposed defaults in the PRD as planning defaults until confirmed. WPF and tray residency are confirmed. Do not infer the initial target is Codex from the repository name.
 - Use `C:\dev\Resurrector` only as a reference when relevant. Do not modify it as part of ordinary Relight work. Retain applicable license notices if reusing source or assets.
-- The repository contains a runnable WPF/tray shell and partial recovery foundation. The engine is not connected to the shell and target integration is pending. Read `docs/shell-checkpoint.md` and `docs/engine-checkpoint.md` for verified behavior; do not describe planned components or unrun checks as implemented or passing.
+- The repository contains a runnable WPF/tray shell connected to a partial recovery host. Target integration and full acceptance remain pending. Read `docs/shell-checkpoint.md` and `docs/engine-checkpoint.md` for verified behavior; do not describe planned components or unrun checks as implemented or passing.
 
 ## Work in reviewable increments
 

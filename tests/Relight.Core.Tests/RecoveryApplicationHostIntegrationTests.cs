@@ -35,6 +35,14 @@ public sealed class RecoveryApplicationHostIntegrationTests
                 await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
                 Assert.Equal(RecoveryState.WaitingForFirstStart,
                     Assert.Single(host.GetProfiles()).Recovery?.State);
+                await host.SetProfilePausedAsync(id, true);
+                Assert.True(Assert.Single(host.GetProfiles()).Recovery?.Paused);
+                Assert.True(new RecoveryStateStore(root).Load(id).Checkpoint.Paused);
+                await host.SetProfilePausedAsync(id, false);
+                Assert.False(Assert.Single(host.GetProfiles()).Recovery?.Paused);
+                await host.ResetProfileRecoveryAsync(id);
+                Assert.Equal(0, new RecoveryStateStore(root).Load(id)
+                    .Checkpoint.ReservedAutomaticAttempts);
                 await Assert.ThrowsAsync<ArgumentException>(() =>
                     host.RegisterExecutableAsync("Duplicate", executable));
             }
@@ -121,6 +129,10 @@ public sealed class RecoveryApplicationHostIntegrationTests
                     Assert.Single(host.GetProfiles()).Recovery?.State);
                 Assert.Equal(1, new RecoveryStateStore(root).Load(id)
                     .Checkpoint.ReservedAutomaticAttempts);
+                await host.SetProfilePausedAsync(id, true);
+                Assert.True(new RecoveryStateStore(root).Load(id).Checkpoint.Paused);
+                using Process stillRunning = Process.GetProcessById(pid.Value);
+                Assert.False(stillRunning.HasExited);
             }
 
             using Process target = Process.GetProcessById(pid.Value);

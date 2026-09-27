@@ -29,6 +29,8 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     private readonly RecoveryScheduler _scheduler;
     private readonly IMonotonicClock _clock;
     private readonly Dictionary<Guid, HostedProfileStatus> _statuses = new();
+    private readonly Dictionary<Guid, ProfileCoordinator> _coordinators = new();
+    private readonly HashSet<Task> _activeCommands = [];
     private readonly object _statusSync = new();
     private readonly SemaphoreSlim _changes = new(1, 1);
     private bool _disposed;
@@ -149,6 +151,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                     profile.Policy, _stateStore, discovery, new ExecutableLauncher(target),
                     _clock, _launchGate, _recorder);
                 _scheduler.Add(profile.Id, coordinator, profile.Policy);
+                _coordinators.Add(profile.Id, coordinator);
                 _statuses[profile.Id] = new(profile.Id, profile.Name, true, true,
                     null, coordinator.Snapshot, null);
             }
@@ -181,22 +184,31 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
 
     public IReadOnlyList<HostedProfileStatus> GetProfiles()
     {
-        HostedProfileStatus[] statuses;
-        lock (_statusSync) statuses = _statuses.Values.ToArray();
-        return statuses.Select(status =>
+        (HostedProfileStatus Status, ProfileCoordinator? Coordinator)[] statuses;
+        lock (_statusSync)
+            statuses = _statuses.Values.Select(status =>
+                (status, _coordinators.GetValueOrDefault(status.Id))).ToArray();
+        return statuses.Select(entry =>
         {
+            HostedProfileStatus status = entry.Status;
+            ProfileCoordinator? coordinator = entry.Coordinator;
             (CoordinatorResult? Result, string? Error)? last = _scheduler.GetLast(status.Id);
             if (last is null)
                 return status with
                 {
-                    Detection = _scheduler.GetPassiveLast(status.Id) ?? status.Detection
+                    Detection = _scheduler.GetPassiveLast(status.Id) ?? status.Detection,
+                    Recovery = coordinator?.Snapshot ?? status.Recovery,
+                    AutomaticActionsAllowed = status.AutomaticActionsAllowed &&
+                        !(coordinator?.StorageDegraded ?? false),
+                    Problem = coordinator?.StorageError ?? status.Problem
                 };
             return status with
             {
-                Recovery = last.Value.Result?.Snapshot ?? status.Recovery,
+                Recovery = coordinator?.Snapshot ?? last.Value.Result?.Snapshot ?? status.Recovery,
                 AutomaticActionsAllowed = status.AutomaticActionsAllowed &&
-                    !(last.Value.Result?.StorageDegraded ?? false),
-                Problem = last.Value.Error ?? last.Value.Result?.Error ?? status.Problem
+                    !(coordinator?.StorageDegraded ?? last.Value.Result?.StorageDegraded ?? false),
+                Problem = last.Value.Error ?? coordinator?.StorageError ??
+                    last.Value.Result?.Error ?? status.Problem
             };
         }).ToArray();
     }
@@ -264,8 +276,11 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 _scheduler.Add(id, coordinator, policy);
                 Configuration = saved;
                 lock (_statusSync)
+                {
+                    _coordinators.Add(id, coordinator);
                     _statuses[id] = new(id, profile.Name, true, true, detected,
                         coordinator.Snapshot, null);
+                }
                 _scheduler.RequestImmediate(id);
                 _recorder?.TryRecord(new(DateTimeOffset.UtcNow, Guid.NewGuid(),
                     EventSeverity.Information, OperationalEventKind.ManualAction,
@@ -282,6 +297,44 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     }
 
     public IReadOnlyDictionary<Guid, Task> Pulse() => _scheduler.Pulse();
+
+    public Task SetProfilePausedAsync(Guid profileId, bool paused,
+        CancellationToken cancellationToken = default) =>
+        RunProfileCommandAsync(profileId,
+            coordinator => coordinator.SetPausedAsync(paused, cancellationToken));
+
+    public Task ResetProfileRecoveryAsync(Guid profileId,
+        CancellationToken cancellationToken = default) =>
+        RunProfileCommandAsync(profileId,
+            coordinator => coordinator.ResetRecoveryAsync(cancellationToken));
+
+    private Task RunProfileCommandAsync(Guid profileId,
+        Func<ProfileCoordinator, Task> action)
+    {
+        Task command;
+        lock (_statusSync)
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(RecoveryApplicationHost));
+            if (!_coordinators.TryGetValue(profileId, out ProfileCoordinator? coordinator))
+                throw new InvalidOperationException("This profile cannot accept recovery commands.");
+            command = Task.Run(async () =>
+            {
+                await action(coordinator).ConfigureAwait(false);
+                _scheduler.RequestImmediate(profileId);
+            });
+            _activeCommands.Add(command);
+        }
+        return ObserveCommandAsync(command);
+    }
+
+    private async Task ObserveCommandAsync(Task command)
+    {
+        try { await command.ConfigureAwait(false); }
+        finally
+        {
+            lock (_statusSync) _activeCommands.Remove(command);
+        }
+    }
 
     public void RequestImmediate(Guid profileId) => _scheduler.RequestImmediate(profileId);
 
@@ -305,9 +358,17 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         try
         {
             if (_disposed) return;
-            _disposed = true;
+            lock (_statusSync) _disposed = true;
         }
         finally { _changes.Release(); }
+        Task[] commands;
+        lock (_statusSync) commands = _activeCommands.ToArray();
+        try { await Task.WhenAll(commands).ConfigureAwait(false); }
+        catch
+        {
+            // The command caller receives its failure. Cleanup still has to
+            // release the scheduler and its process handles.
+        }
         _recorder?.TryRecord(new(DateTimeOffset.UtcNow, Guid.NewGuid(),
             EventSeverity.Information, OperationalEventKind.Shutdown));
         await _scheduler.DisposeAsync().ConfigureAwait(false);

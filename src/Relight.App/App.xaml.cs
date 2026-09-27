@@ -40,7 +40,10 @@ public partial class App : Application
             ApplyAccessibilityColors();
             SystemParameters.StaticPropertyChanged += OnSystemParametersChanged;
             _viewModel = new ShellViewModel(HideDashboard, RequestExit, ShowAddApplication);
-            _dashboard = new MainWindow { DataContext = _viewModel };
+            _dashboard = new MainWindow(SetProfilePausedAsync, ResetProfileRecoveryAsync)
+            {
+                DataContext = _viewModel
+            };
             MainWindow = _dashboard;
             _dashboard.Closing += OnDashboardClosing;
             _tray = new TrayService(
@@ -171,6 +174,22 @@ public partial class App : Application
         }
         var dialog = new AddApplicationWindow(host) { Owner = _dashboard };
         dialog.ShowDialog();
+    }
+
+    private Task SetProfilePausedAsync(Guid profileId, bool paused)
+    {
+        RecoveryApplicationHost host = Volatile.Read(ref _host) ??
+            throw new InvalidOperationException("Monitoring is unavailable.");
+        return host.SetProfilePausedAsync(profileId, paused,
+            _monitoringCancellation?.Token ?? CancellationToken.None);
+    }
+
+    private Task ResetProfileRecoveryAsync(Guid profileId)
+    {
+        RecoveryApplicationHost host = Volatile.Read(ref _host) ??
+            throw new InvalidOperationException("Monitoring is unavailable.");
+        return host.ResetProfileRecoveryAsync(profileId,
+            _monitoringCancellation?.Token ?? CancellationToken.None);
     }
 
     private void HideDashboard() => _dashboard?.Hide();

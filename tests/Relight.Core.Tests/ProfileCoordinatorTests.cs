@@ -230,6 +230,102 @@ public sealed class ProfileCoordinatorTests
     }
 
     [Fact]
+    public async Task Pause_and_resume_preserve_lockout_until_explicit_durable_reset()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var launcher = new FailingLauncher();
+        var recorder = new CapturingRecorder();
+        Guid id = Guid.NewGuid();
+        RecoveryPolicy policy = AutoPolicy with { MaximumAutomaticAttempts = 1 };
+        using var coordinator = ProfileCoordinator.CreateNew(id, policy, store,
+            new ConstantDiscovery(Detection.Absent()), launcher, clock,
+            recorder: recorder);
+        await TickAt(coordinator, clock, 0);
+        await TickAt(coordinator, clock, 2);
+        await TickAt(coordinator, clock, 32);
+        Assert.True(coordinator.Snapshot.LockedOut);
+        Assert.Equal(1, launcher.Dispatches);
+
+        clock.Elapsed = TimeSpan.FromSeconds(40);
+        await coordinator.SetPausedAsync(true);
+        await TickAt(coordinator, clock, 100);
+        await coordinator.SetPausedAsync(false);
+        Assert.True(store.Load(id).Checkpoint.LockedOut);
+        Assert.Equal(1, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+        Assert.Equal(1, launcher.Dispatches);
+
+        clock.Elapsed = TimeSpan.FromSeconds(102);
+        await coordinator.ResetRecoveryAsync();
+        Assert.False(store.Load(id).Checkpoint.LockedOut);
+        Assert.Equal(0, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+        await TickAt(coordinator, clock, 104);
+        await TickAt(coordinator, clock, 133);
+        Assert.Equal(1, launcher.Dispatches);
+        await TickAt(coordinator, clock, 134);
+        Assert.Equal(2, launcher.Dispatches);
+        Assert.Contains(recorder.Events, entry => entry.Kind == OperationalEventKind.ProtectionPaused);
+        Assert.Contains(recorder.Events, entry => entry.Kind == OperationalEventKind.ProtectionResumed);
+        Assert.Contains(recorder.Events, entry => entry.Kind == OperationalEventKind.RecoveryReset);
+    }
+
+    [Fact]
+    public async Task Reset_rejects_in_flight_launch_and_adopts_present_target()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var discovery = new MutableDiscovery(Detection.Absent());
+        var launcher = new CountingLauncher();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id, AutoPolicy, store,
+            discovery, launcher, clock);
+        await TickAt(coordinator, clock, 0);
+        await TickAt(coordinator, clock, 2);
+        await TickAt(coordinator, clock, 32);
+        Assert.Equal(RecoveryState.Starting, coordinator.Snapshot.State);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => coordinator.ResetRecoveryAsync());
+        Assert.Equal(1, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+
+        clock.Elapsed = TimeSpan.FromSeconds(33);
+        discovery.Result = Detection.Present("session|app|100|start");
+        await coordinator.TickAsync();
+        clock.Elapsed = TimeSpan.FromSeconds(34);
+        await coordinator.ResetRecoveryAsync();
+        Assert.Equal(RecoveryState.Observing, coordinator.Snapshot.State);
+        Assert.Equal(0, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+        Assert.Equal(1, launcher.Dispatches);
+    }
+
+    [Fact]
+    public async Task Failed_reset_write_keeps_durable_lockout_and_suspends_launches()
+    {
+        using var directory = new TestDirectory();
+        var real = new RecoveryStateStore(directory.Path);
+        var store = new SwitchableFailureStore(real);
+        var clock = new FakeClock();
+        var launcher = new FailingLauncher();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id,
+            AutoPolicy with { MaximumAutomaticAttempts = 1 }, store,
+            new ConstantDiscovery(Detection.Absent()), launcher, clock);
+        await TickAt(coordinator, clock, 0);
+        await TickAt(coordinator, clock, 2);
+        await TickAt(coordinator, clock, 32);
+        store.FailWrites = true;
+        clock.Elapsed = TimeSpan.FromSeconds(40);
+        await Assert.ThrowsAsync<RecoveryStateUnavailableException>(() =>
+            coordinator.ResetRecoveryAsync());
+
+        Assert.True(coordinator.StorageDegraded);
+        Assert.True(real.Load(id).Checkpoint.LockedOut);
+        Assert.Equal(1, real.Load(id).Checkpoint.ReservedAutomaticAttempts);
+        await TickAt(coordinator, clock, 100);
+        Assert.Equal(1, launcher.Dispatches);
+    }
+
+    [Fact]
     public async Task Reserved_attempt_and_dispatch_failure_emit_distinct_structured_events()
     {
         using var directory = new TestDirectory();
@@ -418,6 +514,16 @@ public sealed class ProfileCoordinatorTests
             state.LastState == RecoveryState.Starting
                 ? throw new RecoveryStateUnavailableException("Controlled disk failure.")
                 : inner.Save(id, revision, state);
+    }
+
+    private sealed class SwitchableFailureStore(IRecoveryStateStore inner) : IRecoveryStateStore
+    {
+        public bool FailWrites { get; set; }
+        public StoredRecoveryState Create(Guid id, RecoveryCheckpoint state) => inner.Create(id, state);
+        public StoredRecoveryState Load(Guid id) => inner.Load(id);
+        public StoredRecoveryState Save(Guid id, long revision, RecoveryCheckpoint state) =>
+            FailWrites ? throw new RecoveryStateUnavailableException("Controlled disk failure.") :
+                inner.Save(id, revision, state);
     }
 
     private sealed class TestDirectory : IDisposable

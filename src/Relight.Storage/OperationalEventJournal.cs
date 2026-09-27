@@ -26,6 +26,9 @@ public enum OperationalEventKind
     LockoutEntered,
     RecoveryRearmed,
     ManualAction,
+    ProtectionPaused,
+    ProtectionResumed,
+    RecoveryReset,
     PolicyChanged,
     MonitoringGap,
     StorageDegraded
