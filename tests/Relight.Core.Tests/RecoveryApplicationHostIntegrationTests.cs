@@ -110,6 +110,37 @@ public sealed class RecoveryApplicationHostIntegrationTests
 
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Stale_policy_edit_keeps_old_live_policy_and_profile_identity()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-edit-stale-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            await using var host = await RecoveryApplicationHost.OpenAsync(root, new FakeClock());
+            Guid id = await host.RegisterExecutableAsync("Disposable target", TestExecutable());
+            RecoveryPolicy original = host.GetProfileForEdit(id).Policy;
+            var configuration = new ConfigurationStore(root);
+            StoredConfiguration current = configuration.Load();
+            configuration.Save(current, current.Configuration);
+
+            await Assert.ThrowsAsync<StaleConfigurationException>(() =>
+                host.UpdateProfileBasicsAsync(id, "Renamed target", original with
+                {
+                    RetryDelay = TimeSpan.FromSeconds(5)
+                }));
+            Assert.Equal(original, host.GetProfileForEdit(id).Policy);
+            Assert.Equal("Disposable target", Assert.Single(host.GetProfiles()).Name);
+            Assert.Equal(0, new RecoveryStateStore(root).Load(id)
+                .Checkpoint.ReservedAutomaticAttempts);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Disabled_profile_reopens_with_its_existing_ledger()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-disabled-{Guid.NewGuid():N}");
@@ -131,8 +162,16 @@ public sealed class RecoveryApplicationHostIntegrationTests
                 Assert.False(disabled.ConfiguredEnabled);
                 Assert.Equal(RecoveryState.Disabled, disabled.Recovery?.State);
                 Assert.Empty(reopened.Pulse());
+                RecoveryPolicy editedPolicy = reopened.GetProfileForEdit(id).Policy with
+                {
+                    RetryDelay = TimeSpan.FromSeconds(5)
+                };
+                await reopened.UpdateProfileBasicsAsync(id, "Renamed while disabled",
+                    editedPolicy);
                 await reopened.SetProfileEnabledAsync(id, true);
                 Assert.True(Assert.Single(reopened.GetProfiles()).ConfiguredEnabled);
+                Assert.Equal("Renamed while disabled", Assert.Single(reopened.GetProfiles()).Name);
+                Assert.Equal(editedPolicy, reopened.GetProfileForEdit(id).Policy);
                 Assert.True(new RecoveryStateStore(root).Load(id).Checkpoint.Enabled);
             }
         }
@@ -203,6 +242,18 @@ public sealed class RecoveryApplicationHostIntegrationTests
 
                 await host.SetProfileEnabledAsync(id, true);
                 Assert.True(Assert.Single(host.GetProfiles()).ConfiguredEnabled);
+                Assert.Equal(1, new RecoveryStateStore(root).Load(id)
+                    .Checkpoint.ReservedAutomaticAttempts);
+                RecoveryPolicy editedPolicy = policy with
+                {
+                    ObservationPeriod = TimeSpan.FromMinutes(1),
+                    RetryDelay = TimeSpan.FromSeconds(7)
+                };
+                await host.UpdateProfileBasicsAsync(id, "Renamed disposable target",
+                    editedPolicy);
+                Assert.Equal(id, host.GetProfileForEdit(id).Id);
+                Assert.Equal(editedPolicy, host.GetProfileForEdit(id).Policy);
+                Assert.Equal("Renamed disposable target", Assert.Single(host.GetProfiles()).Name);
                 Assert.Equal(1, new RecoveryStateStore(root).Load(id)
                     .Checkpoint.ReservedAutomaticAttempts);
                 Assert.False(stillRunning.HasExited);

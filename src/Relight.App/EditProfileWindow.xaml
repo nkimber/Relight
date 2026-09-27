@@ -1,0 +1,61 @@
+<Window x:Class="Relight.EditProfileWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Edit protection · Relight" Width="650" Height="740"
+        MinWidth="540" MinHeight="580" WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False" UseLayoutRounding="True" Closing="WindowClosing">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <StackPanel Margin="0,0,0,16">
+            <TextBlock Text="Edit protection" FontSize="24" FontWeight="SemiBold" />
+            <TextBlock Text="Save changes without closing or restarting the application."
+                       Style="{StaticResource Muted}" Margin="0,8,0,0" TextWrapping="Wrap" />
+        </StackPanel>
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="0,0,12,0">
+                <TextBlock Text="Application name" FontWeight="SemiBold" Margin="0,0,0,6" />
+                <TextBox x:Name="NameInput" MaxLength="100" MinHeight="32"
+                         AutomationProperties.Name="Application name" Margin="0,0,0,16" />
+                <TextBlock Text="Target identity" FontWeight="SemiBold" Margin="0,0,0,6" />
+                <TextBox x:Name="IdentityInput" IsReadOnly="True" TextWrapping="Wrap"
+                         AutomationProperties.Name="Target identity" Margin="0,0,0,6" />
+                <TextBlock Text="Launch identity editing will be added with fresh target reconciliation."
+                           Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,20" />
+
+                <TextBlock Text="Monitoring" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12" />
+                <TextBlock Text="Normal check interval · seconds (60–300)" Margin="0,0,0,4" />
+                <TextBox x:Name="NormalInput" AutomationProperties.Name="Normal check interval in seconds" Margin="0,0,0,12" />
+                <TextBlock Text="Observation check interval · seconds (1–30)" Margin="0,0,0,4" />
+                <TextBox x:Name="ObservationPollInput" AutomationProperties.Name="Observation check interval in seconds" Margin="0,0,0,12" />
+                <TextBlock Text="Lockout discovery interval · seconds (5–300)" Margin="0,0,0,4" />
+                <TextBox x:Name="LockoutInput" AutomationProperties.Name="Lockout discovery interval in seconds" Margin="0,0,0,20" />
+
+                <TextBlock Text="Recovery" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12" />
+                <TextBlock Text="Stable observation period · minutes (1–60)" Margin="0,0,0,4" />
+                <TextBox x:Name="ObservationInput" AutomationProperties.Name="Stable observation period in minutes" Margin="0,0,0,12" />
+                <TextBlock Text="Automatic attempt limit (0–20)" Margin="0,0,0,4" />
+                <TextBox x:Name="AttemptsInput" AutomationProperties.Name="Automatic attempt limit" Margin="0,0,0,12" />
+                <TextBlock Text="Retry delay · seconds (5–3600)" Margin="0,0,0,4" />
+                <TextBox x:Name="RetryInput" AutomationProperties.Name="Retry delay in seconds" Margin="0,0,0,12" />
+                <TextBlock Text="Launch appearance timeout · seconds (5–300)" Margin="0,0,0,4" />
+                <TextBox x:Name="AppearanceInput" AutomationProperties.Name="Launch appearance timeout in seconds" Margin="0,0,0,12" />
+                <TextBlock Text="Absence confirmation · seconds (1–10)" Margin="0,0,0,4" />
+                <TextBox x:Name="AbsenceInput" AutomationProperties.Name="Absence confirmation in seconds" Margin="0,0,0,16" />
+                <CheckBox x:Name="InitialStartInput" Content="Start automatically when initially absent"
+                          Margin="0,0,0,12" />
+                <CheckBox x:Name="RearmInput" Content="Rearm after a stable external start"
+                          Margin="0,0,0,18" />
+                <TextBlock Text="Changing observation duration restarts the current stability timer. Changing retry delay sets a new deadline from Save. A launch already in progress keeps its original timeout and attempt policy. Raising the attempt limit alone does not unlock a profile."
+                           Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,16" />
+            </StackPanel>
+        </ScrollViewer>
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="Cancel" IsCancel="True" Margin="0,0,10,0" />
+            <Button x:Name="SaveButton" Content="Save changes" IsDefault="True" Click="SaveClick" />
+        </StackPanel>
+    </Grid>
+</Window>

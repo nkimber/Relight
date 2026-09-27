@@ -101,6 +101,7 @@ public sealed class ProfileCoordinator : IDisposable
     }
 
     public RecoverySnapshot Snapshot => _machine.Snapshot;
+    public RecoveryPolicy Policy => _machine.Policy;
     public bool StorageDegraded => _storageDegraded;
     public string? StorageError => _storageError;
     public bool LoggingDegraded => _loggingDegraded;
@@ -273,6 +274,33 @@ public sealed class ProfileCoordinator : IDisposable
             _machine.SetEnabled(enabled);
             if (!Persist())
                 throw new RecoveryStateUnavailableException(_storageError ?? "State write failed.");
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>
+    /// Commits configuration while this profile is serialized, then applies the
+    /// live policy. A rejected/stale configuration leaves the old policy active.
+    /// The caller runs this command off the UI dispatcher.
+    /// </summary>
+    public async Task ApplyPolicyChangeAsync(RecoveryPolicy next, Action commitConfiguration,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(commitConfiguration);
+        next.Validate();
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_storageDegraded)
+                throw new RecoveryStateUnavailableException(
+                    "Recovery state is degraded; policy change cannot be trusted.");
+            cancellationToken.ThrowIfCancellationRequested();
+            RecoverySnapshot before = _machine.Snapshot;
+            TimeSpan now = _clock.Elapsed;
+            commitConfiguration();
+            _machine.UpdatePolicy(next, now);
+            Record(OperationalEventKind.PolicyChanged, EventSeverity.Information,
+                before, _machine.Snapshot);
         }
         finally { _gate.Release(); }
     }

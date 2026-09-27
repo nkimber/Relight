@@ -45,7 +45,7 @@ public partial class App : Application
             _viewModel.HistoryRefreshRequested += OnHistoryRefreshRequested;
             _dashboard = new MainWindow(SetProfilePausedAsync, ResetProfileRecoveryAsync,
                 StartProfileNowAsync, ExportHistoryAsync, SetProfileEnabledAsync,
-                RemoveProfileAsync)
+                RemoveProfileAsync, ShowEditProfile)
             {
                 DataContext = _viewModel
             };
@@ -211,6 +211,33 @@ public partial class App : Application
         }
         var dialog = new AddApplicationWindow(host) { Owner = _dashboard };
         dialog.ShowDialog();
+    }
+
+    private void ShowEditProfile(Guid profileId)
+    {
+        if (_exiting || _dashboard is null) return;
+        RecoveryApplicationHost? host = Volatile.Read(ref _host);
+        if (host is null)
+        {
+            MessageBox.Show(_dashboard, "Monitoring is unavailable.", "Relight",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        try
+        {
+            var dialog = new EditProfileWindow(host.GetProfileForEdit(profileId),
+                (id, name, policy) => host.UpdateProfileBasicsAsync(id, name, policy,
+                    _monitoringCancellation?.Token ?? CancellationToken.None))
+            {
+                Owner = _dashboard
+            };
+            dialog.ShowDialog();
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(_dashboard, error.Message, "Could not open profile editor",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     private Task SetProfilePausedAsync(Guid profileId, bool paused)

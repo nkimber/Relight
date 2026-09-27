@@ -19,7 +19,7 @@ This plan expands PRD Section 14 without changing Version 1 scope. Proposed defa
 | M3 | Working executable recovery loop with exact attempt limits | M2 | In progress: coordinator, scheduler, launch gate, executable host and durable Start now/pause/reset commands tested; full acceptance pending | 1: recovery engine |
 | M4 | Production target adapter handles real application identity | M3 | Not started | 1 / 2: engine and integration |
 | M5 | Resident WPF tray shell displays live protection status | M3 | In progress: live host status appears in shell; controls and full acceptance pending | 2: native tray application |
-| M6 | Complete setup, editor and explicit application controls | M4, M5 | In progress: basic executable registration and per-profile Start now/pause/resume/enable/disable/remove/reset; installed-app selection, editor and other controls pending | 2: native tray application |
+| M6 | Complete setup, editor and explicit application controls | M4, M5 | In progress: basic executable registration; per-profile Start now/pause/resume/enable/disable/remove/reset; name and policy editor. Installed-app selection, launch-identity editing and other controls pending | 2: native tray application |
 | M7 | Searchable overnight history, notifications and local export | M6 | In progress: local event reader, filtered History page, event-based summary and CSV/text export; complete diagnostics and notifications pending | 2: native tray application |
 | M8 | Windows lifecycle, concurrency and failure hardening verified | M7 | Not started | 2 / 3: acceptance and pilot readiness |
 | M9 | Validated overnight pilot and reproducible x64 release package | M8 | Not started | 3: pilot and distribution |

@@ -19,13 +19,15 @@ public partial class MainWindow : Window
         Task<EventHistoryExportResult>> _exportHistory;
     private readonly Func<Guid, bool, Task> _setEnabled;
     private readonly Func<Guid, Task> _removeProfile;
+    private readonly Action<Guid> _editProfile;
 
     public MainWindow(Func<Guid, bool, Task> setPaused, Func<Guid, Task> resetRecovery,
         Func<Guid, Task> startNow,
         Func<EventHistoryQuery, string, EventHistoryExportFormat,
             Task<EventHistoryExportResult>> exportHistory,
         Func<Guid, bool, Task> setEnabled,
-        Func<Guid, Task> removeProfile)
+        Func<Guid, Task> removeProfile,
+        Action<Guid> editProfile)
     {
         _setPaused = setPaused;
         _resetRecovery = resetRecovery;
@@ -33,6 +35,7 @@ public partial class MainWindow : Window
         _exportHistory = exportHistory;
         _setEnabled = setEnabled;
         _removeProfile = removeProfile;
+        _editProfile = editProfile;
         InitializeComponent();
     }
 
@@ -185,6 +188,12 @@ public partial class MainWindow : Window
         if (sender is Button { DataContext: ApplicationStatusRow row } &&
             DataContext is ShellViewModel model)
             model.ShowHistoryFor(row.Id);
+    }
+
+    private void EditProfileClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: ApplicationStatusRow row })
+            _editProfile(row.Id);
     }
 
     private async void ResetRecoveryClick(object sender, RoutedEventArgs e)

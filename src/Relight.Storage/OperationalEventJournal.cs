@@ -31,6 +31,7 @@ public enum OperationalEventKind
     ProtectionDisabled,
     ProtectionEnabled,
     ProfileRemoved,
+    ProfileRenamed,
     RecoveryReset,
     ExplicitStartRequested,
     ExplicitStartDispatched,

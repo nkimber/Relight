@@ -8,6 +8,7 @@ namespace Relight.Core;
 public sealed class RecoveryMachine
 {
     private RecoveryPolicy _policy;
+    private RecoveryPolicy? _inFlightPolicy;
     private TimeSpan _lastTime;
 
     public RecoveryMachine(RecoveryPolicy policy, bool enabled = true)
@@ -112,6 +113,7 @@ public sealed class RecoveryMachine
                     AppearanceDeadline = null,
                     RetryDeadline = null
                 };
+                _inFlightPolicy = null;
             }
         }
 
@@ -141,6 +143,7 @@ public sealed class RecoveryMachine
             RetryDeadline = null,
             AbsenceStartedAt = null
         };
+        _inFlightPolicy = _policy;
         return Snapshot;
     }
 
@@ -162,6 +165,7 @@ public sealed class RecoveryMachine
             RetryDeadline = null,
             AbsenceStartedAt = null
         };
+        _inFlightPolicy = _policy;
     }
 
     public void FailLaunch(Guid operationId, TimeSpan now)
@@ -187,6 +191,7 @@ public sealed class RecoveryMachine
 
     public void SetEnabled(bool enabled)
     {
+        if (!enabled) _inFlightPolicy = null;
         Snapshot = Snapshot with
         {
             Enabled = enabled,
@@ -305,6 +310,7 @@ public sealed class RecoveryMachine
             RetryDeadline = null,
             AppearanceDeadline = null
         };
+        _inFlightPolicy = null;
         return Changed(before, "Target discovered; observation started");
     }
 
@@ -405,8 +411,9 @@ public sealed class RecoveryMachine
 
     private void FailCurrentAttempt(TimeSpan now)
     {
+        RecoveryPolicy operationPolicy = _inFlightPolicy ?? _policy;
         bool lockout = Snapshot.LockedOut ||
-            Snapshot.ReservedAutomaticAttempts >= _policy.MaximumAutomaticAttempts;
+            Snapshot.ReservedAutomaticAttempts >= operationPolicy.MaximumAutomaticAttempts;
         Snapshot = Snapshot with
         {
             State = lockout ? RecoveryState.AwaitingIntervention : RecoveryState.RetryWaiting,
@@ -419,8 +426,9 @@ public sealed class RecoveryMachine
             LastVerifiedAt = null,
             AbsenceStartedAt = null,
             TargetIdentity = null,
-            RetryDeadline = lockout ? null : now + _policy.RetryDelay
+            RetryDeadline = lockout ? null : now + operationPolicy.RetryDelay
         };
+        _inFlightPolicy = null;
     }
 
     private RecoveryTransition Changed(RecoveryState before, string reason) =>

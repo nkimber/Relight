@@ -118,6 +118,28 @@ public sealed class RecoverySchedulerTests
         Assert.Null(scheduler.GetPassiveLast(id));
     }
 
+    [Fact]
+    public async Task Policy_update_schedules_an_immediate_reconciliation()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        Guid id = Guid.NewGuid();
+        await using var scheduler = new RecoveryScheduler(clock);
+        scheduler.Add(id, ProfileCoordinator.CreateNew(id, RecoveryPolicy.Default,
+            store, new ConstantDiscovery(Detection.Absent()),
+            new CountingLauncher(), clock), RecoveryPolicy.Default);
+        await Assert.Single(scheduler.Pulse()).Value;
+        clock.Elapsed = TimeSpan.FromSeconds(10);
+        Assert.Empty(scheduler.Pulse());
+
+        scheduler.UpdatePolicy(id, RecoveryPolicy.Default with
+        {
+            NormalPollInterval = TimeSpan.FromSeconds(60)
+        });
+        await Assert.Single(scheduler.Pulse()).Value;
+    }
+
     private sealed class FakeClock : IMonotonicClock
     {
         public TimeSpan Elapsed { get; set; }

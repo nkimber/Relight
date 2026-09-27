@@ -106,6 +106,8 @@
                                                                 ToolTip="Disabling protection leaves the application running and preserves its recovery budget." />
                                                         <Button Content="View history" Click="ViewProfileHistoryClick"
                                                                 Margin="0,0,10,8" />
+                                                        <Button Content="Edit policy" IsEnabled="{Binding CanEdit}"
+                                                                Click="EditProfileClick" Margin="0,0,10,8" />
                                                         <Button Content="Remove profile" IsEnabled="{Binding CanRemove}"
                                                                 Click="RemoveProfileClick" Margin="0,0,10,8"
                                                                 ToolTip="Remove this profile; the application keeps running." />

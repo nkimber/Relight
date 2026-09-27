@@ -99,6 +99,35 @@ public sealed class RecoveryScheduler : IAsyncDisposable
         }
     }
 
+    public void UpdatePolicy(Guid id, RecoveryPolicy policy)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        policy.Validate();
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            if (!_profiles.TryGetValue(id, out ScheduledProfile? profile))
+                throw new InvalidOperationException("Profile is not scheduled for recovery.");
+            profile.Policy = policy;
+            if (profile.InFlight is null) profile.NextDue = _clock.Elapsed;
+            else profile.ImmediateRequested = true;
+        }
+    }
+
+    public void UpdatePassiveInterval(Guid id, TimeSpan interval)
+    {
+        if (interval < TimeSpan.FromSeconds(1))
+            throw new ArgumentOutOfRangeException(nameof(interval));
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            if (!_passive.TryGetValue(id, out PassiveProfile? profile)) return;
+            profile.Interval = interval;
+            if (profile.InFlight is null) profile.NextDue = _clock.Elapsed;
+            else profile.ImmediateRequested = true;
+        }
+    }
+
     public async Task RemoveAsync(Guid id)
     {
         ScheduledProfile? profile;
@@ -278,7 +307,7 @@ public sealed class RecoveryScheduler : IAsyncDisposable
         ProfileCoordinator coordinator, RecoveryPolicy policy, TimeSpan nextDue)
     {
         public ProfileCoordinator Coordinator { get; } = coordinator;
-        public RecoveryPolicy Policy { get; } = policy;
+        public RecoveryPolicy Policy { get; set; } = policy;
         public CancellationTokenSource Cancellation { get; } = new();
         public TimeSpan NextDue { get; set; } = nextDue;
         public bool ImmediateRequested { get; set; }
@@ -291,7 +320,7 @@ public sealed class RecoveryScheduler : IAsyncDisposable
         IProcessDiscovery discovery, TimeSpan interval, TimeSpan nextDue)
     {
         public IProcessDiscovery Discovery { get; } = discovery;
-        public TimeSpan Interval { get; } = interval;
+        public TimeSpan Interval { get; set; } = interval;
         public CancellationTokenSource Cancellation { get; } = new();
         public TimeSpan NextDue { get; set; } = nextDue;
         public bool ImmediateRequested { get; set; }

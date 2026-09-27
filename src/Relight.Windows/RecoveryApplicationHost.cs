@@ -311,6 +311,96 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
 
     public IReadOnlyDictionary<Guid, Task> Pulse() => _scheduler.Pulse();
 
+    public ProfileConfiguration GetProfileForEdit(Guid profileId)
+    {
+        StoredConfiguration current = Configuration ??
+            throw new ConfigurationUnavailableException("Configuration is unavailable.");
+        ProfileConfiguration profile = current.Configuration.Profiles.SingleOrDefault(
+            item => item.Id == profileId) ??
+            throw new InvalidOperationException("Profile no longer exists.");
+        return profile with
+        {
+            Target = profile.Target with { Arguments = [.. profile.Target.Arguments] }
+        };
+    }
+
+    public Task UpdateProfileBasicsAsync(Guid profileId, string name,
+        RecoveryPolicy policy, CancellationToken cancellationToken = default) =>
+        Task.Run(() => UpdateProfileBasicsCoreAsync(profileId, name, policy,
+            cancellationToken), CancellationToken.None);
+
+    private async Task UpdateProfileBasicsCoreAsync(Guid profileId, string name,
+        RecoveryPolicy policy, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(name) || name.Trim().Length > 100)
+            throw new ArgumentException("Choose a name of 1–100 characters.", nameof(name));
+        ArgumentNullException.ThrowIfNull(policy);
+        policy.Validate();
+        await _changes.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(RecoveryApplicationHost));
+            StoredConfiguration current = Configuration ??
+                throw new ConfigurationUnavailableException("Configuration is unavailable.");
+            if (!current.AutomaticActionsAllowed)
+                throw new ConfigurationUnavailableException(
+                    "Repair configuration before editing profiles.");
+            ProfileConfiguration profile = current.Configuration.Profiles.SingleOrDefault(
+                item => item.Id == profileId) ??
+                throw new InvalidOperationException("Profile no longer exists.");
+            string nextName = name.Trim();
+            bool renamed = !string.Equals(profile.Name, nextName, StringComparison.Ordinal);
+            bool policyChanged = profile.Policy != policy;
+            if (!renamed && !policyChanged) return;
+
+            var edited = profile with { Name = nextName, Policy = policy };
+            var updated = current.Configuration with
+            {
+                Profiles = current.Configuration.Profiles.Select(item => item.Id == profileId
+                    ? edited : item).ToList()
+            };
+            ConfigurationStore.ValidateConfiguration(updated);
+            ProfileCoordinator? coordinator;
+            lock (_statusSync) _coordinators.TryGetValue(profileId, out coordinator);
+            StoredConfiguration saved;
+            if (policyChanged && coordinator is not null)
+            {
+                StoredConfiguration? committed = null;
+                await coordinator.ApplyPolicyChangeAsync(policy,
+                    () => committed = _configurationStore.Save(current, updated),
+                    cancellationToken).ConfigureAwait(false);
+                saved = committed!;
+                Configuration = saved;
+                _scheduler.UpdatePolicy(profileId, policy);
+            }
+            else
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                saved = _configurationStore.Save(current, updated);
+                Configuration = saved;
+                if (policyChanged && profile.Enabled)
+                    _scheduler.UpdatePassiveInterval(profileId,
+                        policy.LockoutDiscoveryInterval);
+            }
+            lock (_statusSync)
+            {
+                if (_statuses.TryGetValue(profileId, out HostedProfileStatus? status))
+                    _statuses[profileId] = status with { Name = nextName,
+                        Recovery = coordinator?.Snapshot ?? status.Recovery };
+            }
+            if (renamed)
+                _recorder?.TryRecord(new(DateTimeOffset.UtcNow, Guid.NewGuid(),
+                    EventSeverity.Information, OperationalEventKind.ProfileRenamed,
+                    ProfileId: profileId, ProfileName: nextName,
+                    EpisodeId: coordinator?.Snapshot.EpisodeId));
+            if (policyChanged && coordinator is null)
+                _recorder?.TryRecord(new(DateTimeOffset.UtcNow, Guid.NewGuid(),
+                    EventSeverity.Information, OperationalEventKind.PolicyChanged,
+                    ProfileId: profileId, ProfileName: nextName));
+        }
+        finally { _changes.Release(); }
+    }
+
     public Task SetProfilePausedAsync(Guid profileId, bool paused,
         CancellationToken cancellationToken = default) =>
         RunProfileCommandAsync(profileId,

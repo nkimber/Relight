@@ -14,7 +14,7 @@ internal enum ShellPage { Applications, History, Settings }
 internal sealed record ApplicationStatusRow(Guid Id, string Name, string State,
     string Detail, bool IsPaused, bool CanPauseResume, bool CanReset,
     bool CanStartNow, bool ConfiguredEnabled, bool CanToggleEnabled,
-    bool CanRemove)
+    bool CanRemove, bool CanEdit)
 {
     public string PauseResumeLabel => IsPaused ? "Resume protection" : "Pause protection";
     public string EnableDisableLabel => ConfiguredEnabled ? "Disable protection" :
@@ -174,6 +174,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
                 profile.ConfiguredEnabled,
                 configurationProblem is null &&
                     (profile.ConfiguredEnabled || profile.Problem is null),
+                configurationProblem is null,
                 configurationProblem is null))
             .ToArray();
         Guid? selectedId = _selectedHistoryProfile.Id;
@@ -255,10 +256,14 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     {
         EventHistoryResult result = overview.Results;
         EventHistorySummary summary = overview.Summary;
+        Dictionary<Guid, string> currentNames = _applicationRows.ToDictionary(
+            row => row.Id, row => row.Name);
         _historyRows = result.Events.Select(entry => new HistoryRow(
             entry.OccurredUtc.ToLocalTime().ToString("g"),
             entry.OccurredUtc.ToString("u"),
-            entry.ProfileName ?? (entry.ProfileId?.ToString() ?? "Relight"),
+            entry.ProfileName ?? (entry.ProfileId is { } profileId &&
+                currentNames.TryGetValue(profileId, out string? currentName)
+                    ? currentName : entry.ProfileId?.ToString() ?? "Relight"),
             entry.Severity.ToString(), SplitName(entry.Kind.ToString()),
             FormatSummary(entry), FormatDetails(entry))).ToArray();
         _historyStatus = result.TotalMatches == 0

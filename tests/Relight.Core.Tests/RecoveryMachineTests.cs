@@ -194,6 +194,53 @@ public sealed class RecoveryMachineTests
     }
 
     [Fact]
+    public void In_flight_launch_uses_reserved_policy_until_its_result()
+    {
+        var machine = HealthyMachine();
+        machine.Advance(Missing, S(601));
+        machine.Advance(Missing, S(603));
+        Guid operation = Guid.NewGuid();
+        machine.ReserveAutomaticAttempt(S(633), operation);
+        TimeSpan originalDeadline = machine.Snapshot.AppearanceDeadline!.Value;
+
+        machine.UpdatePolicy(machine.Policy with
+        {
+            MaximumAutomaticAttempts = 1,
+            RetryDelay = S(5),
+            AppearanceTimeout = S(5)
+        }, S(634));
+        Assert.Equal(originalDeadline, machine.Snapshot.AppearanceDeadline);
+        machine.FailLaunch(operation, S(635));
+        Assert.False(machine.Snapshot.LockedOut);
+        Assert.Equal(S(665), machine.Snapshot.RetryDeadline);
+        Assert.Equal(1, machine.Snapshot.ReservedAutomaticAttempts);
+        Assert.Equal(RecoverySignal.None, machine.Advance(Missing, S(665)).Signal);
+        Assert.True(machine.Snapshot.LockedOut);
+    }
+
+    [Fact]
+    public void Live_observation_and_retry_edits_restart_their_respective_timers()
+    {
+        var observing = new RecoveryMachine(RecoveryPolicy.Default);
+        observing.Advance(Target, S(0));
+        Observe(observing, Target, 0, 100);
+        observing.UpdatePolicy(observing.Policy with
+        {
+            ObservationPeriod = S(60)
+        }, S(100));
+        Assert.Equal(S(100), observing.Snapshot.ObservationStartedAt);
+        Observe(observing, Target, 100, 160);
+        Assert.Equal(RecoveryState.Healthy, observing.Snapshot.State);
+
+        var retry = HealthyMachine();
+        retry.Advance(Missing, S(601));
+        retry.Advance(Missing, S(603));
+        retry.UpdatePolicy(retry.Policy with { RetryDelay = S(5) }, S(610));
+        Assert.Equal(S(615), retry.Snapshot.RetryDeadline);
+        Assert.Equal(RecoverySignal.LaunchDue, retry.Advance(Missing, S(615)).Signal);
+    }
+
+    [Fact]
     public void Monitoring_gap_does_not_count_as_stable_observation()
     {
         var machine = new RecoveryMachine(RecoveryPolicy.Default);
