@@ -52,7 +52,7 @@ This is a development preview, not the production release or overnight pilot des
 | `src/Relight.App` | WPF shell, view model, tray integration and session singleton |
 | `src/Relight.Core` | UI-independent recovery policy and state model |
 | `src/Relight.Storage` | Versioned runtime state, validated configuration and a bounded JSON Lines event journal |
-| `src/Relight.Engine` | Per-profile serialized coordination and durable launch reservations |
+| `src/Relight.Engine` | Per-profile coordination, durable launch reservations and shared polling scheduler |
 | `src/Relight.Windows` | Executable discovery and argument-safe launch adapter |
 | `tests` | Deterministic model/store tests and controllable Windows test target |
 | `scripts` | Repeatable shell checks and original icon generation |
