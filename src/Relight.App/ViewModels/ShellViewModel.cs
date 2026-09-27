@@ -34,6 +34,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     private IReadOnlyList<ApplicationStatusRow> _applicationRows = [];
     private string _monitoringBanner = "Loading monitoring configuration…";
     private string _footerStatus = "Relight is in the tray · Loading monitoring status";
+    private bool _canRepairConfiguration;
     private IReadOnlyList<HistoryProfileOption> _historyProfiles =
         [new("All applications", null)];
     private IReadOnlyList<EventHistoryProfile> _retainedHistoryProfiles = [];
@@ -46,7 +47,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     private HistoryRangeOption _selectedHistoryRange;
     private string _historyEpisodeText = "";
 
-    public ShellViewModel(Action hide, Action exit, Action add)
+    public ShellViewModel(Action hide, Action exit, Action add, Action repairConfiguration)
     {
         ApplicationsCommand = new RelayCommand(() => Navigate(ShellPage.Applications));
         HistoryCommand = new RelayCommand(() => Navigate(ShellPage.History));
@@ -54,6 +55,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         HideCommand = new RelayCommand(hide);
         ExitCommand = new RelayCommand(exit);
         AddCommand = new RelayCommand(add);
+        RepairConfigurationCommand = new RelayCommand(repairConfiguration);
         RefreshHistoryCommand = new RelayCommand(() => HistoryRefreshRequested?.Invoke(this, EventArgs.Empty));
         _selectedHistoryProfile = _historyProfiles[0];
         _selectedHistorySeverity = HistorySeverities[0];
@@ -67,6 +69,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     public ICommand HideCommand { get; }
     public ICommand ExitCommand { get; }
     public ICommand AddCommand { get; }
+    public ICommand RepairConfigurationCommand { get; }
     public ICommand RefreshHistoryCommand { get; }
     public IReadOnlyList<HistoryProfileOption> HistoryProfiles => _historyProfiles;
     public IReadOnlyList<HistorySeverityOption> HistorySeverities { get; } =
@@ -118,6 +121,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     public bool HasNoApplications => !HasApplications;
     public string ApplicationCountText => $"{_applicationRows.Count} configured";
     public string MonitoringBanner => _monitoringBanner;
+    public bool CanRepairConfiguration => _canRepairConfiguration;
     public string FooterStatus => _footerStatus;
     public string TrayStatus => _footerStatus.Length > 63
         ? $"Relight · {_applicationRows.Count} configured" : _footerStatus;
@@ -153,9 +157,14 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     public string DataDirectory => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Relight");
 
-    public void UpdateMonitoring(string? configurationProblem,
+    public void UpdateMonitoring(string? configurationProblem, bool canRepairConfiguration,
         IReadOnlyList<HostedProfileStatus> profiles, EventRecorderStatus? logging)
     {
+        if (_canRepairConfiguration != canRepairConfiguration)
+        {
+            _canRepairConfiguration = canRepairConfiguration;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CanRepairConfiguration)));
+        }
         IReadOnlyList<ApplicationStatusRow> rows = profiles
             .OrderBy(profile => profile.Name, StringComparer.CurrentCultureIgnoreCase)
             .Select(profile => new ApplicationStatusRow(profile.Id, profile.Name,
@@ -203,6 +212,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
 
     public void ShowMonitoringProblem(string problem)
     {
+        _canRepairConfiguration = false;
         _applicationRows = [];
         _monitoringBanner = $"Monitoring could not start: {problem}";
         _footerStatus = "Relight is in the tray · Monitoring unavailable";

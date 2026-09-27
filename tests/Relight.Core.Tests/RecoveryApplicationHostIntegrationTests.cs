@@ -11,6 +11,41 @@ public sealed class RecoveryApplicationHostIntegrationTests
 {
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Explicit_repair_reopens_last_good_configuration_without_creating_state()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-host-repair-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var store = new ConfigurationStore(root);
+            StoredConfiguration initial = store.Initialize(RelightConfiguration.Empty);
+            store.Save(initial, RelightConfiguration.Empty);
+            string file = Path.Combine(root, "configuration.json");
+            File.WriteAllText(file, "{ invalid external edit");
+            string? archived;
+            await using (var degraded = await RecoveryApplicationHost.OpenAsync(root,
+                new FakeClock()))
+            {
+                Assert.True(degraded.Configuration?.FromLastGoodBackup);
+                Assert.NotNull(degraded.ConfigurationProblem);
+                archived = await degraded.RepairConfigurationAsync();
+            }
+            Assert.NotNull(archived);
+            Assert.Equal("{ invalid external edit", File.ReadAllText(archived));
+            await using var reopened = await RecoveryApplicationHost.OpenAsync(root,
+                new FakeClock());
+            Assert.False(reopened.Configuration?.FromLastGoodBackup);
+            Assert.Null(reopened.ConfigurationProblem);
+            Assert.Empty(reopened.GetProfiles());
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Registration_creates_ledger_before_enabling_and_rejects_overlap()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-register-{Guid.NewGuid():N}");

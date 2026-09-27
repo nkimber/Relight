@@ -23,6 +23,7 @@ public partial class App : Application
     private DispatcherTimer? _statusTimer;
     private bool _updatingStatus;
     private bool _exiting;
+    private bool _repairingConfiguration;
     private CancellationTokenSource? _historyCancellation;
 
     protected override void OnStartup(StartupEventArgs e)
@@ -41,7 +42,8 @@ public partial class App : Application
 
             ApplyAccessibilityColors();
             SystemParameters.StaticPropertyChanged += OnSystemParametersChanged;
-            _viewModel = new ShellViewModel(HideDashboard, RequestExit, ShowAddApplication);
+            _viewModel = new ShellViewModel(HideDashboard, RequestExit, ShowAddApplication,
+                RepairConfiguration);
             _viewModel.HistoryRefreshRequested += OnHistoryRefreshRequested;
             _dashboard = new MainWindow(SetProfilePausedAsync, ResetProfileRecoveryAsync,
                 StartProfileNowAsync, ExportHistoryAsync, SetProfileEnabledAsync,
@@ -120,7 +122,7 @@ public partial class App : Application
 
     private async void OnStatusTick(object? sender, EventArgs e)
     {
-        if (_updatingStatus || _exiting) return;
+        if (_updatingStatus || _exiting || _repairingConfiguration) return;
         RecoveryApplicationHost? host = Volatile.Read(ref _host);
         if (host is null) return;
         _updatingStatus = true;
@@ -128,7 +130,8 @@ public partial class App : Application
         {
             var profiles = host.GetProfiles();
             var logging = await host.GetLoggingStatusAsync();
-            _viewModel?.UpdateMonitoring(host.ConfigurationProblem, profiles, logging);
+            _viewModel?.UpdateMonitoring(host.ConfigurationProblem,
+                host.Configuration?.FromLastGoodBackup == true, profiles, logging);
             if (_viewModel is not null) _tray?.UpdateStatus(_viewModel.TrayStatus);
         }
         catch (Exception error)
@@ -142,6 +145,53 @@ public partial class App : Application
     {
         _viewModel?.ShowMonitoringProblem(message);
         _tray?.UpdateStatus("Relight · Monitoring unavailable");
+    }
+
+    private async void RepairConfiguration()
+    {
+        if (_repairingConfiguration || _exiting || _dashboard is null) return;
+        RecoveryApplicationHost? host = Volatile.Read(ref _host);
+        StoredConfiguration? fallback = host?.Configuration;
+        if (host is null || fallback?.FromLastGoodBackup != true) return;
+        string profileCount = fallback.Configuration.Profiles.Count == 1
+            ? "1 profile" : $"{fallback.Configuration.Profiles.Count} profiles";
+        if (MessageBox.Show(_dashboard,
+                $"Restore last-good configuration revision {fallback.Revision} " +
+                $"with {profileCount}?\n\nThe invalid current file will be preserved. " +
+                "Monitoring will restart using the restored settings; automatic recovery " +
+                "may resume for profiles with valid recovery state. Running applications " +
+                "will be left alone.",
+                "Restore last-good configuration?", MessageBoxButton.OKCancel,
+                MessageBoxImage.Warning, MessageBoxResult.Cancel) != MessageBoxResult.OK)
+            return;
+        _repairingConfiguration = true;
+        try
+        {
+            string? preserved = await host.RepairConfigurationAsync(
+                _monitoringCancellation?.Token ?? CancellationToken.None);
+            SetMonitoringProblem("Configuration restored; reopening monitoring from disk.");
+            CancellationTokenSource? oldCancellation = _monitoringCancellation;
+            Task? oldTask = _monitoringTask;
+            oldCancellation?.Cancel();
+            if (oldTask is not null) await oldTask;
+            oldCancellation?.Dispose();
+            if (_exiting) return;
+            _monitoringCancellation = new CancellationTokenSource();
+            CancellationToken monitoringToken = _monitoringCancellation.Token;
+            _monitoringTask = Task.Run(() => RunMonitoringAsync(monitoringToken));
+            MessageBox.Show(_dashboard,
+                "Last-good configuration restored. Monitoring is restarting. " +
+                (preserved is null ? "No invalid current file existed to preserve."
+                    : $"The invalid file was preserved at:\n{preserved}"),
+                "Configuration restored", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception error)
+        {
+            if (!_exiting)
+                MessageBox.Show(_dashboard, error.Message, "Configuration repair failed",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally { _repairingConfiguration = false; }
     }
 
     private async void OnHistoryRefreshRequested(object? sender, EventArgs e)

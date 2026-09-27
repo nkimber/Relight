@@ -201,7 +201,14 @@
                                 <TextBox Text="{Binding DataDirectory, Mode=OneWay}" IsReadOnly="True" BorderThickness="0" Padding="4,6"
                                          TextWrapping="Wrap" Background="{DynamicResource CanvasBrush}" Foreground="{DynamicResource TextBrush}"
                                          AutomationProperties.Name="Local data directory" />
-                                <TextBlock Text="Profile editing, history export and advanced diagnostics are still in development." Style="{StaticResource Muted}" Margin="0,12,0,0" />
+                                <Button Content="Restore last-good configuration"
+                                        Command="{Binding RepairConfigurationCommand}"
+                                        IsEnabled="{Binding CanRepairConfiguration}"
+                                        AutomationProperties.Name="Restore last-good configuration"
+                                        Margin="0,16,0,0" HorizontalAlignment="Left" />
+                                <TextBlock Text="When the current configuration is invalid, this restores the last-good backup, preserves the invalid file, and restarts monitoring. Review the backup before continuing."
+                                           Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0" />
+                                <TextBlock Text="Advanced diagnostics are still in development." Style="{StaticResource Muted}" Margin="0,12,0,0" />
                             </StackPanel>
                         </Border>
                     </StackPanel>

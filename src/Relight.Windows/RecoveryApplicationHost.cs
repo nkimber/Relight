@@ -311,6 +311,22 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
 
     public IReadOnlyDictionary<Guid, Task> Pulse() => _scheduler.Pulse();
 
+    public Task<string?> RepairConfigurationAsync(CancellationToken cancellationToken = default) =>
+        Task.Run(async () =>
+        {
+            await _changes.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (_disposed) throw new ObjectDisposedException(nameof(RecoveryApplicationHost));
+                StoredConfiguration fallback = Configuration is { FromLastGoodBackup: true } shown
+                    ? shown : throw new InvalidOperationException(
+                        "A trusted last-good configuration is not available for repair.");
+                cancellationToken.ThrowIfCancellationRequested();
+                return _configurationStore.RepairFromLastGood(fallback).PreservedInvalidPath;
+            }
+            finally { _changes.Release(); }
+        }, CancellationToken.None);
+
     public ProfileConfiguration GetProfileForEdit(Guid profileId)
     {
         StoredConfiguration current = Configuration ??
