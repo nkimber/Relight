@@ -2,7 +2,9 @@
   <Folder Name="/src/">
     <Project Path="src/Relight.App/Relight.App.csproj" />
     <Project Path="src/Relight.Core/Relight.Core.csproj" />
+    <Project Path="src/Relight.Engine/Relight.Engine.csproj" />
     <Project Path="src/Relight.Storage/Relight.Storage.csproj" />
+    <Project Path="src/Relight.Windows/Relight.Windows.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Relight.Core.Tests/Relight.Core.Tests.csproj" />

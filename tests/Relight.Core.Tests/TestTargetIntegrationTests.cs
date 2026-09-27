@@ -2,6 +2,7 @@ using System.Diagnostics;
 
 namespace Relight.Core.Tests;
 
+[Collection("Windows desktop process tests")]
 public sealed class TestTargetIntegrationTests
 {
     [Fact]

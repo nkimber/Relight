@@ -13,11 +13,18 @@ public sealed class StaleRecoveryRevisionException(string message) : InvalidOper
 
 public sealed record StoredRecoveryState(Guid ProfileId, long Revision, RecoveryCheckpoint Checkpoint);
 
+public interface IRecoveryStateStore
+{
+    StoredRecoveryState Create(Guid profileId, RecoveryCheckpoint initial);
+    StoredRecoveryState Load(Guid profileId);
+    StoredRecoveryState Save(Guid profileId, long expectedRevision, RecoveryCheckpoint checkpoint);
+}
+
 /// <summary>
 /// Per-profile, versioned, revision-checked snapshots. A caller must commit a
 /// reserved attempt here successfully before sending a launch request to Windows.
 /// </summary>
-public sealed class RecoveryStateStore
+public sealed class RecoveryStateStore : IRecoveryStateStore
 {
     private const int SchemaVersion = 1;
     private static readonly JsonSerializerOptions Json = CreateJsonOptions();

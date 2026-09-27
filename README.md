@@ -4,11 +4,11 @@ A Windows tray application that will watch selected desktop apps and bring them 
 
 [Public repository](https://github.com/nkimber/Relight)
 
-**Current status: runnable WPF shell preview (0.1.0) with recovery foundation under development.** The dashboard, tray lifetime and single-instance activation work. A separate recovery model, state store and test target exist, but the preview does not yet connect them or control other applications. Application registration, active monitoring, notifications and sign-in startup are not implemented yet.
+**Current status: runnable WPF shell preview (0.1.0) with recovery foundation under development.** The dashboard, tray lifetime and single-instance activation work. A separate recovery model, state store, coordinator, executable adapter and test target exist, but the preview does not yet connect them or control other applications. Application registration, active monitoring, notifications and sign-in startup are not implemented yet.
 
 ## Build and run
 
-Requirements: Windows 11 x64 and the .NET 10 SDK selected by [global.json](global.json). The initial build uses SDK 10.0.102, with patch roll-forward within that SDK feature band. The application has no third-party runtime NuGet packages; the test project uses xUnit and the Microsoft test SDK.
+Requirements: Windows 11 x64 and the .NET 10 SDK selected by [global.json](global.json). The initial build uses SDK 10.0.102, with patch roll-forward within that SDK feature band. The WPF preview has no third-party runtime NuGet packages. The Windows executable adapter uses Microsoft's `System.Management` package; the test project uses xUnit and the Microsoft test SDK.
 
 ```powershell
 dotnet restore Relight.slnx
@@ -52,11 +52,13 @@ This is a development preview, not the production release or overnight pilot des
 | `src/Relight.App` | WPF shell, view model, tray integration and session singleton |
 | `src/Relight.Core` | UI-independent recovery policy and state model |
 | `src/Relight.Storage` | Versioned, fail-closed runtime recovery-state snapshots |
+| `src/Relight.Engine` | Per-profile serialized coordination and durable launch reservations |
+| `src/Relight.Windows` | Executable discovery and argument-safe launch adapter |
 | `tests` | Deterministic model/store tests and controllable Windows test target |
 | `scripts` | Repeatable shell checks and original icon generation |
 | `docs` | Requirements, delivery plan, architecture and verification evidence |
 | `AGENTS.md` | Engineering and recovery rules for contributors/agents |
 
-Start with [the docs index](docs/index.md) and [development plan](docs/development-plan.md). The recovery engine will remain independent of WPF; no placeholder engine projects have been added.
+Start with [the docs index](docs/index.md) and [development plan](docs/development-plan.md). The recovery engine remains independent of WPF; scheduler and shell integration are still pending.
 
 The flame artwork is original to this repository. WPF and Windows Forms are provided by the Microsoft .NET Windows Desktop framework; no Resurrector code or assets are copied into the shell.
