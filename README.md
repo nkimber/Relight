@@ -4,11 +4,11 @@ A Windows tray application that will watch selected desktop apps and bring them 
 
 [Public repository](https://github.com/nkimber/Relight)
 
-**Current status: runnable WPF shell preview (0.1.0).** The dashboard, tray lifetime and single-instance activation work. Application registration, monitoring, recovery, persistence, notifications and sign-in startup are not implemented yet. This preview does not control or monitor other applications.
+**Current status: runnable WPF shell preview (0.1.0) with recovery foundation under development.** The dashboard, tray lifetime and single-instance activation work. A separate recovery model, state store and test target exist, but the preview does not yet connect them or control other applications. Application registration, active monitoring, notifications and sign-in startup are not implemented yet.
 
 ## Build and run
 
-Requirements: Windows 11 x64 and the .NET 10 SDK selected by [global.json](global.json). The initial build uses SDK 10.0.102, with patch roll-forward within that SDK feature band. No third-party NuGet packages are required.
+Requirements: Windows 11 x64 and the .NET 10 SDK selected by [global.json](global.json). The initial build uses SDK 10.0.102, with patch roll-forward within that SDK feature band. The application has no third-party runtime NuGet packages; the test project uses xUnit and the Microsoft test SDK.
 
 ```powershell
 dotnet restore Relight.slnx
@@ -32,9 +32,10 @@ Exit an already-running preview, then run:
 
 ```powershell
 pwsh -File scripts/Test-Shell.ps1
+dotnet test tests/Relight.Core.Tests/Relight.Core.Tests.csproj -c Release
 ```
 
-The smoke check verifies hidden tray startup, second-instance activation, and startup after a forced interruption. It cleans up only the preview processes it starts. Interactive checks and outstanding coverage are recorded in [the shell checkpoint](docs/shell-checkpoint.md).
+The shell smoke check verifies hidden tray startup, second-instance activation, and startup after a forced interruption. It cleans up only the preview processes it starts. The test suite runs deterministic recovery/storage checks and controlled Windows process tests. Interactive checks and outstanding coverage are recorded in [the shell checkpoint](docs/shell-checkpoint.md) and [engine checkpoint](docs/engine-checkpoint.md).
 
 A self-contained preview can be produced locally with:
 
@@ -49,6 +50,9 @@ This is a development preview, not the production release or overnight pilot des
 | Path | Contents |
 |---|---|
 | `src/Relight.App` | WPF shell, view model, tray integration and session singleton |
+| `src/Relight.Core` | UI-independent recovery policy and state model |
+| `src/Relight.Storage` | Versioned, fail-closed runtime recovery-state snapshots |
+| `tests` | Deterministic model/store tests and controllable Windows test target |
 | `scripts` | Repeatable shell checks and original icon generation |
 | `docs` | Requirements, delivery plan, architecture and verification evidence |
 | `AGENTS.md` | Engineering and recovery rules for contributors/agents |

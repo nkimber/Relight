@@ -10,6 +10,8 @@ Relight is a C# Windows application with a WPF/MVVM dashboard and resident syste
 | [development-plan.md](development-plan.md) | Incremental milestones, dependencies, deliverables, exit criteria, acceptance-test ownership and the public GitHub repository checkpoint. The initial shell slice is implemented; full milestones remain open. | Choosing the next implementation slice, checking readiness or recording delivery progress. |
 | [architecture.md](architecture.md) | Selected .NET/WPF foundation, shell lifetime, tray and single-instance design, and boundaries for the future engine. | Modifying the shell or introducing the next components. |
 | [shell-checkpoint.md](shell-checkpoint.md) | Initial shell deliverables, verification evidence and outstanding interactive/acceptance checks. | Understanding exactly what works in the preview and what still needs testing. |
+| [target-findings.md](target-findings.md) | Read-only inventory of both installed ChatGPT desktop packages, their activation IDs and outstanding M0 questions. | Building or testing an installed-app adapter. |
+| [engine-checkpoint.md](engine-checkpoint.md) | Implemented recovery model, durable state store, controllable test target, test evidence and remaining integration work. | Continuing M1–M3 or reviewing attempt-accounting claims. |
 | [../README.md](../README.md) | Build/run instructions, preview controls, smoke checks and project layout. | Getting a checkout running locally. |
 | [../AGENTS.md](../AGENTS.md) | Repository-wide engineering rules, recovery invariants, verification and documentation expectations. Located at repository root. | Starting any agent task or reviewing a change. |
 

@@ -19,3 +19,5 @@ jobs:
         run: dotnet restore Relight.slnx
       - name: Build release
         run: dotnet build Relight.slnx --configuration Release --no-restore
+      - name: Deterministic recovery and storage tests
+        run: dotnet test tests/Relight.Core.Tests/Relight.Core.Tests.csproj --configuration Release --no-build --filter "Category!=WindowsDesktop"
