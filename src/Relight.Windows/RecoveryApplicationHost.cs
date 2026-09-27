@@ -13,7 +13,8 @@ public sealed record HostedProfileStatus(
     RecoverySnapshot? Recovery,
     string? Problem,
     bool ConfiguredEnabled = true,
-    RecoveryPolicy? Policy = null);
+    RecoveryPolicy? Policy = null,
+    TargetKind TargetKind = TargetKind.Executable);
 
 public sealed record ProfileBatchResult(int Requested, int Completed,
     IReadOnlyList<string> Errors);
@@ -123,6 +124,41 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                     null, disabledRecovery, problem, ConfiguredEnabled: false);
                 continue;
             }
+            if (profile.Target.Kind == TargetKind.PackagedApplication &&
+                string.Equals(profile.Target.Identity,
+                    ChatGptPackagedDiscovery.ApplicationUserModelId,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                var packagedDiscovery = new ChatGptPackagedDiscovery();
+                if (!Configuration.AutomaticActionsAllowed)
+                {
+                    _statuses[profile.Id] = await PassiveStatus(profile,
+                        packagedDiscovery,
+                        "Configuration is degraded; automatic actions are suspended.",
+                        cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+                try
+                {
+                    ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(
+                        profile.Id, profile.Policy, _stateStore, packagedDiscovery,
+                        new PackagedApplicationLauncher(profile.Target.Identity),
+                        _clock, _launchGate, _recorder);
+                    _scheduler.Add(profile.Id, coordinator, profile.Policy);
+                    _coordinators.Add(profile.Id, coordinator);
+                    _statuses[profile.Id] = new(profile.Id, profile.Name, true, true,
+                        null, coordinator.Snapshot, null);
+                }
+                catch (Exception error) when (error is IOException or
+                    InvalidOperationException or ArgumentException)
+                {
+                    _statuses[profile.Id] = await PassiveStatus(profile,
+                        packagedDiscovery,
+                        $"Recovery state is unavailable; automatic actions are suspended. {error.Message}",
+                        cancellationToken).ConfigureAwait(false);
+                }
+                continue;
+            }
             if (profile.Target.Kind != TargetKind.Executable)
             {
                 _statuses[profile.Id] = new(profile.Id, profile.Name, false, false, null, null,
@@ -202,9 +238,9 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
 
     public IReadOnlyList<HostedProfileStatus> GetProfiles()
     {
-        IReadOnlyDictionary<Guid, RecoveryPolicy> policies = Configuration?.Configuration.Profiles
-            .ToDictionary(profile => profile.Id, profile => profile.Policy) ??
-            new Dictionary<Guid, RecoveryPolicy>();
+        IReadOnlyDictionary<Guid, ProfileConfiguration> configured =
+            Configuration?.Configuration.Profiles.ToDictionary(profile => profile.Id) ??
+            new Dictionary<Guid, ProfileConfiguration>();
         (HostedProfileStatus Status, ProfileCoordinator? Coordinator)[] statuses;
         lock (_statusSync)
             statuses = _statuses.Values.Select(status =>
@@ -217,7 +253,9 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             if (last is null)
                 return status with
                 {
-                    Policy = policies.GetValueOrDefault(status.Id),
+                    Policy = configured.GetValueOrDefault(status.Id)?.Policy,
+                    TargetKind = configured.GetValueOrDefault(status.Id)?.Target.Kind ??
+                        status.TargetKind,
                     Detection = _scheduler.GetPassiveLast(status.Id) ?? status.Detection,
                     Recovery = coordinator?.Snapshot ?? status.Recovery,
                     AutomaticActionsAllowed = status.AutomaticActionsAllowed &&
@@ -226,7 +264,9 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 };
             return status with
             {
-                Policy = policies.GetValueOrDefault(status.Id),
+                Policy = configured.GetValueOrDefault(status.Id)?.Policy,
+                TargetKind = configured.GetValueOrDefault(status.Id)?.Target.Kind ??
+                    status.TargetKind,
                 Recovery = coordinator?.Snapshot ?? last.Value.Result?.Snapshot ?? status.Recovery,
                 AutomaticActionsAllowed = status.AutomaticActionsAllowed &&
                     !(coordinator?.StorageDegraded ?? last.Value.Result?.StorageDegraded ?? false),
@@ -267,6 +307,40 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         if (detected.Kind == DetectionKind.Unavailable)
             throw new InvalidOperationException($"Target identity cannot be verified: {detected.Reason}");
 
+        return await RegisterNewProfileAsync(name,
+            new(TargetKind.Executable, target.CanonicalPath, []), discovery,
+            new ExecutableLauncher(target), new ExecutableStopper(target), detected,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public static Task<Detection> InspectSelectedChatGptAsync(
+        CancellationToken cancellationToken = default) =>
+        new ChatGptPackagedDiscovery().DetectAsync(cancellationToken);
+
+    public async Task<Guid> RegisterSelectedChatGptAsync(string name,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(name) || name.Length > 100)
+            throw new ArgumentException("Choose a name of 1–100 characters.", nameof(name));
+        var discovery = new ChatGptPackagedDiscovery();
+        Detection detected = await discovery.DetectAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (detected.Kind == DetectionKind.Unavailable)
+            throw new InvalidOperationException(
+                $"Target identity cannot be verified: {detected.Reason}");
+        return await RegisterNewProfileAsync(name,
+            new(TargetKind.PackagedApplication,
+                ChatGptPackagedDiscovery.ApplicationUserModelId, []), discovery,
+            new PackagedApplicationLauncher(
+                ChatGptPackagedDiscovery.ApplicationUserModelId), null, detected,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<Guid> RegisterNewProfileAsync(string name,
+        TargetConfiguration targetConfiguration, IProcessDiscovery discovery,
+        IProcessLauncher launcher, IProcessStopper? stopper, Detection detected,
+        CancellationToken cancellationToken)
+    {
         await _changes.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -279,7 +353,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             Guid id = Guid.NewGuid();
             RecoveryPolicy policy = RecoveryPolicy.Default;
             var profile = new ProfileConfiguration(id, name.Trim(), true,
-                new(TargetKind.Executable, target.CanonicalPath, []), policy);
+                targetConfiguration, policy);
             var updated = current.Configuration with
             {
                 Profiles = [.. current.Configuration.Profiles, profile]
@@ -289,8 +363,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             ConfigurationStore.ValidateConfiguration(updated);
             ProfileCoordinator coordinator = await Task.Run(() =>
                 ProfileCoordinator.CreateNew(id, policy, _stateStore, discovery,
-                    new ExecutableLauncher(target), _clock, _launchGate, _recorder,
-                    new ExecutableStopper(target)),
+                    launcher, _clock, _launchGate, _recorder, stopper),
                 CancellationToken.None).ConfigureAwait(false);
             try
             {
@@ -590,15 +663,32 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         RelightConfiguration updated, ProfileConfiguration profile,
         CancellationToken cancellationToken)
     {
-        if (profile.Target.Kind != TargetKind.Executable)
-            throw new InvalidOperationException("Installed-app activation is not available yet.");
-        var target = new ExecutableTarget(profile.Target.Identity, profile.Target.Arguments,
-            profile.Target.WorkingDirectory, profile.Target.RequiredArgument,
-            profile.Target.ExcludedArgument);
-        target.Validate();
-        if (!File.Exists(target.CanonicalPath))
-            throw new FileNotFoundException("The target executable is missing.", target.CanonicalPath);
-        var discovery = new ExecutableDiscovery(target);
+        IProcessDiscovery discovery;
+        IProcessLauncher launcher;
+        IProcessStopper? stopper = null;
+        if (profile.Target.Kind == TargetKind.Executable)
+        {
+            var target = new ExecutableTarget(profile.Target.Identity,
+                profile.Target.Arguments, profile.Target.WorkingDirectory,
+                profile.Target.RequiredArgument, profile.Target.ExcludedArgument);
+            target.Validate();
+            if (!File.Exists(target.CanonicalPath))
+                throw new FileNotFoundException("The target executable is missing.",
+                    target.CanonicalPath);
+            discovery = new ExecutableDiscovery(target);
+            launcher = new ExecutableLauncher(target);
+            stopper = new ExecutableStopper(target);
+        }
+        else if (profile.Target.Kind == TargetKind.PackagedApplication &&
+            string.Equals(profile.Target.Identity,
+                ChatGptPackagedDiscovery.ApplicationUserModelId,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            discovery = new ChatGptPackagedDiscovery();
+            launcher = new PackagedApplicationLauncher(profile.Target.Identity);
+        }
+        else throw new InvalidOperationException(
+            "This packaged application does not have a validated adapter.");
         Detection found = await discovery.DetectAsync(cancellationToken).ConfigureAwait(false);
         if (found.Kind == DetectionKind.Unavailable)
             throw new InvalidOperationException(
@@ -607,8 +697,8 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             if (_coordinators.ContainsKey(profile.Id))
                 throw new InvalidOperationException("This profile is already scheduled.");
         ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(profile.Id,
-            profile.Policy, _stateStore, discovery, new ExecutableLauncher(target),
-            _clock, _launchGate, _recorder, new ExecutableStopper(target));
+            profile.Policy, _stateStore, discovery, launcher,
+            _clock, _launchGate, _recorder, stopper);
         RecoveryState previousState = coordinator.Snapshot.State;
         bool schedulerOwnsCoordinator = false;
         try

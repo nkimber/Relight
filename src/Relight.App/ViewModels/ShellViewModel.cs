@@ -303,11 +303,11 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
                         Relight.Core.RecoveryState.RetryWaiting or
                         Relight.Core.RecoveryState.AwaitingIntervention } &&
                     profile.AutomaticActionsAllowed && profile.Problem is null,
-                profile.ConfiguredEnabled &&
+                profile.TargetKind == TargetKind.Executable && profile.ConfiguredEnabled &&
                     profile.Recovery is { Enabled: true, DetectionUnavailable: false,
                         TargetIdentity: not null, State: not Relight.Core.RecoveryState.Starting } &&
                     profile.AutomaticActionsAllowed && profile.Problem is null,
-                profile.ConfiguredEnabled &&
+                profile.TargetKind == TargetKind.Executable && profile.ConfiguredEnabled &&
                     profile.Recovery is { Enabled: true, DetectionUnavailable: false,
                         TargetIdentity: not null, HoldReason: null,
                         State: not Relight.Core.RecoveryState.Starting } &&

@@ -1,4 +1,5 @@
 using Relight.Core;
+using Relight.Storage;
 using Relight.ViewModels;
 using Relight.Windows;
 
@@ -148,6 +149,12 @@ public sealed class ProfileTimingPresentationTests
                 { HoldReason = RecoveryHoldReason.InterruptedExplicitLaunch } }],
             null, TimeSpan.Zero);
         Assert.True(Assert.Single(viewModel.ApplicationRows).CanStopAndPause);
+        Assert.False(Assert.Single(viewModel.ApplicationRows).CanRestartNow);
+
+        viewModel.UpdateMonitoring(null, false,
+            [profile with { TargetKind = TargetKind.PackagedApplication }],
+            null, TimeSpan.Zero);
+        Assert.False(Assert.Single(viewModel.ApplicationRows).CanStopAndPause);
         Assert.False(Assert.Single(viewModel.ApplicationRows).CanRestartNow);
     }
 

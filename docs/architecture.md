@@ -32,8 +32,8 @@ Dashboard rows display attempt accounting, an in-session verified-instance summa
 
 ## Boundaries for subsequent work
 
-The domain, coordination, Windows adapters and storage components are separate projects. `RecoveryApplicationHost` composes executable profiles from existing configuration and state; it does not create a new budget for an existing profile. Recovery policy remains independent of `Relight.App`, WPF and tray callbacks. The host still needs session-scoped state coordination, packaged-app support and most UI commands.
+The domain, coordination, Windows adapters and storage components are separate projects. `RecoveryApplicationHost` composes executable and selected-ChatGPT profiles from existing configuration and state; it does not create a new budget for an existing profile. Recovery policy remains independent of `Relight.App`, WPF and tray callbacks. Other installed apps, packaged stopping, session-scoped state coordination and complete UI acceptance remain open.
 
 The shell singleton prevents duplicate UI processes within a user session. The separate recovery state store provides a durable, revision-checked attempt ledger and the executable adapter verifies current-session process identity. Configuration writes also use revisions. Session-scoped live-state ownership and cross-sign-in lockout coordination remain open M0–M3 work; the singleton alone provides neither.
 
-The actual target (ChatGPT desktop, Codex desktop or both), installed-app activation contract and job-continuation behavior have not been validated. Advancing the shell under the user's explicit request does not mark target-validation or engine milestones complete.
+The selected first target is the `OpenAI.Codex_2p2nqsd0c76g0` ChatGPT package. Its package-family/main-process discovery and AUMID activation were checked against the already-running instance; activation from absence and job continuation remain unverified. Advancing the shell under the user's explicit request does not mark target-validation or engine milestones complete.

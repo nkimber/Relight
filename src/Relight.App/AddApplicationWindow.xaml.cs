@@ -13,6 +13,7 @@ public partial class AddApplicationWindow : Window
 {
     private readonly RecoveryApplicationHost _host;
     private string? _inspectedPath;
+    private bool _inspectedChatGpt;
     private bool _busy;
     private bool _saving;
 
@@ -41,26 +42,46 @@ public partial class AddApplicationWindow : Window
     private void PathChanged(object sender, TextChangedEventArgs e)
     {
         _inspectedPath = null;
-        if (AddButton is not null) AddButton.IsEnabled = false;
-        if (DetectionText is not null)
+        UpdateAddState();
+        if (DetectionText is not null && ChatGptOption?.IsChecked != true)
             DetectionText.Text = "Path changed. Choose Detect now before adding protection.";
     }
 
     private void NameChanged(object sender, TextChangedEventArgs e)
     {
-        if (AddButton is not null && PathInput is not null)
-            AddButton.IsEnabled = !_busy && !string.IsNullOrWhiteSpace(NameInput.Text) &&
-                _inspectedPath == PathInput.Text.Trim();
+        UpdateAddState();
+    }
+
+    private void TargetChanged(object sender, RoutedEventArgs e)
+    {
+        if (ExecutableFields is null || InstalledIdentityText is null ||
+            DetectionText is null || ChatGptOption is null || NameInput is null) return;
+        bool chatGpt = ChatGptOption.IsChecked == true;
+        ExecutableFields.Visibility = chatGpt ? Visibility.Collapsed : Visibility.Visible;
+        InstalledIdentityText.Visibility = chatGpt ? Visibility.Visible : Visibility.Collapsed;
+        _inspectedPath = null;
+        _inspectedChatGpt = false;
+        DetectionText.Text = chatGpt
+            ? "Choose Detect now to inspect the installed ChatGPT application."
+            : "Select a file, then choose Detect now.";
+        if (chatGpt && string.IsNullOrWhiteSpace(NameInput.Text))
+            NameInput.Text = "ChatGPT";
+        UpdateAddState();
     }
 
     private async void DetectClick(object sender, RoutedEventArgs e)
     {
         if (_busy) return;
+        _inspectedPath = null;
+        _inspectedChatGpt = false;
         SetBusy(true);
         try
         {
+            bool chatGpt = ChatGptOption.IsChecked == true;
             string path = PathInput.Text.Trim();
-            Detection result = await RecoveryApplicationHost.InspectExecutableAsync(path);
+            Detection result = chatGpt
+                ? await RecoveryApplicationHost.InspectSelectedChatGptAsync()
+                : await RecoveryApplicationHost.InspectExecutableAsync(path);
             DetectionText.Text = result.Kind switch
             {
                 DetectionKind.Present => "One matching application is running in this session. It will be observed without launching a duplicate.",
@@ -68,23 +89,29 @@ public partial class AddApplicationWindow : Window
                 _ => $"Identity cannot be verified: {result.Reason}"
             };
             if (result.Kind != DetectionKind.Unavailable)
-                _inspectedPath = path;
+            {
+                if (chatGpt) _inspectedChatGpt = true;
+                else _inspectedPath = path;
+            }
         }
         catch (Exception error)
         {
-            DetectionText.Text = $"Cannot inspect this executable: {error.Message}";
+            DetectionText.Text = $"Cannot inspect this application: {error.Message}";
         }
         finally { SetBusy(false); }
     }
 
     private async void AddClick(object sender, RoutedEventArgs e)
     {
-        if (_busy || _inspectedPath != PathInput.Text.Trim()) return;
+        if (_busy || !CanAdd()) return;
         _saving = true;
         SetBusy(true);
         try
         {
-            await _host.RegisterExecutableAsync(NameInput.Text, _inspectedPath);
+            if (ChatGptOption.IsChecked == true)
+                await _host.RegisterSelectedChatGptAsync(NameInput.Text);
+            else
+                await _host.RegisterExecutableAsync(NameInput.Text, _inspectedPath!);
             _saving = false;
             DialogResult = true;
         }
@@ -110,9 +137,21 @@ public partial class AddApplicationWindow : Window
         NameInput.IsEnabled = !busy;
         PathInput.IsEnabled = !busy;
         BrowseButton.IsEnabled = !busy;
+        ExecutableOption.IsEnabled = !busy;
+        ChatGptOption.IsEnabled = !busy;
         CancelButton.IsEnabled = !busy;
         DetectButton.IsEnabled = !busy;
-        AddButton.IsEnabled = !busy && !string.IsNullOrWhiteSpace(NameInput.Text) &&
-            _inspectedPath == PathInput.Text.Trim();
+        UpdateAddState();
+    }
+
+    private bool CanAdd() => !string.IsNullOrWhiteSpace(NameInput.Text) &&
+        (ChatGptOption.IsChecked == true ? _inspectedChatGpt :
+            _inspectedPath == PathInput.Text.Trim());
+
+    private void UpdateAddState()
+    {
+        if (AddButton is not null && NameInput is not null && PathInput is not null &&
+            ChatGptOption is not null)
+            AddButton.IsEnabled = !_busy && CanAdd();
     }
 }

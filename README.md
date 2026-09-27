@@ -4,7 +4,7 @@ A Windows tray application that will watch selected desktop apps and bring them 
 
 [Public repository](https://github.com/nkimber/Relight)
 
-**Current status: WPF development preview (0.1.0) with executable recovery.** The resident shell starts the host and shows live profile status. You can browse for an executable, verify whether it is already running, and add it with a durable recovery ledger. The default waits for the first user launch when the target is absent. Per-profile Start now, Restart now, Stop and pause, pause/resume, enable/disable, remove, policy editing and explicit recovery reset are available. The History page can summarize, browse and export local events; Settings can export a redacted local diagnostic bundle and configure current-user sign-in startup. Packaged-app activation, launch-identity editing, complete overnight diagnostics, notifications and full sign-in verification remain in development; this is not ready for unattended protection of a valuable job.
+**Current status: WPF development preview (0.1.0) with executable recovery and initial ChatGPT package support.** The resident shell starts the host and shows live profile status. You can browse for an executable or select the installed ChatGPT package, verify whether it is already running, and add it with a durable recovery ledger. The default waits for the first user launch when the target is absent. Per-profile Start now, pause/resume, enable/disable, remove, policy editing and explicit recovery reset are available; Stop and pause and Restart now are currently limited to verified executables. The History page can summarize, browse and export local events; Settings can export a redacted local diagnostic bundle and configure current-user sign-in startup. ChatGPT recovery from absence, packaged-app stopping, launch-identity editing, complete overnight diagnostics, notifications and full sign-in verification remain unverified or in development; this is not ready for unattended protection of a valuable job.
 
 ## Build and run
 
@@ -70,6 +70,6 @@ This is a development preview, not the production release or overnight pilot des
 | `docs` | Requirements, delivery plan, architecture and verification evidence |
 | `AGENTS.md` | Engineering and recovery rules for contributors/agents |
 
-Start with [the docs index](docs/index.md) and [development plan](docs/development-plan.md). Recovery policy remains independent of WPF. The dashboard displays host snapshots and supports basic executable registration, Start now, Restart now, Stop and pause, pause/resume, enable/disable, remove, name/policy edits, reset and local event browsing/export; launch-identity editing is pending.
+Start with [the docs index](docs/index.md) and [development plan](docs/development-plan.md). Recovery policy remains independent of WPF. The dashboard displays host snapshots and supports basic executable or selected ChatGPT registration, Start now, pause/resume, enable/disable, remove, name/policy edits, reset and local event browsing/export. Stop and pause and Restart now apply to verified executables; launch-identity editing is pending.
 
 The flame artwork is original to this repository. WPF and Windows Forms are provided by the Microsoft .NET Windows Desktop framework; no Resurrector code or assets are copied into the shell.
