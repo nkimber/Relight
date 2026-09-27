@@ -15,4 +15,8 @@
   <ItemGroup>
     <Resource Include="Assets\Relight.ico" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Relight.Windows\Relight.Windows.csproj" />
+    <ProjectReference Include="..\Relight.Storage\Relight.Storage.csproj" />
+  </ItemGroup>
 </Project>

@@ -12,7 +12,7 @@ if ($existing) { throw 'Exit the existing Relight preview before running the smo
 $started = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 
 function Start-Preview {
-    $process = Start-Process -FilePath $executablePath -ArgumentList '--tray' -WindowStyle Hidden -PassThru
+    $process = Start-Process -FilePath $executablePath -ArgumentList '--tray', '--shell-test' -WindowStyle Hidden -PassThru
     $started.Add($process)
     return $process
 }

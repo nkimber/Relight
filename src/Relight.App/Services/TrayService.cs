@@ -30,7 +30,7 @@ internal sealed class TrayService : IDisposable
         _icon = new Forms.NotifyIcon
         {
             Icon = _image,
-            Text = "Relight — shell preview; monitoring unavailable",
+            Text = "Relight · Loading monitoring status",
             ContextMenuStrip = _menu,
             Visible = true
         };
@@ -40,8 +40,14 @@ internal sealed class TrayService : IDisposable
     private static Forms.ToolStripMenuItem Unavailable(string text) => new(text)
     {
         Enabled = false,
-        ToolTipText = "Available in a later milestone. This preview does not monitor applications."
+        ToolTipText = "Available in a later milestone."
     };
+
+    public void UpdateStatus(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+        _icon.Text = text.Length > 63 ? text[..63] : text;
+    }
 
     public void Dispose()
     {

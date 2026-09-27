@@ -4,7 +4,7 @@ A Windows tray application that will watch selected desktop apps and bring them 
 
 [Public repository](https://github.com/nkimber/Relight)
 
-**Current status: runnable WPF shell preview (0.1.0) with recovery foundation under development.** The dashboard, tray lifetime and single-instance activation work. A separate recovery host composes storage, scheduling, executable adapters and event recording and has been tested with a disposable target. The preview does not yet run that host or control other applications. Application registration, active monitoring, notifications and sign-in startup are not implemented yet.
+**Current status: WPF development preview (0.1.0) with an executable recovery host.** The resident shell now starts the host and shows live status for existing configured profiles. The host can monitor and recover a validated executable profile when its durable recovery state is available. Application registration, packaged-app activation, profile controls, notifications and sign-in startup are still in development; this is not ready for unattended protection of a valuable job.
 
 ## Build and run
 
@@ -24,7 +24,7 @@ Or run `src\Relight.App\bin\Release\net10.0-windows\Relight.exe` after building.
 - Close the dashboard or press **Ctrl+W** to hide it and keep Relight resident.
 - Double-click the flame in the notification area, choose **Open dashboard** from its menu, or launch Relight again to return to the existing instance. Windows may place the icon in its tray overflow.
 - Choose **Exit Relight** or press **Ctrl+Q** to quit. The confirmation defaults to Cancel. Other applications stay running.
-- Unimplemented controls are disabled and labeled. No profiles, activity logs or startup registration are written by this preview.
+- The Applications page shows configured profiles and monitoring status. Unimplemented controls are disabled and labeled. First run creates empty local configuration; the host records structured operational events under `%LOCALAPPDATA%\Relight\Logs`. It does not register sign-in startup.
 
 ## Verify
 
@@ -35,7 +35,7 @@ pwsh -File scripts/Test-Shell.ps1
 dotnet test tests/Relight.Core.Tests/Relight.Core.Tests.csproj -c Release
 ```
 
-The shell smoke check verifies hidden tray startup, second-instance activation, and startup after a forced interruption. It cleans up only the preview processes it starts. The test suite runs deterministic recovery/storage checks and controlled Windows process tests. Interactive checks and outstanding coverage are recorded in [the shell checkpoint](docs/shell-checkpoint.md) and [engine checkpoint](docs/engine-checkpoint.md).
+The shell smoke check uses `--shell-test` to disable monitoring while it starts and interrupts its own preview processes. It verifies hidden tray startup, second-instance activation, and restart after interruption. The test suite runs deterministic recovery/storage checks and controlled Windows process tests. Interactive checks and outstanding coverage are recorded in [the shell checkpoint](docs/shell-checkpoint.md) and [engine checkpoint](docs/engine-checkpoint.md).
 
 A self-contained preview can be produced locally with:
 
@@ -59,6 +59,6 @@ This is a development preview, not the production release or overnight pilot des
 | `docs` | Requirements, delivery plan, architecture and verification evidence |
 | `AGENTS.md` | Engineering and recovery rules for contributors/agents |
 
-Start with [the docs index](docs/index.md) and [development plan](docs/development-plan.md). The recovery engine remains independent of WPF; scheduler and shell integration are still pending.
+Start with [the docs index](docs/index.md) and [development plan](docs/development-plan.md). Recovery policy remains independent of WPF. The dashboard displays host snapshots but does not yet expose profile setup or commands.
 
 The flame artwork is original to this repository. WPF and Windows Forms are provided by the Microsoft .NET Windows Desktop framework; no Resurrector code or assets are copied into the shell.
