@@ -131,6 +131,31 @@ public sealed class ProfileCoordinatorTests
         await waiting.WaitAsync(TimeSpan.FromSeconds(3));
     }
 
+    [Fact]
+    public async Task Pause_cancels_a_blocked_launch_without_refunding_its_reservation()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var blocked = new BlockingLauncher();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id, AutoPolicy,
+            store, new ConstantDiscovery(Detection.Absent()), blocked, clock);
+        await TickAt(coordinator, clock, 0);
+        await TickAt(coordinator, clock, 2);
+        clock.Elapsed = TimeSpan.FromSeconds(32);
+        Task<CoordinatorResult> launch = coordinator.TickAsync();
+        await blocked.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Task pause = coordinator.SetPausedAsync(true);
+        await Task.WhenAll(launch, pause).WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.Equal(1, blocked.Dispatches);
+        Assert.Equal(1, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+        Assert.True(coordinator.Snapshot.Paused);
+        await TickAt(coordinator, clock, 100);
+        Assert.Equal(1, blocked.Dispatches);
+    }
+
     private static async Task<CoordinatorResult> TickAt(ProfileCoordinator coordinator,
         FakeClock clock, int seconds)
     {

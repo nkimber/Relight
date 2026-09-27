@@ -45,6 +45,9 @@ public sealed class ProfileCoordinator : IDisposable
     private readonly IProcessLauncher _launcher;
     private readonly IMonotonicClock _clock;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly object _launchSync = new();
+    private CancellationTokenSource? _launchCancellation;
+    private int _commandGeneration;
     private readonly RecoveryMachine _machine;
     private long _revision;
     private bool _storageDegraded;
@@ -109,14 +112,23 @@ public sealed class ProfileCoordinator : IDisposable
                 return Result(transition);
 
             Guid operationId = Guid.NewGuid();
+            int commandGeneration = Volatile.Read(ref _commandGeneration);
             _machine.ReserveAutomaticAttempt(_clock.Elapsed, operationId);
             if (!Persist())
                 return Result(new(RecoveryState.RetryWaiting, _machine.Snapshot.State,
                     RecoverySignal.None, "Reservation could not be committed"));
 
+            using var launchCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            bool cancelBeforeDispatch;
+            lock (_launchSync)
+            {
+                _launchCancellation = launchCancellation;
+                cancelBeforeDispatch = commandGeneration != _commandGeneration;
+            }
+            if (cancelBeforeDispatch) launchCancellation.Cancel();
             try
             {
-                await _launcher.LaunchAsync(operationId, cancellationToken).ConfigureAwait(false);
+                await _launcher.LaunchAsync(operationId, launchCancellation.Token).ConfigureAwait(false);
                 return Result(new(RecoveryState.RetryWaiting, RecoveryState.Starting,
                     RecoverySignal.None, "Reserved launch dispatched"), dispatched: true);
             }
@@ -126,12 +138,23 @@ public sealed class ProfileCoordinator : IDisposable
                 // interrupted attempt; do not guess whether dispatch took effect.
                 throw;
             }
+            catch (OperationCanceledException) when (launchCancellation.IsCancellationRequested)
+            {
+                _machine.FailLaunch(operationId, _clock.Elapsed);
+                Persist();
+                return Result(new(RecoveryState.Starting, _machine.Snapshot.State,
+                    RecoverySignal.None, "Launch canceled by profile command; reservation remains consumed"));
+            }
             catch (Exception error)
             {
                 _machine.FailLaunch(operationId, _clock.Elapsed);
                 Persist();
                 return Result(new(RecoveryState.Starting, _machine.Snapshot.State,
                     RecoverySignal.None, $"Launch dispatch failed: {error.Message}"));
+            }
+            finally
+            {
+                lock (_launchSync) _launchCancellation = null;
             }
         }
         finally
@@ -142,6 +165,18 @@ public sealed class ProfileCoordinator : IDisposable
 
     public async Task SetPausedAsync(bool paused, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (paused)
+        {
+            CancellationTokenSource? pending;
+            lock (_launchSync)
+            {
+                _commandGeneration++;
+                pending = _launchCancellation;
+            }
+            try { pending?.Cancel(); }
+            catch (ObjectDisposedException) { /* The launch completed just before cancellation. */ }
+        }
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
