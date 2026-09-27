@@ -11,15 +11,23 @@ public sealed class RecoveryApplicationHostIntegrationTests
 {
     [Fact]
     [Trait("Category", "WindowsDesktop")]
-    public async Task Explicit_repair_reopens_last_good_configuration_without_creating_state()
+    public async Task Explicit_repair_reopens_last_good_profile_with_its_existing_state()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-host-repair-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         try
         {
+            Guid id;
+            await using (var configured = await RecoveryApplicationHost.OpenAsync(root,
+                new FakeClock()))
+                id = await configured.RegisterExecutableAsync("Disposable target", TestExecutable());
+            var stateStore = new RecoveryStateStore(root);
+            StoredRecoveryState initialState = stateStore.Load(id);
+            StoredRecoveryState existingState = stateStore.Save(id, initialState.Revision,
+                initialState.Checkpoint);
             var store = new ConfigurationStore(root);
-            StoredConfiguration initial = store.Initialize(RelightConfiguration.Empty);
-            store.Save(initial, RelightConfiguration.Empty);
+            StoredConfiguration current = store.Load();
+            store.Save(current, current.Configuration);
             string file = Path.Combine(root, "configuration.json");
             File.WriteAllText(file, "{ invalid external edit");
             string? archived;
@@ -36,7 +44,9 @@ public sealed class RecoveryApplicationHostIntegrationTests
                 new FakeClock());
             Assert.False(reopened.Configuration?.FromLastGoodBackup);
             Assert.Null(reopened.ConfigurationProblem);
-            Assert.Empty(reopened.GetProfiles());
+            Assert.Equal(id, Assert.Single(reopened.GetProfiles()).Id);
+            Assert.NotNull(Assert.Single(reopened.GetProfiles()).Recovery);
+            Assert.Equal(existingState, stateStore.Load(id));
         }
         finally
         {
