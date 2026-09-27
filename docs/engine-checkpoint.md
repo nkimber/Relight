@@ -20,7 +20,7 @@
 
 ## Verification and limits
 
-`dotnet test Relight.slnx -c Release --no-restore` passed **56 tests** on this Windows 11 x64 desktop: 48 deterministic recovery/storage/coordinator/scheduler/logging/host scenarios and 8 controlled Windows process scenarios. `dotnet build Relight.slnx -c Release` passed with zero warnings/errors. `pwsh -File scripts/Test-Shell.ps1` passed the isolated tray lifecycle checks. The [Windows CI workflow for the queued-recorder increment](https://github.com/nkimber/Relight/actions/runs/36338602584) passed its Release build and deterministic subset; CI for the WPF wiring is pending at this checkpoint.
+`dotnet test Relight.slnx -c Release --no-restore` passed **56 tests** on this Windows 11 x64 desktop: 48 deterministic recovery/storage/coordinator/scheduler/logging/host scenarios and 8 controlled Windows process scenarios. `dotnet build Relight.slnx -c Release` passed with zero warnings/errors. `pwsh -File scripts/Test-Shell.ps1` passed the isolated tray lifecycle checks. The [Windows CI workflow for the WPF wiring](https://github.com/nkimber/Relight/actions/runs/36342107435) passed its Release build and deterministic subset.
 
 The controlled integration test can launch the disposable test target and leaves it running after host disposal. The shell now starts that host and shows live snapshots, but no real user target was configured or exercised in the WPF process. Configuration is not wired to a setup/repair UI, and journal events are not shown in a history view. Notifications, packaged-app activation, session-scoped live state, cross-sign-in lockout coordination and user controls remain open. M1–M5 exit criteria are therefore not claimed complete.
 
