@@ -705,6 +705,100 @@ public sealed class ProfileCoordinatorTests
         Assert.Equal(0, stopper.ForceCalls);
     }
 
+    [Fact]
+    public async Task Explicit_restart_preserves_budget_and_reserves_manual_launch_after_fresh_absence()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var discovery = new MutableDiscovery(Detection.Present("selected-instance"));
+        var launcher = new CountingLauncher();
+        var stopper = new FakeStopper { GracefulOutcome = TargetStopOutcome.Stopped };
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id, RecoveryPolicy.Default,
+            store, discovery, launcher, clock, stopper: stopper);
+        await TickAt(coordinator, clock, 0);
+        StopCommandResult stopped = await coordinator.StopForRestartAsync(
+            TimeSpan.FromSeconds(1));
+        Assert.Equal(TargetStopOutcome.Stopped, stopped.Stop.Outcome);
+        Assert.True(store.Load(id).Checkpoint.Paused);
+        discovery.Result = Detection.Absent();
+
+        CoordinatorResult launched = await coordinator.CompleteRestartAsync(
+            stopped.OperationId, stopped.SelectedIdentity);
+
+        Assert.True(launched.LaunchDispatched);
+        Assert.Equal(1, launcher.Dispatches);
+        RecoveryCheckpoint checkpoint = store.Load(id).Checkpoint;
+        Assert.False(checkpoint.Paused);
+        Assert.Equal(0, checkpoint.ReservedAutomaticAttempts);
+        Assert.True(checkpoint.PendingExplicitStart);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            coordinator.CompleteRestartAsync(stopped.OperationId,
+                stopped.SelectedIdentity));
+    }
+
+    [Fact]
+    public async Task Restart_does_not_launch_when_a_matching_instance_appears_after_stop()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var discovery = new MutableDiscovery(Detection.Present("selected-instance"));
+        var launcher = new CountingLauncher();
+        var stopper = new FakeStopper { GracefulOutcome = TargetStopOutcome.Stopped };
+        using var coordinator = ProfileCoordinator.CreateNew(Guid.NewGuid(),
+            RecoveryPolicy.Default, store, discovery, launcher, clock,
+            stopper: stopper);
+        await TickAt(coordinator, clock, 0);
+        StopCommandResult stopped = await coordinator.StopForRestartAsync(
+            TimeSpan.FromSeconds(1));
+        discovery.Result = Detection.Present("new-instance");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            coordinator.CompleteRestartAsync(stopped.OperationId,
+                stopped.SelectedIdentity));
+
+        Assert.Equal(0, launcher.Dispatches);
+        Assert.True(coordinator.Snapshot.Paused);
+    }
+
+    [Fact]
+    public async Task Restart_requires_the_matching_force_choice_before_launch()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var discovery = new MutableDiscovery(Detection.Present("selected-instance"));
+        var launcher = new CountingLauncher();
+        var stopper = new FakeStopper();
+        using var coordinator = ProfileCoordinator.CreateNew(Guid.NewGuid(),
+            RecoveryPolicy.Default, store, discovery, launcher, clock,
+            stopper: stopper);
+        await TickAt(coordinator, clock, 0);
+        StopCommandResult stopped = await coordinator.StopForRestartAsync(
+            TimeSpan.FromSeconds(1));
+        Assert.Equal(TargetStopOutcome.NeedsForceChoice, stopped.Stop.Outcome);
+        discovery.Result = Detection.Absent();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            coordinator.CompleteRestartAsync(stopped.OperationId,
+                stopped.SelectedIdentity));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            coordinator.ForceClosePausedAsync(Guid.NewGuid(), "selected-instance"));
+        Assert.Equal(0, stopper.ForceCalls);
+        Assert.Equal(0, launcher.Dispatches);
+
+        TargetStopResult forced = await coordinator.ForceClosePausedAsync(
+            stopped.OperationId, stopped.SelectedIdentity!);
+        Assert.Equal(TargetStopOutcome.Stopped, forced.Outcome);
+        CoordinatorResult launched = await coordinator.CompleteRestartAsync(
+            stopped.OperationId, stopped.SelectedIdentity);
+        Assert.True(launched.LaunchDispatched);
+        Assert.Equal(1, stopper.ForceCalls);
+        Assert.Equal(1, launcher.Dispatches);
+    }
+
     private static async Task<CoordinatorResult> TickAt(ProfileCoordinator coordinator,
         FakeClock clock, int seconds)
     {
@@ -802,6 +896,8 @@ public sealed class ProfileCoordinatorTests
     private sealed class FakeStopper : IProcessStopper
     {
         public Action? OnGraceful { get; set; }
+        public TargetStopOutcome GracefulOutcome { get; set; } =
+            TargetStopOutcome.NeedsForceChoice;
         public int GracefulCalls { get; private set; }
         public int ForceCalls { get; private set; }
         public Task<TargetStopResult> TryGracefulCloseAsync(string selectedIdentity,
@@ -809,7 +905,7 @@ public sealed class ProfileCoordinatorTests
         {
             GracefulCalls++;
             OnGraceful?.Invoke();
-            return Task.FromResult(new TargetStopResult(TargetStopOutcome.NeedsForceChoice));
+            return Task.FromResult(new TargetStopResult(GracefulOutcome));
         }
         public Task<TargetStopResult> ForceCloseAsync(string selectedIdentity,
             CancellationToken cancellationToken = default)

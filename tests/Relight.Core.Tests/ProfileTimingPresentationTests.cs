@@ -135,11 +135,20 @@ public sealed class ProfileTimingPresentationTests
         HostedProfileStatus profile = Profile(snapshot);
         viewModel.UpdateMonitoring(null, false, [profile], null, TimeSpan.Zero);
         Assert.True(Assert.Single(viewModel.ApplicationRows).CanStopAndPause);
+        Assert.True(Assert.Single(viewModel.ApplicationRows).CanRestartNow);
 
         viewModel.UpdateMonitoring(null, false,
             [profile with { Recovery = snapshot with { DetectionUnavailable = true } }],
             null, TimeSpan.Zero);
         Assert.False(Assert.Single(viewModel.ApplicationRows).CanStopAndPause);
+        Assert.False(Assert.Single(viewModel.ApplicationRows).CanRestartNow);
+
+        viewModel.UpdateMonitoring(null, false,
+            [profile with { Recovery = snapshot with
+                { HoldReason = RecoveryHoldReason.InterruptedExplicitLaunch } }],
+            null, TimeSpan.Zero);
+        Assert.True(Assert.Single(viewModel.ApplicationRows).CanStopAndPause);
+        Assert.False(Assert.Single(viewModel.ApplicationRows).CanRestartNow);
     }
 
     private static HostedProfileStatus Profile(RecoverySnapshot recovery) =>

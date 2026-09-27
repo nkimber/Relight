@@ -4,6 +4,25 @@ namespace Relight.Core.Tests;
 
 public sealed class RecoveryMachineTests
 {
+    [Fact]
+    public void Explicit_restart_preserves_lockout_and_does_not_charge_automatic_budget()
+    {
+        Guid episode = Guid.NewGuid();
+        var machine = RecoveryMachine.Restore(RecoveryPolicy.Default,
+            new RecoveryCheckpoint(true, true, true, true, 3, episode,
+                RecoveryState.AwaitingIntervention, null));
+
+        machine.PrepareExplicitRestart(TimeSpan.Zero);
+        machine.StartExplicitly(TimeSpan.Zero, Guid.NewGuid());
+
+        Assert.True(machine.Snapshot.LockedOut);
+        Assert.Equal(3, machine.Snapshot.ReservedAutomaticAttempts);
+        Assert.Equal(episode, machine.Snapshot.EpisodeId);
+        Assert.Equal(RecoveryState.Starting, machine.Snapshot.State);
+        Assert.Equal(ObservationOrigin.ExplicitStart,
+            machine.Snapshot.ObservationOrigin);
+    }
+
     private static readonly Detection Target = Detection.Present("session-1:path:pid-42:start-100");
     private static readonly Detection OtherInstance = Detection.Present("session-1:path:pid-77:start-200");
     private static readonly Detection Missing = Detection.Absent();

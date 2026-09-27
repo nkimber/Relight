@@ -523,11 +523,23 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         RunProfileCommandAsync(profileId,
             coordinator => coordinator.StopAndPauseAsync(gracefulTimeout, cancellationToken));
 
+    public Task<StopCommandResult> StopProfileForRestartAsync(Guid profileId,
+        TimeSpan gracefulTimeout, CancellationToken cancellationToken = default) =>
+        RunProfileCommandAsync(profileId,
+            coordinator => coordinator.StopForRestartAsync(gracefulTimeout, cancellationToken));
+
     public Task<TargetStopResult> ForceClosePausedProfileAsync(Guid profileId,
         Guid operationId, string selectedIdentity,
         CancellationToken cancellationToken = default) =>
         RunProfileCommandAsync(profileId,
             coordinator => coordinator.ForceClosePausedAsync(operationId,
+                selectedIdentity, cancellationToken));
+
+    public Task<CoordinatorResult> CompleteProfileRestartAsync(Guid profileId,
+        Guid operationId, string? selectedIdentity,
+        CancellationToken cancellationToken = default) =>
+        RunProfileCommandAsync(profileId,
+            coordinator => coordinator.CompleteRestartAsync(operationId,
                 selectedIdentity, cancellationToken));
 
     public Task SetProfileEnabledAsync(Guid profileId, bool enabled,

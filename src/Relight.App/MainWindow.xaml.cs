@@ -25,6 +25,8 @@ public partial class MainWindow : Window
     private readonly Func<string, Task<DiagnosticBundleResult>> _exportDiagnostics;
     private readonly Func<Guid, Task<StopCommandResult>> _stopAndPause;
     private readonly Func<Guid, Guid, string, Task<TargetStopResult>> _forceClosePaused;
+    private readonly Func<Guid, Task<StopCommandResult>> _stopForRestart;
+    private readonly Func<Guid, Guid, string?, Task<CoordinatorResult>> _completeRestart;
     private bool _changingStartAtSignIn;
 
     public MainWindow(Func<Guid, bool, Task> setPaused, Func<Guid, Task> resetRecovery,
@@ -37,7 +39,9 @@ public partial class MainWindow : Window
         Func<bool, Task> setStartAtSignIn,
         Func<string, Task<DiagnosticBundleResult>> exportDiagnostics,
         Func<Guid, Task<StopCommandResult>> stopAndPause,
-        Func<Guid, Guid, string, Task<TargetStopResult>> forceClosePaused)
+        Func<Guid, Guid, string, Task<TargetStopResult>> forceClosePaused,
+        Func<Guid, Task<StopCommandResult>> stopForRestart,
+        Func<Guid, Guid, string?, Task<CoordinatorResult>> completeRestart)
     {
         _setPaused = setPaused;
         _resetRecovery = resetRecovery;
@@ -50,6 +54,8 @@ public partial class MainWindow : Window
         _exportDiagnostics = exportDiagnostics;
         _stopAndPause = stopAndPause;
         _forceClosePaused = forceClosePaused;
+        _stopForRestart = stopForRestart;
+        _completeRestart = completeRestart;
         InitializeComponent();
     }
 
@@ -120,6 +126,63 @@ public partial class MainWindow : Window
         {
             button.Content = "Stop and pause";
             button.IsEnabled = row.CanStopAndPause;
+        }
+    }
+
+    private async void RestartNowClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: ApplicationStatusRow row } button) return;
+        if (MessageBox.Show(this,
+                $"Restart '{row.Name}' now? Relight will close the verified application, then launch it explicitly without clearing or charging the automatic attempt budget. If it will not close gracefully, you can choose whether to force close it. If closing fails or is declined, protection remains paused.",
+                "Restart now?", MessageBoxButton.OKCancel,
+                MessageBoxImage.Warning, MessageBoxResult.Cancel) != MessageBoxResult.OK)
+            return;
+        button.IsEnabled = false;
+        button.Content = "Closing gracefully…";
+        try
+        {
+            StopCommandResult stop = await _stopForRestart(row.Id);
+            TargetStopResult result = stop.Stop;
+            if (result.Outcome == TargetStopOutcome.NeedsForceChoice)
+            {
+                if (stop.SelectedIdentity is null)
+                    throw new InvalidOperationException("The selected instance is unavailable.");
+                bool force = MessageBox.Show(this,
+                    $"'{row.Name}' did not exit gracefully. Force closing can discard unsaved work. If you choose No, restart is canceled and protection remains paused.\n\n{result.Reason}",
+                    "Force close before restart?", MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes;
+                if (!force) return;
+                button.Content = "Verifying and force closing…";
+                result = await _forceClosePaused(row.Id, stop.OperationId,
+                    stop.SelectedIdentity);
+            }
+            if (result.Outcome is not (TargetStopOutcome.Stopped or
+                TargetStopOutcome.AlreadyAbsent))
+            {
+                MessageBox.Show(this,
+                    $"Restart was not launched. Protection remains paused. {result.Reason}",
+                    "Restart not completed", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            button.Content = "Verifying and launching…";
+            CoordinatorResult restarted = await _completeRestart(row.Id,
+                stop.OperationId, stop.SelectedIdentity);
+            MessageBox.Show(this, restarted.LaunchDispatched
+                    ? "The explicit restart was dispatched. Relight is waiting to verify the application appears."
+                    : "A matching application appeared before dispatch; Relight adopted it without another launch.",
+                "Restart now", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            MessageBox.Show(this,
+                $"Restart did not complete. Check the current protection state before trying again. {error.Message}",
+                "Restart failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            button.Content = "Restart now";
+            button.IsEnabled = row.CanRestartNow;
         }
     }
 

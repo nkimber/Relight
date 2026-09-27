@@ -189,6 +189,33 @@ public sealed class RecoveryMachine
             Snapshot = Snapshot with { RetryDeadline = null };
     }
 
+    /// <summary>
+    /// Used only after an explicit stop has been verified absent. It preserves
+    /// the episode budget and lockout while allowing a distinct manual launch.
+    /// </summary>
+    public void PrepareExplicitRestart(TimeSpan now)
+    {
+        CheckTime(now);
+        if (!Snapshot.Enabled || !Snapshot.Paused || Snapshot.State == RecoveryState.Starting)
+            throw new InvalidOperationException("A paused, settled target is required for restart.");
+        Snapshot = Snapshot with
+        {
+            Paused = false,
+            Armed = true,
+            DetectionUnavailable = false,
+            State = Snapshot.LockedOut ? RecoveryState.AwaitingIntervention :
+                RecoveryState.RetryWaiting,
+            TargetIdentity = null,
+            ObservationOrigin = null,
+            ObservationStartedAt = null,
+            LastVerifiedAt = null,
+            AbsenceStartedAt = null,
+            RetryDeadline = null,
+            AppearanceDeadline = null,
+            OperationId = null
+        };
+    }
+
     public void SetEnabled(bool enabled)
     {
         if (!enabled) _inFlightPolicy = null;

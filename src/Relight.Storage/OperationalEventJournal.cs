@@ -44,7 +44,8 @@ public enum OperationalEventKind
     ExplicitStopNeedsForceChoice,
     ExplicitForceCloseRequested,
     ExplicitStopCompleted,
-    ExplicitStopUnresolved
+    ExplicitStopUnresolved,
+    ExplicitRestartRequested
 }
 
 /// <summary>

@@ -491,6 +491,72 @@ public sealed class RecoveryApplicationHostIntegrationTests
         }
     }
 
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Host_restart_closes_and_relaunches_only_the_disposable_selected_target()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-host-restart-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        string ready = Path.Combine(root, "target.ready");
+        string label = $"host-restart-{Guid.NewGuid():N}";
+        int? firstPid = null, secondPid = null;
+        try
+        {
+            Guid id = Guid.NewGuid();
+            var policy = RecoveryPolicy.Default;
+            string[] arguments = ["--label", label, "--ready-file", ready,
+                "--exit-after-ms", "30000"];
+            var target = new ExecutableTarget(TestExecutable(), arguments,
+                RequiredArgument: label);
+            new ConfigurationStore(root).Initialize(new(
+                [new(id, "Restartable disposable target", true,
+                    new(TargetKind.Executable, target.CanonicalPath, [.. arguments],
+                        RequiredArgument: label), policy)], GlobalConfiguration.Default));
+            new RecoveryStateStore(root).Create(id,
+                new RecoveryMachine(policy).ExportCheckpoint());
+            await new ExecutableLauncher(target).LaunchAsync(Guid.NewGuid(),
+                CancellationToken.None);
+            firstPid = int.Parse((await WaitForFile(ready)).Split('|')[0]);
+
+            await using var host = await RecoveryApplicationHost.OpenAsync(root,
+                new FakeClock());
+            await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
+            StopCommandResult stopped = await host.StopProfileForRestartAsync(id,
+                TimeSpan.FromSeconds(3));
+            Assert.Equal(TargetStopOutcome.Stopped, stopped.Stop.Outcome);
+            Assert.True(new RecoveryStateStore(root).Load(id).Checkpoint.Paused);
+            File.Delete(ready);
+
+            CoordinatorResult restarted = await host.CompleteProfileRestartAsync(id,
+                stopped.OperationId, stopped.SelectedIdentity);
+            Assert.True(restarted.LaunchDispatched);
+            secondPid = int.Parse((await WaitForFile(ready)).Split('|')[0]);
+            Assert.NotEqual(firstPid, secondPid);
+            Assert.Equal(0, new RecoveryStateStore(root).Load(id)
+                .Checkpoint.ReservedAutomaticAttempts);
+            using Process running = Process.GetProcessById(secondPid.Value);
+            Assert.False(running.HasExited);
+        }
+        finally
+        {
+            foreach (int? pid in new[] { firstPid, secondPid })
+            {
+                if (pid is null) continue;
+                try
+                {
+                    using Process process = Process.GetProcessById(pid.Value);
+                    if (!process.HasExited)
+                    {
+                        process.Kill();
+                        await process.WaitForExitAsync();
+                    }
+                }
+                catch (ArgumentException) { }
+            }
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static string TestExecutable()
     {
         string? root = AppContext.BaseDirectory;

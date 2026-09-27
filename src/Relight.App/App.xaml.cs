@@ -68,7 +68,8 @@ public partial class App : Application
                 StartProfileNowAsync, ExportHistoryAsync, SetProfileEnabledAsync,
                 RemoveProfileAsync, ShowEditProfile, SetStartAtSignInAsync,
                 ExportDiagnosticsAsync, StopProfileAndPauseAsync,
-                ForceClosePausedProfileAsync)
+                ForceClosePausedProfileAsync, StopProfileForRestartAsync,
+                CompleteProfileRestartAsync)
             {
                 DataContext = _viewModel
             };
@@ -476,6 +477,23 @@ public partial class App : Application
         RecoveryApplicationHost host = Volatile.Read(ref _host) ??
             throw new InvalidOperationException("Monitoring is unavailable.");
         return host.ForceClosePausedProfileAsync(profileId, operationId, selectedIdentity,
+            _monitoringCancellation?.Token ?? CancellationToken.None);
+    }
+
+    private Task<StopCommandResult> StopProfileForRestartAsync(Guid profileId)
+    {
+        RecoveryApplicationHost host = Volatile.Read(ref _host) ??
+            throw new InvalidOperationException("Monitoring is unavailable.");
+        return host.StopProfileForRestartAsync(profileId, TimeSpan.FromSeconds(10),
+            _monitoringCancellation?.Token ?? CancellationToken.None);
+    }
+
+    private Task<CoordinatorResult> CompleteProfileRestartAsync(Guid profileId,
+        Guid operationId, string? selectedIdentity)
+    {
+        RecoveryApplicationHost host = Volatile.Read(ref _host) ??
+            throw new InvalidOperationException("Monitoring is unavailable.");
+        return host.CompleteProfileRestartAsync(profileId, operationId, selectedIdentity,
             _monitoringCancellation?.Token ?? CancellationToken.None);
     }
 
