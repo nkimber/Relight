@@ -43,6 +43,7 @@ public sealed class ProfileCoordinator : IDisposable
     private readonly IRecoveryStateStore _store;
     private readonly IProcessDiscovery _discovery;
     private readonly IProcessLauncher _launcher;
+    private readonly ILaunchGate _launchGate;
     private readonly IMonotonicClock _clock;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _launchSync = new();
@@ -55,12 +56,14 @@ public sealed class ProfileCoordinator : IDisposable
 
     private ProfileCoordinator(Guid profileId, IRecoveryStateStore store,
         IProcessDiscovery discovery, IProcessLauncher launcher,
-        IMonotonicClock clock, RecoveryMachine machine, long revision)
+        IMonotonicClock clock, RecoveryMachine machine, long revision,
+        ILaunchGate launchGate)
     {
         _profileId = profileId;
         _store = store;
         _discovery = discovery;
         _launcher = launcher;
+        _launchGate = launchGate;
         _clock = clock;
         _machine = machine;
         _revision = revision;
@@ -68,20 +71,22 @@ public sealed class ProfileCoordinator : IDisposable
 
     public static ProfileCoordinator CreateNew(Guid profileId, RecoveryPolicy policy,
         IRecoveryStateStore store, IProcessDiscovery discovery, IProcessLauncher launcher,
-        IMonotonicClock clock)
+        IMonotonicClock clock, ILaunchGate? launchGate = null)
     {
         var machine = new RecoveryMachine(policy);
         StoredRecoveryState initial = store.Create(profileId, machine.ExportCheckpoint());
-        return new(profileId, store, discovery, launcher, clock, machine, initial.Revision);
+        return new(profileId, store, discovery, launcher, clock, machine, initial.Revision,
+            launchGate ?? UnboundedLaunchGate.Instance);
     }
 
     public static ProfileCoordinator OpenExisting(Guid profileId, RecoveryPolicy policy,
         IRecoveryStateStore store, IProcessDiscovery discovery, IProcessLauncher launcher,
-        IMonotonicClock clock)
+        IMonotonicClock clock, ILaunchGate? launchGate = null)
     {
         StoredRecoveryState saved = store.Load(profileId);
         var machine = RecoveryMachine.Restore(policy, saved.Checkpoint);
-        return new(profileId, store, discovery, launcher, clock, machine, saved.Revision);
+        return new(profileId, store, discovery, launcher, clock, machine, saved.Revision,
+            launchGate ?? UnboundedLaunchGate.Instance);
     }
 
     public RecoverySnapshot Snapshot => _machine.Snapshot;
@@ -93,6 +98,7 @@ public sealed class ProfileCoordinator : IDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            int commandGeneration = Volatile.Read(ref _commandGeneration);
             RecoveryCheckpoint before = _machine.ExportCheckpoint();
             Detection found = await Discover(cancellationToken).ConfigureAwait(false);
             RecoveryTransition transition = _machine.Advance(found, _clock.Elapsed);
@@ -102,22 +108,6 @@ public sealed class ProfileCoordinator : IDisposable
             if (transition.Signal != RecoverySignal.LaunchDue)
                 return Result(transition);
 
-            // Reconcile again immediately before reservation/dispatch. This is
-            // deliberately separate from the poll that made the launch due.
-            before = _machine.ExportCheckpoint();
-            found = await Discover(cancellationToken).ConfigureAwait(false);
-            transition = _machine.Advance(found, _clock.Elapsed);
-            if (!PersistIfChanged(before) || _storageDegraded || found.Kind != DetectionKind.Absent ||
-                transition.Signal != RecoverySignal.LaunchDue)
-                return Result(transition);
-
-            Guid operationId = Guid.NewGuid();
-            int commandGeneration = Volatile.Read(ref _commandGeneration);
-            _machine.ReserveAutomaticAttempt(_clock.Elapsed, operationId);
-            if (!Persist())
-                return Result(new(RecoveryState.RetryWaiting, _machine.Snapshot.State,
-                    RecoverySignal.None, "Reservation could not be committed"));
-
             using var launchCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             bool cancelBeforeDispatch;
             lock (_launchSync)
@@ -126,8 +116,28 @@ public sealed class ProfileCoordinator : IDisposable
                 cancelBeforeDispatch = commandGeneration != _commandGeneration;
             }
             if (cancelBeforeDispatch) launchCancellation.Cancel();
+            Guid? reservedOperationId = null;
             try
             {
+                // Queue before the final lookup and durable reservation. A target
+                // may have appeared while this profile waited for a launch slot.
+                using IDisposable permit = await _launchGate.EnterAsync(
+                    launchCancellation.Token).ConfigureAwait(false);
+                before = _machine.ExportCheckpoint();
+                found = await Discover(launchCancellation.Token).ConfigureAwait(false);
+                transition = _machine.Advance(found, _clock.Elapsed);
+                if (!PersistIfChanged(before) || _storageDegraded ||
+                    found.Kind != DetectionKind.Absent ||
+                    transition.Signal != RecoverySignal.LaunchDue)
+                    return Result(transition);
+
+                Guid operationId = Guid.NewGuid();
+                _machine.ReserveAutomaticAttempt(_clock.Elapsed, operationId);
+                if (!Persist())
+                    return Result(new(RecoveryState.RetryWaiting, _machine.Snapshot.State,
+                        RecoverySignal.None, "Reservation could not be committed"));
+                reservedOperationId = operationId;
+                launchCancellation.Token.ThrowIfCancellationRequested();
                 await _launcher.LaunchAsync(operationId, launchCancellation.Token).ConfigureAwait(false);
                 return Result(new(RecoveryState.RetryWaiting, RecoveryState.Starting,
                     RecoverySignal.None, "Reserved launch dispatched"), dispatched: true);
@@ -140,17 +150,27 @@ public sealed class ProfileCoordinator : IDisposable
             }
             catch (OperationCanceledException) when (launchCancellation.IsCancellationRequested)
             {
-                _machine.FailLaunch(operationId, _clock.Elapsed);
-                Persist();
-                return Result(new(RecoveryState.Starting, _machine.Snapshot.State,
-                    RecoverySignal.None, "Launch canceled by profile command; reservation remains consumed"));
+                if (reservedOperationId is { } reserved)
+                {
+                    _machine.FailLaunch(reserved, _clock.Elapsed);
+                    Persist();
+                    return Result(new(RecoveryState.Starting, _machine.Snapshot.State,
+                        RecoverySignal.None, "Launch canceled by profile command; reservation remains consumed"));
+                }
+                return Result(new(_machine.Snapshot.State, _machine.Snapshot.State,
+                    RecoverySignal.None, "Launch canceled before reservation"));
             }
             catch (Exception error)
             {
-                _machine.FailLaunch(operationId, _clock.Elapsed);
-                Persist();
-                return Result(new(RecoveryState.Starting, _machine.Snapshot.State,
-                    RecoverySignal.None, $"Launch dispatch failed: {error.Message}"));
+                if (reservedOperationId is { } reserved)
+                {
+                    _machine.FailLaunch(reserved, _clock.Elapsed);
+                    Persist();
+                    return Result(new(RecoveryState.Starting, _machine.Snapshot.State,
+                        RecoverySignal.None, $"Launch dispatch failed: {error.Message}"));
+                }
+                return Result(new(_machine.Snapshot.State, _machine.Snapshot.State,
+                    RecoverySignal.None, $"Launch queue failed: {error.Message}"));
             }
             finally
             {

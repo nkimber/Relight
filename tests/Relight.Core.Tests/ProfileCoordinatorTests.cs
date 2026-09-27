@@ -108,14 +108,15 @@ public sealed class ProfileCoordinatorTests
     {
         using var directory = new TestDirectory();
         var store = new RecoveryStateStore(directory.Path);
+        using var queue = new BoundedLaunchGate(2);
         var firstClock = new FakeClock();
         var secondClock = new FakeClock();
         var blocked = new BlockingLauncher();
         var free = new CountingLauncher();
         using var a = ProfileCoordinator.CreateNew(Guid.NewGuid(), AutoPolicy,
-            store, new ConstantDiscovery(Detection.Absent()), blocked, firstClock);
+            store, new ConstantDiscovery(Detection.Absent()), blocked, firstClock, queue);
         using var b = ProfileCoordinator.CreateNew(Guid.NewGuid(), AutoPolicy,
-            store, new ConstantDiscovery(Detection.Absent()), free, secondClock);
+            store, new ConstantDiscovery(Detection.Absent()), free, secondClock, queue);
         foreach (int second in new[] { 0, 2 })
         {
             await TickAt(a, firstClock, second);
@@ -156,6 +157,77 @@ public sealed class ProfileCoordinatorTests
         Assert.Equal(1, blocked.Dispatches);
     }
 
+    [Fact]
+    public async Task Queued_profile_adopts_target_that_appears_before_its_launch_slot()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        using var queue = new BoundedLaunchGate(2);
+        var firstClock = new FakeClock();
+        var secondClock = new FakeClock();
+        var queuedClock = new FakeClock();
+        var firstLaunch = new BlockingLauncher();
+        var secondLaunch = new BlockingLauncher();
+        var queuedLaunch = new CountingLauncher();
+        var queuedDiscovery = new MutableDiscovery(Detection.Absent());
+        Guid firstId = Guid.NewGuid(), secondId = Guid.NewGuid(), queuedId = Guid.NewGuid();
+        using var first = ProfileCoordinator.CreateNew(firstId, AutoPolicy, store,
+            new ConstantDiscovery(Detection.Absent()), firstLaunch, firstClock, queue);
+        using var second = ProfileCoordinator.CreateNew(secondId, AutoPolicy, store,
+            new ConstantDiscovery(Detection.Absent()), secondLaunch, secondClock, queue);
+        using var queued = ProfileCoordinator.CreateNew(queuedId, AutoPolicy, store,
+            queuedDiscovery, queuedLaunch, queuedClock, queue);
+        foreach (int secondMark in new[] { 0, 2 })
+        {
+            await TickAt(first, firstClock, secondMark);
+            await TickAt(second, secondClock, secondMark);
+            await TickAt(queued, queuedClock, secondMark);
+        }
+
+        firstClock.Elapsed = secondClock.Elapsed = queuedClock.Elapsed = TimeSpan.FromSeconds(32);
+        Task<CoordinatorResult> runningFirst = first.TickAsync();
+        Task<CoordinatorResult> runningSecond = second.TickAsync();
+        await firstLaunch.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await secondLaunch.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Task<CoordinatorResult> waiting = queued.TickAsync();
+        Assert.False(waiting.IsCompleted);
+        Assert.Equal(0, store.Load(queuedId).Checkpoint.ReservedAutomaticAttempts);
+
+        queuedDiscovery.Result = Detection.Present("current-session|target|100|start");
+        firstLaunch.Release.TrySetResult();
+        await runningFirst.WaitAsync(TimeSpan.FromSeconds(3));
+        CoordinatorResult adopted = await waiting.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.Equal(RecoveryState.Observing, adopted.Snapshot.State);
+        Assert.Equal(0, queuedLaunch.Dispatches);
+        Assert.Equal(0, store.Load(queuedId).Checkpoint.ReservedAutomaticAttempts);
+        secondLaunch.Release.TrySetResult();
+        await runningSecond.WaitAsync(TimeSpan.FromSeconds(3));
+    }
+
+    [Fact]
+    public async Task Pause_while_waiting_for_launch_slot_does_not_consume_an_attempt()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var queue = new BlockingLaunchGate();
+        var launcher = new CountingLauncher();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id, AutoPolicy, store,
+            new ConstantDiscovery(Detection.Absent()), launcher, clock, queue);
+        await TickAt(coordinator, clock, 0);
+        await TickAt(coordinator, clock, 2);
+        clock.Elapsed = TimeSpan.FromSeconds(32);
+        Task<CoordinatorResult> waiting = coordinator.TickAsync();
+        await queue.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Task pause = coordinator.SetPausedAsync(true);
+        await Task.WhenAll(waiting, pause).WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.Equal(0, launcher.Dispatches);
+        Assert.Equal(0, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+        Assert.True(coordinator.Snapshot.Paused);
+    }
+
     private static async Task<CoordinatorResult> TickAt(ProfileCoordinator coordinator,
         FakeClock clock, int seconds)
     {
@@ -171,6 +243,12 @@ public sealed class ProfileCoordinatorTests
     private sealed class ConstantDiscovery(Detection result) : IProcessDiscovery
     {
         public Task<Detection> DetectAsync(CancellationToken cancellationToken) => Task.FromResult(result);
+    }
+
+    private sealed class MutableDiscovery(Detection result) : IProcessDiscovery
+    {
+        public Detection Result { get; set; } = result;
+        public Task<Detection> DetectAsync(CancellationToken cancellationToken) => Task.FromResult(Result);
     }
 
     private sealed class SequencedDiscovery(Detection fallback) : IProcessDiscovery
@@ -214,6 +292,19 @@ public sealed class ProfileCoordinatorTests
             Entered.TrySetResult();
             await Release.Task.WaitAsync(cancellationToken);
         }
+    }
+
+    private sealed class BlockingLaunchGate : ILaunchGate
+    {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public async Task<IDisposable> EnterAsync(CancellationToken cancellationToken)
+        {
+            Entered.TrySetResult();
+            await _release.Task.WaitAsync(cancellationToken);
+            return new NoopLease();
+        }
+        private sealed class NoopLease : IDisposable { public void Dispose() { } }
     }
 
     private sealed class FailReservationStore(IRecoveryStateStore inner) : IRecoveryStateStore
