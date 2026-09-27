@@ -51,6 +51,14 @@
                           Margin="0,0,0,18" />
                 <TextBlock Text="Changing observation duration restarts the current stability timer. Changing retry delay sets a new deadline from Save. A launch already in progress keeps its original timeout and attempt policy. Raising the attempt limit alone does not unlock a profile."
                            Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,16" />
+
+                <TextBlock Text="Notifications" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12" />
+                <CheckBox x:Name="NotifyRecoveryInput" Content="Notify when automatic recovery becomes stable"
+                          Margin="0,0,0,12" />
+                <CheckBox x:Name="NotifyLockoutInput" Content="Notify when automatic recovery needs attention"
+                          Margin="0,0,0,12" />
+                <TextBlock Text="Relight shows best-effort Windows tray notifications for live events. Notification display does not affect monitoring or attempt accounting."
+                           Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,16" />
             </StackPanel>
         </ScrollViewer>
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">

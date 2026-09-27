@@ -280,7 +280,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     public void UpdateMonitoring(string? configurationProblem, bool canRepairConfiguration,
         IReadOnlyList<HostedProfileStatus> profiles, EventRecorderStatus? logging,
         TimeSpan elapsed, DashboardEventHistory? eventHistory = null,
-        string? eventHistoryProblem = null)
+        string? eventHistoryProblem = null, string? notificationProblem = null)
     {
         if (_canRepairConfiguration != canRepairConfiguration)
         {
@@ -345,6 +345,8 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
                     : $"Monitoring {active} application(s). Closing this window keeps protection running.";
         if (logging?.Degraded == true)
             banner += " Event logging is degraded; review diagnostics before unattended use.";
+        if (notificationProblem is not null)
+            banner += $" {notificationProblem}";
         if (eventHistoryProblem is not null)
             banner += $" Dashboard event history is unavailable: {eventHistoryProblem}";
         else if (eventHistory?.SkippedMalformedLines > 0)

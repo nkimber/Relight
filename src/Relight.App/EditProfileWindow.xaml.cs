@@ -11,11 +11,11 @@ namespace Relight;
 public partial class EditProfileWindow : Window
 {
     private readonly ProfileConfiguration _profile;
-    private readonly Func<Guid, string, RecoveryPolicy, Task> _save;
+    private readonly Func<Guid, string, RecoveryPolicy, bool, bool, Task> _save;
     private bool _saving;
 
     public EditProfileWindow(ProfileConfiguration profile,
-        Func<Guid, string, RecoveryPolicy, Task> save)
+        Func<Guid, string, RecoveryPolicy, bool, bool, Task> save)
     {
         _profile = profile;
         _save = save;
@@ -33,6 +33,8 @@ public partial class EditProfileWindow : Window
         AbsenceInput.Text = policy.AbsenceConfirmationDelay.TotalSeconds.ToString(CultureInfo.CurrentCulture);
         InitialStartInput.IsChecked = policy.StartAutomaticallyWhenInitiallyAbsent;
         RearmInput.IsChecked = policy.RearmAfterStableExternalStart;
+        NotifyRecoveryInput.IsChecked = profile.NotifyOnRecovery;
+        NotifyLockoutInput.IsChecked = profile.NotifyOnLockout;
         NameInput.Focus();
     }
 
@@ -72,7 +74,9 @@ public partial class EditProfileWindow : Window
         SaveButton.Content = "Saving…";
         try
         {
-            await _save(_profile.Id, name, policy);
+            await _save(_profile.Id, name, policy,
+                NotifyRecoveryInput.IsChecked == true,
+                NotifyLockoutInput.IsChecked == true);
             DialogResult = true;
         }
         catch (Exception error)

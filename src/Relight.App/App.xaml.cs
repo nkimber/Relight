@@ -34,6 +34,8 @@ public partial class App : Application
     private DashboardEventHistory? _dashboardHistory;
     private string? _dashboardHistoryProblem;
     private DateTimeOffset _nextDashboardHistoryRefreshUtc;
+    private readonly RecoveryNotificationPlanner _notificationPlanner = new();
+    private string? _notificationProblem;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -154,6 +156,23 @@ public partial class App : Application
         try
         {
             var profiles = host.GetProfiles();
+            foreach (OperationalEvent entry in host.DrainNotificationEvents())
+            {
+                ProfileConfiguration? profile = host.Configuration?.Configuration.Profiles
+                    .FirstOrDefault(item => item.Id == entry.ProfileId);
+                RecoveryNotification? notice = _notificationPlanner.Plan(entry, profile);
+                if (notice is null || _tray is null) continue;
+                try
+                {
+                    _tray.ShowRecoveryNotification(notice.Title, notice.Message,
+                        notice.Warning);
+                    _notificationProblem = null;
+                }
+                catch (Exception error)
+                {
+                    _notificationProblem = $"Tray notification could not be shown: {error.Message}";
+                }
+            }
             var logging = await host.GetLoggingStatusAsync();
             if (DateTimeOffset.UtcNow >= _nextDashboardHistoryRefreshUtc)
             {
@@ -188,7 +207,8 @@ public partial class App : Application
             }
             _viewModel?.UpdateMonitoring(host.ConfigurationProblem,
                 host.Configuration?.FromLastGoodBackup == true, profiles, logging,
-                host.Elapsed, _dashboardHistory, _dashboardHistoryProblem);
+                host.Elapsed, _dashboardHistory, _dashboardHistoryProblem,
+                _notificationProblem);
             bool configured = host.Configuration?.Configuration.Settings.StartAtSignIn == true;
             bool registered = startupStatus?.EnabledForThisExecutable == true;
             bool startupAvailable = host.Configuration?.AutomaticActionsAllowed == true &&
@@ -425,7 +445,9 @@ public partial class App : Application
         try
         {
             var dialog = new EditProfileWindow(host.GetProfileForEdit(profileId),
-                (id, name, policy) => host.UpdateProfileBasicsAsync(id, name, policy,
+                (id, name, policy, recovery, lockout) =>
+                    host.UpdateProfileSettingsAsync(id, name, policy,
+                    recovery, lockout,
                     _monitoringCancellation?.Token ?? CancellationToken.None))
             {
                 Owner = _dashboard

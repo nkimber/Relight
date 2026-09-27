@@ -31,6 +31,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     private readonly RecoveryStateStore _stateStore;
     private OperationalEventJournal? _journal;
     private QueuedEventRecorder? _recorder;
+    private LiveNotificationTap? _notificationTap;
     private readonly BoundedLaunchGate _launchGate = new();
     private readonly RecoveryScheduler _scheduler;
     private readonly IMonotonicClock _clock;
@@ -143,7 +144,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                     ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(
                         profile.Id, profile.Policy, _stateStore, packagedDiscovery,
                         new PackagedApplicationLauncher(profile.Target.Identity),
-                        _clock, _launchGate, _recorder);
+                        _clock, _launchGate, _notificationTap);
                     _scheduler.Add(profile.Id, coordinator, profile.Policy);
                     _coordinators.Add(profile.Id, coordinator);
                     _statuses[profile.Id] = new(profile.Id, profile.Name, true, true,
@@ -203,7 +204,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             {
                 ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(profile.Id,
                     profile.Policy, _stateStore, discovery, new ExecutableLauncher(target),
-                    _clock, _launchGate, _recorder, new ExecutableStopper(target));
+                    _clock, _launchGate, _notificationTap, new ExecutableStopper(target));
                 _scheduler.Add(profile.Id, coordinator, profile.Policy);
                 _coordinators.Add(profile.Id, coordinator);
                 _statuses[profile.Id] = new(profile.Id, profile.Name, true, true,
@@ -222,6 +223,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     {
         _journal = new(dataDirectory, settings);
         _recorder = new(_journal);
+        _notificationTap = new(_recorder);
     }
 
     private async Task<HostedProfileStatus> PassiveStatus(ProfileConfiguration profile,
@@ -275,6 +277,9 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             };
         }).ToArray();
     }
+
+    public IReadOnlyList<OperationalEvent> DrainNotificationEvents() =>
+        _notificationTap?.Drain() ?? [];
 
     public static async Task<Detection> InspectExecutableAsync(string executablePath,
         CancellationToken cancellationToken = default)
@@ -363,7 +368,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             ConfigurationStore.ValidateConfiguration(updated);
             ProfileCoordinator coordinator = await Task.Run(() =>
                 ProfileCoordinator.CreateNew(id, policy, _stateStore, discovery,
-                    launcher, _clock, _launchGate, _recorder, stopper),
+                    launcher, _clock, _launchGate, _notificationTap, stopper),
                 CancellationToken.None).ConfigureAwait(false);
             try
             {
@@ -469,10 +474,18 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     public Task UpdateProfileBasicsAsync(Guid profileId, string name,
         RecoveryPolicy policy, CancellationToken cancellationToken = default) =>
         Task.Run(() => UpdateProfileBasicsCoreAsync(profileId, name, policy,
-            cancellationToken), CancellationToken.None);
+            null, null, cancellationToken), CancellationToken.None);
+
+    public Task UpdateProfileSettingsAsync(Guid profileId, string name,
+        RecoveryPolicy policy, bool notifyOnRecovery, bool notifyOnLockout,
+        CancellationToken cancellationToken = default) =>
+        Task.Run(() => UpdateProfileBasicsCoreAsync(profileId, name, policy,
+            notifyOnRecovery, notifyOnLockout, cancellationToken),
+            CancellationToken.None);
 
     private async Task UpdateProfileBasicsCoreAsync(Guid profileId, string name,
-        RecoveryPolicy policy, CancellationToken cancellationToken)
+        RecoveryPolicy policy, bool? notifyOnRecovery, bool? notifyOnLockout,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(name) || name.Trim().Length > 100)
             throw new ArgumentException("Choose a name of 1–100 characters.", nameof(name));
@@ -493,9 +506,18 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             string nextName = name.Trim();
             bool renamed = !string.Equals(profile.Name, nextName, StringComparison.Ordinal);
             bool policyChanged = profile.Policy != policy;
-            if (!renamed && !policyChanged) return;
+            bool preferencesChanged =
+                notifyOnRecovery is { } recovery && recovery != profile.NotifyOnRecovery ||
+                notifyOnLockout is { } lockout && lockout != profile.NotifyOnLockout;
+            if (!renamed && !policyChanged && !preferencesChanged) return;
 
-            var edited = profile with { Name = nextName, Policy = policy };
+            var edited = profile with
+            {
+                Name = nextName,
+                Policy = policy,
+                NotifyOnRecovery = notifyOnRecovery ?? profile.NotifyOnRecovery,
+                NotifyOnLockout = notifyOnLockout ?? profile.NotifyOnLockout
+            };
             var updated = current.Configuration with
             {
                 Profiles = current.Configuration.Profiles.Select(item => item.Id == profileId
@@ -538,6 +560,10 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             if (policyChanged && coordinator is null)
                 _recorder?.TryRecord(new(DateTimeOffset.UtcNow, Guid.NewGuid(),
                     EventSeverity.Information, OperationalEventKind.PolicyChanged,
+                    ProfileId: profileId, ProfileName: nextName));
+            if (preferencesChanged)
+                _recorder?.TryRecord(new(DateTimeOffset.UtcNow, Guid.NewGuid(),
+                    EventSeverity.Information, OperationalEventKind.NotificationPreferencesChanged,
                     ProfileId: profileId, ProfileName: nextName));
         }
         finally { _changes.Release(); }
@@ -698,7 +724,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 throw new InvalidOperationException("This profile is already scheduled.");
         ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(profile.Id,
             profile.Policy, _stateStore, discovery, launcher,
-            _clock, _launchGate, _recorder, stopper);
+            _clock, _launchGate, _notificationTap, stopper);
         RecoveryState previousState = coordinator.Snapshot.State;
         bool schedulerOwnsCoordinator = false;
         try

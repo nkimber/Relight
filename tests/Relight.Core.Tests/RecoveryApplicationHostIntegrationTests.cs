@@ -266,6 +266,41 @@ public sealed class RecoveryApplicationHostIntegrationTests
 
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Notification_preferences_persist_without_changing_recovery_budget()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-notify-prefs-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            Guid id;
+            await using (var host = await RecoveryApplicationHost.OpenAsync(root,
+                             new FakeClock()))
+            {
+                id = await host.RegisterExecutableAsync("Disposable target", TestExecutable());
+                RecoveryPolicy policy = host.GetProfileForEdit(id).Policy;
+                await host.UpdateProfileSettingsAsync(id, "Disposable target", policy,
+                    notifyOnRecovery: false, notifyOnLockout: false);
+                ProfileConfiguration edited = host.GetProfileForEdit(id);
+                Assert.False(edited.NotifyOnRecovery);
+                Assert.False(edited.NotifyOnLockout);
+                Assert.Equal(0, new RecoveryStateStore(root).Load(id)
+                    .Checkpoint.ReservedAutomaticAttempts);
+            }
+
+            await using var reopened = await RecoveryApplicationHost.OpenAsync(root,
+                new FakeClock());
+            ProfileConfiguration saved = reopened.GetProfileForEdit(id);
+            Assert.False(saved.NotifyOnRecovery);
+            Assert.False(saved.NotifyOnLockout);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Disabled_profile_reopens_with_its_existing_ledger()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-disabled-{Guid.NewGuid():N}");

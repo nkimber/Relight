@@ -88,6 +88,15 @@ internal sealed class TrayService : IDisposable
         _resumeAllItem.Enabled = canResume;
     }
 
+    public void ShowRecoveryNotification(string title, string message, bool warning)
+    {
+        _icon.BalloonTipTitle = title;
+        _icon.BalloonTipText = message;
+        _icon.BalloonTipIcon = warning ? Forms.ToolTipIcon.Warning :
+            Forms.ToolTipIcon.Info;
+        _icon.ShowBalloonTip(5000);
+    }
+
     public void Dispose()
     {
         _icon.Visible = false;
