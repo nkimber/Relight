@@ -17,7 +17,7 @@
 
 ## Verification and limits
 
-`dotnet test Relight.slnx -c Release --no-restore` passed **37 tests** on this Windows 11 x64 desktop: 30 deterministic recovery/storage/coordinator scenarios and 7 controlled Windows process scenarios. The GitHub workflow runs the deterministic subset; the prior configuration increment passed on [Windows CI](https://github.com/nkimber/Relight/actions/runs/36336613567). The new pause-cancellation change has not yet been verified by CI at the time of this checkpoint.
+`dotnet test Relight.slnx -c Release --no-restore` passed **37 tests** on this Windows 11 x64 desktop: 30 deterministic recovery/storage/coordinator scenarios and 7 controlled Windows process scenarios. The [Windows CI workflow for the latest code increment](https://github.com/nkimber/Relight/actions/runs/36336799286) passed its Release build and deterministic subset.
 
 The coordinator and executable adapter are not yet connected to a scheduler or the WPF shell. The integration test can launch the disposable test target; the Relight preview cannot automatically launch a user target. Configuration storage is isolated but is not yet wired to an application host or repair UI. Operational event logs, notifications, packaged-app activation, session-coordinated lockout, user controls and the UI editor/history remain open. M1–M3 exit criteria are therefore not claimed complete.
 
