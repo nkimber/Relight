@@ -4,7 +4,7 @@ A Windows tray application that will watch selected desktop apps and bring them 
 
 [Public repository](https://github.com/nkimber/Relight)
 
-**Current status: runnable WPF shell preview (0.1.0) with recovery foundation under development.** The dashboard, tray lifetime and single-instance activation work. A separate recovery model, state store, coordinator, executable adapter and test target exist, but the preview does not yet connect them or control other applications. Application registration, active monitoring, notifications and sign-in startup are not implemented yet.
+**Current status: runnable WPF shell preview (0.1.0) with recovery foundation under development.** The dashboard, tray lifetime and single-instance activation work. Separate recovery, state/configuration storage, coordinator, executable adapter and test-target components exist, but the preview does not yet connect them or control other applications. Application registration, active monitoring, notifications and sign-in startup are not implemented yet.
 
 ## Build and run
 
@@ -51,7 +51,7 @@ This is a development preview, not the production release or overnight pilot des
 |---|---|
 | `src/Relight.App` | WPF shell, view model, tray integration and session singleton |
 | `src/Relight.Core` | UI-independent recovery policy and state model |
-| `src/Relight.Storage` | Versioned, fail-closed runtime recovery-state snapshots |
+| `src/Relight.Storage` | Versioned runtime recovery-state snapshots and validated configuration storage |
 | `src/Relight.Engine` | Per-profile serialized coordination and durable launch reservations |
 | `src/Relight.Windows` | Executable discovery and argument-safe launch adapter |
 | `tests` | Deterministic model/store tests and controllable Windows test target |

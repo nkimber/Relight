@@ -15,7 +15,7 @@ This plan expands PRD Section 14 without changing Version 1 scope. Proposed defa
 |---|---|---|---|---|
 | M0 | Actual target can be identified and activated in a controlled spike | — | In progress: toolchain and both installed package identities recorded; chosen-target activation pending | 0: target validation |
 | M1 | Deterministic recovery model and controllable test application | M0 | In progress: model and controllable test target implemented; full exit coverage pending | 1: recovery engine |
-| M2 | Trustworthy state persistence and restart reconstruction | M1 | In progress: fail-closed runtime state store implemented; configuration and event storage pending | 1: recovery engine |
+| M2 | Trustworthy state persistence and restart reconstruction | M1 | In progress: runtime state and configuration stores implemented; event storage, session coordination and repair path pending | 1: recovery engine |
 | M3 | Working executable recovery loop with exact attempt limits | M2 | In progress: per-profile coordinator and executable adapter tested with disposable target; scheduler and app wiring pending | 1: recovery engine |
 | M4 | Production target adapter handles real application identity | M3 | Not started | 1 / 2: engine and integration |
 | M5 | Resident WPF tray shell displays live protection status | M3 | In progress: initial shell; engine integration and full acceptance pending | 2: native tray application |
