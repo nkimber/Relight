@@ -36,6 +36,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     private string _footerStatus = "Relight is in the tray · Loading monitoring status";
     private IReadOnlyList<HistoryProfileOption> _historyProfiles =
         [new("All applications", null)];
+    private IReadOnlyList<EventHistoryProfile> _retainedHistoryProfiles = [];
     private IReadOnlyList<HistoryRow> _historyRows = [];
     private string _historyStatus = "Open History to load recorded events.";
     private string _historySummaryText = "Open History to see an event-based summary.";
@@ -177,18 +178,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
                 configurationProblem is null,
                 configurationProblem is null))
             .ToArray();
-        Guid? selectedId = _selectedHistoryProfile.Id;
-        HistoryProfileOption[] availableProfiles =
-            [new("All applications", null), .. profiles
-                .OrderBy(profile => profile.Name, StringComparer.CurrentCultureIgnoreCase)
-                .Select(profile => new HistoryProfileOption(profile.Name, profile.Id))];
-        if (!_historyProfiles.SequenceEqual(availableProfiles))
-        {
-            _historyProfiles = availableProfiles;
-            _selectedHistoryProfile = availableProfiles.FirstOrDefault(option =>
-                option.Id == selectedId) ?? availableProfiles[0];
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
-        }
+        RefreshHistoryProfiles(rows);
         int active = profiles.Count(profile => profile.AutomaticActionsAllowed);
         int attention = profiles.Count(profile => profile.Problem is not null);
         string banner = configurationProblem is not null
@@ -256,8 +246,13 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     {
         EventHistoryResult result = overview.Results;
         EventHistorySummary summary = overview.Summary;
-        Dictionary<Guid, string> currentNames = _applicationRows.ToDictionary(
-            row => row.Id, row => row.Name);
+        _retainedHistoryProfiles = overview.Profiles;
+        RefreshHistoryProfiles(_applicationRows);
+        Dictionary<Guid, string> currentNames = _retainedHistoryProfiles
+            .Where(profile => !string.IsNullOrWhiteSpace(profile.Name))
+            .ToDictionary(profile => profile.Id, profile => profile.Name!);
+        foreach (ApplicationStatusRow row in _applicationRows)
+            currentNames[row.Id] = row.Name;
         _historyRows = result.Events.Select(entry => new HistoryRow(
             entry.OccurredUtc.ToLocalTime().ToString("g"),
             entry.OccurredUtc.ToString("u"),
@@ -283,6 +278,25 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
             $"Monitoring gaps: {summary.MonitoringGaps} reported, " +
             $"{summary.MonitoringRestorations} restoration(s) observed. " +
             "Gap time is unknown and is never counted as confirmed application downtime.";
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
+    }
+
+    private void RefreshHistoryProfiles(IReadOnlyList<ApplicationStatusRow> currentRows)
+    {
+        Guid? selectedId = _selectedHistoryProfile.Id;
+        var names = _retainedHistoryProfiles.ToDictionary(profile => profile.Id,
+            profile => profile.Name is { Length: > 0 } name
+                ? $"{name} (removed)" : $"{profile.Id} (removed)");
+        foreach (ApplicationStatusRow row in currentRows)
+            names[row.Id] = row.Name;
+        HistoryProfileOption[] availableProfiles =
+            [new("All applications", null), .. names
+                .OrderBy(item => item.Value, StringComparer.CurrentCultureIgnoreCase)
+                .Select(item => new HistoryProfileOption(item.Value, item.Key))];
+        if (_historyProfiles.SequenceEqual(availableProfiles)) return;
+        _historyProfiles = availableProfiles;
+        _selectedHistoryProfile = availableProfiles.FirstOrDefault(option =>
+            option.Id == selectedId) ?? availableProfiles[0];
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
     }
 

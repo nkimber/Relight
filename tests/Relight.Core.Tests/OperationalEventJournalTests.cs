@@ -192,7 +192,8 @@ public sealed class OperationalEventJournalTests
         await journal.AppendAsync(NewEvent() with
         {
             ProfileId = another,
-            Kind = OperationalEventKind.LockoutEntered
+            ProfileName = "Removed app",
+            Kind = OperationalEventKind.ProfileRemoved
         });
 
         EventHistoryOverview overview = await new OperationalEventHistoryReader(directory.Path)
@@ -208,6 +209,9 @@ public sealed class OperationalEventJournalTests
         Assert.Equal(1, overview.Summary.Lockouts);
         Assert.Equal(1, overview.Summary.MonitoringGaps);
         Assert.Equal(1, overview.Summary.MonitoringRestorations);
+        Assert.Contains(overview.Profiles, item => item.Id == another &&
+            item.Name == "Removed app");
+        Assert.Contains(overview.Profiles, item => item.Id == profile);
     }
 
     [Fact]

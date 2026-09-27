@@ -30,8 +30,10 @@ public sealed record EventHistorySummary(
     int MonitoringGaps,
     int MonitoringRestorations);
 
+public sealed record EventHistoryProfile(Guid Id, string? Name);
+
 public sealed record EventHistoryOverview(EventHistoryResult Results,
-    EventHistorySummary Summary);
+    EventHistorySummary Summary, IReadOnlyList<EventHistoryProfile> Profiles);
 
 public enum EventHistoryExportFormat { Text, Csv }
 public sealed record EventHistoryExportResult(int ExportedEvents, int SkippedMalformedLines);
@@ -62,6 +64,7 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
         int lockouts = 0;
         int gaps = 0;
         int restorations = 0;
+        var profiles = new Dictionary<Guid, (string? Name, DateTimeOffset NamedAt)>();
         ScanSummary summary = await ScanAsync(query, entry =>
         {
             latest.Enqueue(entry, entry.OccurredUtc);
@@ -85,6 +88,15 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
                 case OperationalEventKind.MonitoringGap: gaps++; break;
                 case OperationalEventKind.MonitoringRestored: restorations++; break;
             }
+        }, entry =>
+        {
+            if (entry.ProfileId is not { } id) return;
+            string? name = string.IsNullOrWhiteSpace(entry.ProfileName)
+                ? null : entry.ProfileName;
+            if (!profiles.TryGetValue(id, out var existing))
+                profiles.Add(id, (name, name is null ? DateTimeOffset.MinValue : entry.OccurredUtc));
+            else if (name is not null && entry.OccurredUtc >= existing.NamedAt)
+                profiles[id] = (name, entry.OccurredUtc);
         }).ConfigureAwait(false);
         OperationalEvent[] rows = latest.UnorderedItems
             .Select(item => item.Element)
@@ -93,7 +105,9 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
             .ToArray();
         return new(new(rows, summary.Matched, summary.Malformed),
             new(disappearances, reservations, dispatches, automaticRecoveries,
-                otherStableStarts, lockouts, gaps, restorations));
+                otherStableStarts, lockouts, gaps, restorations),
+            profiles.Select(item => new EventHistoryProfile(item.Key, item.Value.Name))
+                .ToArray());
     }
 
     public async Task<EventHistoryExportResult> ExportAsync(EventHistoryQuery query,
@@ -147,7 +161,8 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
 
     private async Task<ScanSummary> ScanAsync(EventHistoryQuery query,
         Func<OperationalEvent, Task> visit, CancellationToken cancellationToken,
-        Action<OperationalEvent>? beforeSeverityAndKind = null)
+        Action<OperationalEvent>? beforeSeverityAndKind = null,
+        Action<OperationalEvent>? beforeFilters = null)
     {
         if (!Directory.Exists(_directory)) return new(0, 0);
         if ((File.GetAttributes(_directory) & FileAttributes.ReparsePoint) != 0)
@@ -189,6 +204,7 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
                     continue;
                 }
                 if (!seenIds.Add(entry.EventId)) continue;
+                beforeFilters?.Invoke(entry);
                 if (query.ProfileId is { } profile && entry.ProfileId != profile ||
                     query.EpisodeId is { } episode && entry.EpisodeId != episode ||
                     query.FromUtc is { } from && entry.OccurredUtc < from ||
