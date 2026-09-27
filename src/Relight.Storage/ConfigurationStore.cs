@@ -130,6 +130,79 @@ public sealed class ConfigurationStore
         return new(current.Revision + 1, Hash(bytes), configuration, false, null);
     }
 
+    /// <summary>
+    /// Explicit repair using the last-good configuration that was displayed to
+    /// the user. Archives the invalid current file before atomically restoring
+    /// the backup; callers must reopen/reconcile profiles before dispatching.
+    /// </summary>
+    public (StoredConfiguration Restored, string? PreservedInvalidPath) RepairFromLastGood(
+        StoredConfiguration displayedBackup)
+    {
+        ArgumentNullException.ThrowIfNull(displayedBackup);
+        if (!displayedBackup.FromLastGoodBackup)
+            throw new InvalidOperationException("Repair requires a last-good configuration.");
+        using FileStream guard = Lock();
+        StoredConfiguration backup = Read(BackupPath, fromBackup: true);
+        if (backup.Revision != displayedBackup.Revision ||
+            !string.Equals(backup.ContentHash, displayedBackup.ContentHash,
+                StringComparison.Ordinal))
+            throw new StaleConfigurationException("The last-good configuration changed. Reload before repair.");
+        try
+        {
+            Read(_path, fromBackup: false);
+            throw new StaleConfigurationException("The current configuration is valid. Reload before repair.");
+        }
+        catch (ConfigurationUnavailableException) { }
+
+        string? preserved = null;
+        if (File.Exists(_path))
+        {
+            preserved = Path.Combine(Path.GetDirectoryName(_path)!,
+                $"configuration-invalid-{Guid.NewGuid():N}.json");
+            try
+            {
+                using var source = new FileStream(_path, FileMode.Open, FileAccess.Read,
+                    FileShare.Read);
+                using var archive = new FileStream(preserved, FileMode.CreateNew, FileAccess.Write,
+                    FileShare.None, 4096, FileOptions.WriteThrough);
+                source.CopyTo(archive);
+                archive.Flush(flushToDisk: true);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                throw new ConfigurationUnavailableException(
+                    "Invalid configuration could not be preserved; repair was not performed.", error);
+            }
+        }
+
+        string temporary = _path + $".{Guid.NewGuid():N}.tmp";
+        try
+        {
+            byte[] bytes = File.ReadAllBytes(BackupPath);
+            if (!string.Equals(Hash(bytes), backup.ContentHash, StringComparison.Ordinal))
+                throw new StaleConfigurationException("The last-good configuration changed during repair.");
+            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write,
+                       FileShare.None, 4096, FileOptions.WriteThrough))
+            {
+                stream.Write(bytes);
+                stream.Flush(flushToDisk: true);
+            }
+            if (File.Exists(_path))
+                File.Replace(temporary, _path, null, ignoreMetadataErrors: false);
+            else File.Move(temporary, _path);
+            return (new(backup.Revision, backup.ContentHash, backup.Configuration,
+                false, null), preserved);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            throw new ConfigurationUnavailableException("Configuration repair could not be committed.", error);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+    }
+
     private string BackupPath => _path + ".bak";
 
     private FileStream Lock()

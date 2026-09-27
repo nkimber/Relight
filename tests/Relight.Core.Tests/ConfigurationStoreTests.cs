@@ -27,6 +27,50 @@ public sealed class ConfigurationStoreTests
     }
 
     [Fact]
+    public void Explicit_repair_preserves_invalid_file_and_restores_displayed_backup()
+    {
+        using var directory = new TestDirectory();
+        var store = new ConfigurationStore(directory.Path);
+        StoredConfiguration first = store.Initialize(RelightConfiguration.Empty);
+        store.Save(first, WithProfile());
+        string file = Path.Combine(directory.Path, "configuration.json");
+        File.WriteAllText(file, "{ invalid external edit");
+        StoredConfiguration fallback = store.Load();
+
+        var (restored, preserved) = store.RepairFromLastGood(fallback);
+
+        Assert.NotNull(preserved);
+        Assert.Equal("{ invalid external edit", File.ReadAllText(preserved));
+        Assert.False(restored.FromLastGoodBackup);
+        Assert.Equal(fallback.ContentHash, restored.ContentHash);
+        Assert.Empty(store.Load().Configuration.Profiles);
+        Assert.True(store.Load().AutomaticActionsAllowed);
+    }
+
+    [Fact]
+    public void Repair_rejects_changed_backup_or_already_fixed_current_file()
+    {
+        using var directory = new TestDirectory();
+        var store = new ConfigurationStore(directory.Path);
+        StoredConfiguration first = store.Initialize(RelightConfiguration.Empty);
+        store.Save(first, WithProfile());
+        string file = Path.Combine(directory.Path, "configuration.json");
+        string valid = File.ReadAllText(file);
+        File.WriteAllText(file, "{ invalid external edit");
+        StoredConfiguration fallback = store.Load();
+        string backup = file + ".bak";
+        string backupText = File.ReadAllText(backup);
+        File.WriteAllText(backup, backupText.Replace("\"revision\": 1", "\"revision\" : 1"));
+        Assert.Throws<StaleConfigurationException>(() => store.RepairFromLastGood(fallback));
+        Assert.Equal("{ invalid external edit", File.ReadAllText(file));
+
+        File.WriteAllText(backup, backupText);
+        File.WriteAllText(file, valid);
+        Assert.Throws<StaleConfigurationException>(() => store.RepairFromLastGood(fallback));
+        Assert.Equal(valid, File.ReadAllText(file));
+    }
+
+    [Fact]
     public void Stale_revision_or_same_revision_external_edit_cannot_be_overwritten()
     {
         using var directory = new TestDirectory();
