@@ -11,6 +11,7 @@ public sealed class RecoveryScheduler : IAsyncDisposable
 {
     private readonly IMonotonicClock _clock;
     private readonly Dictionary<Guid, ScheduledProfile> _profiles = new();
+    private readonly Dictionary<Guid, PassiveProfile> _passive = new();
     private readonly object _sync = new();
     private readonly CancellationTokenSource _stop = new();
     private Task? _loop;
@@ -27,7 +28,28 @@ public sealed class RecoveryScheduler : IAsyncDisposable
         lock (_sync)
         {
             ThrowIfDisposed();
-            if (!_profiles.TryAdd(id, new(coordinator, policy, _clock.Elapsed)))
+            if (_passive.ContainsKey(id) || !_profiles.TryAdd(id,
+                    new(coordinator, policy, _clock.Elapsed)))
+                throw new InvalidOperationException("Profile is already scheduled.");
+        }
+    }
+
+    public void AddPassive(Guid id, IProcessDiscovery discovery, TimeSpan interval,
+        Detection? initialDetection = null)
+    {
+        if (id == Guid.Empty) throw new ArgumentException("Profile ID is required.", nameof(id));
+        ArgumentNullException.ThrowIfNull(discovery);
+        if (interval < TimeSpan.FromSeconds(1))
+            throw new ArgumentOutOfRangeException(nameof(interval));
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            var profile = new PassiveProfile(discovery, interval,
+                _clock.Elapsed + (initialDetection is null ? TimeSpan.Zero : interval))
+            {
+                LastDetection = initialDetection
+            };
+            if (_profiles.ContainsKey(id) || !_passive.TryAdd(id, profile))
                 throw new InvalidOperationException("Profile is already scheduled.");
         }
     }
@@ -48,6 +70,13 @@ public sealed class RecoveryScheduler : IAsyncDisposable
                 profile.InFlight = Task.Run(() => TickAsync(id, profile), CancellationToken.None);
                 started.Add(id, profile.InFlight);
             }
+            foreach ((Guid id, PassiveProfile profile) in _passive)
+            {
+                if (profile.InFlight is not null || now < profile.NextDue) continue;
+                profile.ImmediateRequested = false;
+                profile.InFlight = Task.Run(() => PassiveTickAsync(id, profile), CancellationToken.None);
+                started.Add(id, profile.InFlight);
+            }
         }
         return started;
     }
@@ -57,23 +86,41 @@ public sealed class RecoveryScheduler : IAsyncDisposable
         lock (_sync)
         {
             ThrowIfDisposed();
-            if (!_profiles.TryGetValue(id, out ScheduledProfile? profile)) return;
-            if (profile.InFlight is null) profile.NextDue = _clock.Elapsed;
-            else profile.ImmediateRequested = true;
+            if (_profiles.TryGetValue(id, out ScheduledProfile? profile))
+            {
+                if (profile.InFlight is null) profile.NextDue = _clock.Elapsed;
+                else profile.ImmediateRequested = true;
+            }
+            else if (_passive.TryGetValue(id, out PassiveProfile? passive))
+            {
+                if (passive.InFlight is null) passive.NextDue = _clock.Elapsed;
+                else passive.ImmediateRequested = true;
+            }
         }
     }
 
     public async Task RemoveAsync(Guid id)
     {
         ScheduledProfile? profile;
+        PassiveProfile? passive;
         lock (_sync)
         {
-            if (!_profiles.Remove(id, out profile)) return;
+            _profiles.Remove(id, out profile);
+            _passive.Remove(id, out passive);
         }
-        profile.Cancellation.Cancel();
-        if (profile.InFlight is { } running) await running.ConfigureAwait(false);
-        profile.Coordinator.Dispose();
-        profile.Cancellation.Dispose();
+        if (profile is not null)
+        {
+            profile.Cancellation.Cancel();
+            if (profile.InFlight is { } running) await running.ConfigureAwait(false);
+            profile.Coordinator.Dispose();
+            profile.Cancellation.Dispose();
+        }
+        if (passive is not null)
+        {
+            passive.Cancellation.Cancel();
+            if (passive.InFlight is { } running) await running.ConfigureAwait(false);
+            passive.Cancellation.Dispose();
+        }
     }
 
     public Task RunAsync(CancellationToken cancellationToken = default)
@@ -131,6 +178,31 @@ public sealed class RecoveryScheduler : IAsyncDisposable
         }
     }
 
+    private async Task PassiveTickAsync(Guid id, PassiveProfile profile)
+    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            _stop.Token, profile.Cancellation.Token);
+        Detection? result = null;
+        try { result = await profile.Discovery.DetectAsync(linked.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (linked.IsCancellationRequested) { }
+        catch (Exception error) { result = Detection.Unavailable(error.Message); }
+        finally
+        {
+            lock (_sync)
+            {
+                if (_passive.TryGetValue(id, out PassiveProfile? current) &&
+                    ReferenceEquals(profile, current))
+                {
+                    if (result is not null) profile.LastDetection = result;
+                    profile.NextDue = profile.ImmediateRequested
+                        ? _clock.Elapsed : _clock.Elapsed + profile.Interval;
+                    profile.ImmediateRequested = false;
+                    profile.InFlight = null;
+                }
+            }
+        }
+    }
+
     public (CoordinatorResult? Result, string? Error)? GetLast(Guid id)
     {
         lock (_sync)
@@ -138,6 +210,15 @@ public sealed class RecoveryScheduler : IAsyncDisposable
             return _profiles.TryGetValue(id, out ScheduledProfile? profile)
                 ? (profile.LastResult, profile.Error)
                 : null;
+        }
+    }
+
+    public Detection? GetPassiveLast(Guid id)
+    {
+        lock (_sync)
+        {
+            return _passive.TryGetValue(id, out PassiveProfile? profile)
+                ? profile.LastDetection : null;
         }
     }
 
@@ -180,7 +261,7 @@ public sealed class RecoveryScheduler : IAsyncDisposable
             if (_disposed) return;
             _disposed = true;
             loop = _loop;
-            ids = _profiles.Keys.ToArray();
+            ids = _profiles.Keys.Concat(_passive.Keys).ToArray();
         }
         _stop.Cancel();
         if (loop is not null) await loop.ConfigureAwait(false);
@@ -204,5 +285,17 @@ public sealed class RecoveryScheduler : IAsyncDisposable
         public Task? InFlight { get; set; }
         public CoordinatorResult? LastResult { get; set; }
         public string? Error { get; set; }
+    }
+
+    private sealed class PassiveProfile(
+        IProcessDiscovery discovery, TimeSpan interval, TimeSpan nextDue)
+    {
+        public IProcessDiscovery Discovery { get; } = discovery;
+        public TimeSpan Interval { get; } = interval;
+        public CancellationTokenSource Cancellation { get; } = new();
+        public TimeSpan NextDue { get; set; } = nextDue;
+        public bool ImmediateRequested { get; set; }
+        public Task? InFlight { get; set; }
+        public Detection? LastDetection { get; set; }
     }
 }

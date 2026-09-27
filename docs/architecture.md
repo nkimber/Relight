@@ -1,19 +1,19 @@
 # Initial architecture decisions
 
-**Status:** Shell foundation implemented; recovery architecture remains planned.  
+**Status:** Shell foundation and isolated recovery host implemented; WPF composition remains open.  
 **Decision date:** 27 September 2026
 
 ## Platform and toolchain
 
 Relight uses C# and WPF on Windows 11 x64. .NET 10 is the selected LTS family ([Microsoft support policy](https://dotnet.microsoft.com/en-us/platform/support/policy)). The initial SDK baseline is the installed 10.0.102, pinned in `global.json` with patch roll-forward. This is a reproducible development baseline, not a claim to use the newest servicing release. Refresh the SDK/runtime servicing baseline before production distribution.
 
-The solution uses the SDK's `.slnx` format, nullable analysis, deterministic builds and warnings as errors. There are no third-party NuGet dependencies. CI builds on Windows; running the shell requires a Windows interactive session.
+The solution uses the SDK's `.slnx` format, nullable analysis, deterministic builds and warnings as errors. The Windows adapter uses Microsoft's `System.Management` package for process metadata; no third-party runtime package has been added. CI builds on Windows; running the shell requires a Windows interactive session.
 
 ## Shell and application lifetime
 
 `Relight.App` is the single executable. `App` is the composition root and owns the dashboard, tray service and singleton. `ShutdownMode.OnExplicitShutdown` separates process lifetime from window visibility. Closing the dashboard cancels window close and hides the retained window. Explicit exit shows an informational confirmation, then disposes the tray and singleton resources.
 
-`ShellViewModel` owns page selection and navigation commands. It contains no process discovery or recovery policy. Views show truthful empty states and disabled future actions. The preview stores no profiles or runtime history and makes no startup-registration changes. A future engine can therefore be introduced without treating placeholder UI state as protection state.
+`ShellViewModel` owns page selection and navigation commands. It contains no process discovery or recovery policy. Views show truthful empty states and disabled future actions. The preview stores no profiles or runtime history and makes no startup-registration changes. The separate recovery host is not yet started by the preview.
 
 ## Windows integration
 
@@ -25,7 +25,7 @@ The solution uses the SDK's `.slnx` format, nullable analysis, deterministic bui
 
 ## Boundaries for subsequent work
 
-Introduce domain, coordination, Windows adapters and storage components only with their actual implementation. Recovery policy must not depend on `Relight.App`, WPF, or tray callbacks. Use injectable clocks/adapters/repositories and serialized per-profile operations as required by the PRD.
+The domain, coordination, Windows adapters and storage components are now implemented as separate projects. `RecoveryApplicationHost` composes executable profiles from existing configuration and state; it does not create a new budget for an existing profile. Recovery policy remains independent of `Relight.App`, WPF and tray callbacks. The host still needs session-scoped state coordination, packaged-app support and WPF lifetime/UI wiring.
 
 The shell singleton only prevents duplicate UI processes within a user session. It does **not** implement shared configuration coordination, persisted lockout across sign-ins, target-process identity or a durable attempt ledger. Those decisions and implementations remain M0–M3 work.
 

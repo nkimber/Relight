@@ -9,6 +9,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Relight.Core\Relight.Core.csproj" />
     <ProjectReference Include="..\Relight.Engine\Relight.Engine.csproj" />
+    <ProjectReference Include="..\Relight.Storage\Relight.Storage.csproj" />
     <PackageReference Include="System.Management" Version="10.0.11" />
   </ItemGroup>
 

@@ -94,6 +94,30 @@ public sealed class RecoverySchedulerTests
         Assert.Empty(scheduler.Pulse());
     }
 
+    [Fact]
+    public async Task Passive_discovery_reconciles_on_the_shared_timer_without_a_launch()
+    {
+        var clock = new FakeClock();
+        var discovery = new MutableDiscovery(Detection.Absent());
+        Guid id = Guid.NewGuid();
+        await using var scheduler = new RecoveryScheduler(clock);
+        scheduler.AddPassive(id, discovery, TimeSpan.FromSeconds(30), Detection.Absent());
+        Assert.Empty(scheduler.Pulse());
+
+        clock.Elapsed = TimeSpan.FromSeconds(30);
+        discovery.Result = Detection.Present("session|target|1|started");
+        await Assert.Single(scheduler.Pulse()).Value;
+        Assert.Equal(DetectionKind.Present, scheduler.GetPassiveLast(id)?.Kind);
+        clock.Elapsed = TimeSpan.FromSeconds(31);
+        Assert.Empty(scheduler.Pulse());
+        clock.Elapsed = TimeSpan.FromSeconds(60);
+        discovery.Result = Detection.Unavailable("Controlled access denial");
+        await Assert.Single(scheduler.Pulse()).Value;
+        Assert.Equal(DetectionKind.Unavailable, scheduler.GetPassiveLast(id)?.Kind);
+        await scheduler.RemoveAsync(id);
+        Assert.Null(scheduler.GetPassiveLast(id));
+    }
+
     private sealed class FakeClock : IMonotonicClock
     {
         public TimeSpan Elapsed { get; set; }
@@ -115,6 +139,13 @@ public sealed class RecoverySchedulerTests
             await Release.Task.WaitAsync(cancellationToken);
             return Detection.Absent();
         }
+    }
+
+    private sealed class MutableDiscovery(Detection initial) : IProcessDiscovery
+    {
+        public Detection Result { get; set; } = initial;
+        public Task<Detection> DetectAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(Result);
     }
 
     private sealed class CountingLauncher : IProcessLauncher
