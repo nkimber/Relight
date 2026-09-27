@@ -207,9 +207,14 @@
                                                         </StackPanel>
                                                     </StackPanel>
                                                 </Expander.Header>
-                                                <TextBox Text="{Binding Details, Mode=OneWay}" IsReadOnly="True"
-                                                         TextWrapping="Wrap" BorderThickness="0" Padding="8"
-                                                         Background="{DynamicResource CanvasBrush}" Foreground="{DynamicResource TextBrush}" />
+                                                <StackPanel>
+                                                    <TextBox Text="{Binding Details, Mode=OneWay}" IsReadOnly="True"
+                                                             TextWrapping="Wrap" BorderThickness="0" Padding="8"
+                                                             Background="{DynamicResource CanvasBrush}" Foreground="{DynamicResource TextBrush}" />
+                                                    <Button Content="Copy details" Click="CopyHistoryDetailsClick"
+                                                            HorizontalAlignment="Left" Margin="8,8,0,0"
+                                                            AutomationProperties.Name="Copy event details" />
+                                                </StackPanel>
                                             </Expander>
                                         </Border>
                                     </DataTemplate>

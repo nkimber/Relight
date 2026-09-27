@@ -28,7 +28,9 @@ public sealed record EventHistorySummary(
     int OtherStableStarts,
     int Lockouts,
     int MonitoringGaps,
-    int MonitoringRestorations);
+    int MonitoringRestorations,
+    TimeSpan PairedMonitoringGapTimestampSpan,
+    int UnpairedMonitoringTransitions);
 
 public sealed record EventHistoryProfile(Guid Id, string? Name);
 
@@ -94,6 +96,8 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
         int lockouts = 0;
         int gaps = 0;
         int restorations = 0;
+        var monitoringTransitions = new List<(Guid? ProfileId, DateTimeOffset OccurredUtc,
+            Guid EventId, OperationalEventKind Kind)>();
         var profiles = new Dictionary<Guid, (string? Name, DateTimeOffset NamedAt)>();
         ScanSummary summary = await ScanAsync(query, entry =>
         {
@@ -115,8 +119,16 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
                         otherStableStarts++;
                     break;
                 case OperationalEventKind.LockoutEntered: lockouts++; break;
-                case OperationalEventKind.MonitoringGap: gaps++; break;
-                case OperationalEventKind.MonitoringRestored: restorations++; break;
+                case OperationalEventKind.MonitoringGap:
+                    gaps++;
+                    monitoringTransitions.Add((entry.ProfileId, entry.OccurredUtc,
+                        entry.EventId, entry.Kind));
+                    break;
+                case OperationalEventKind.MonitoringRestored:
+                    restorations++;
+                    monitoringTransitions.Add((entry.ProfileId, entry.OccurredUtc,
+                        entry.EventId, entry.Kind));
+                    break;
             }
         }, entry =>
         {
@@ -133,11 +145,52 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
             .OrderByDescending(entry => entry.OccurredUtc)
             .ThenBy(entry => entry.EventId)
             .ToArray();
+        (TimeSpan pairedTimestampSpan, int unpairedTransitions) =
+            SumPairedMonitoringTimestampSpans(monitoringTransitions);
         return new(new(rows, summary.Matched, summary.Malformed),
             new(disappearances, reservations, dispatches, automaticRecoveries,
-                otherStableStarts, lockouts, gaps, restorations),
+                otherStableStarts, lockouts, gaps, restorations,
+                pairedTimestampSpan, unpairedTransitions),
             profiles.Select(item => new EventHistoryProfile(item.Key, item.Value.Name))
                 .ToArray());
+    }
+
+    private static (TimeSpan PairedTimestampSpan, int UnpairedTransitions)
+        SumPairedMonitoringTimestampSpans(List<(Guid? ProfileId, DateTimeOffset OccurredUtc,
+            Guid EventId, OperationalEventKind Kind)> transitions)
+    {
+        // File rotation and concurrent writers do not guarantee scan order.
+        // Only complete, non-overlapping pairs in the selected period contribute.
+        var open = new Dictionary<Guid, (DateTimeOffset StartedUtc, bool Ambiguous)>();
+        TimeSpan known = TimeSpan.Zero;
+        int unpaired = 0;
+        foreach (var entry in transitions.OrderBy(item => item.OccurredUtc)
+                     .ThenBy(item => item.EventId))
+        {
+            if (entry.ProfileId is not { } profileId)
+            {
+                unpaired++;
+                continue;
+            }
+            if (entry.Kind == OperationalEventKind.MonitoringGap)
+            {
+                if (open.ContainsKey(profileId))
+                {
+                    var previous = open[profileId];
+                    open[profileId] = (previous.StartedUtc, true);
+                    unpaired++;
+                }
+                else open.Add(profileId, (entry.OccurredUtc, false));
+            }
+            else if (open.Remove(profileId, out var gap))
+            {
+                if (!gap.Ambiguous && entry.OccurredUtc >= gap.StartedUtc)
+                    known += entry.OccurredUtc - gap.StartedUtc;
+                else unpaired++;
+            }
+            else unpaired++;
+        }
+        return (known, unpaired + open.Count);
     }
 
     public async Task<EventHistoryExportResult> ExportAsync(EventHistoryQuery query,

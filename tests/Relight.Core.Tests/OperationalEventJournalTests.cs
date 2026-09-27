@@ -215,6 +215,48 @@ public sealed class OperationalEventJournalTests
     }
 
     [Fact]
+    public async Task Overnight_summary_counts_only_complete_monitoring_gap_pairs_by_profile()
+    {
+        using var directory = new TestDirectory();
+        using var journal = new OperationalEventJournal(directory.Path,
+            GlobalConfiguration.Default);
+        Guid first = Guid.NewGuid();
+        Guid second = Guid.NewGuid();
+        DateTimeOffset origin = new(2026, 9, 27, 0, 0, 0, TimeSpan.Zero);
+        // Deliberately append out of time order, as rotated files can be scanned
+        // in a different order than the events occurred.
+        await journal.AppendAsync(NewEvent() with { ProfileId = first,
+            Kind = OperationalEventKind.MonitoringRestored,
+            OccurredUtc = origin.AddMinutes(12) });
+        await journal.AppendAsync(NewEvent() with { ProfileId = second,
+            Kind = OperationalEventKind.MonitoringRestored,
+            OccurredUtc = origin.AddMinutes(8) });
+        await journal.AppendAsync(NewEvent() with { ProfileId = first,
+            Kind = OperationalEventKind.MonitoringGap,
+            OccurredUtc = origin.AddMinutes(2) });
+        await journal.AppendAsync(NewEvent() with { ProfileId = second,
+            Kind = OperationalEventKind.MonitoringGap,
+            OccurredUtc = origin.AddMinutes(5) });
+        await journal.AppendAsync(NewEvent() with { ProfileId = first,
+            Kind = OperationalEventKind.MonitoringGap,
+            OccurredUtc = origin.AddMinutes(20) });
+
+        var reader = new OperationalEventHistoryReader(directory.Path);
+        EventHistoryOverview all = await reader.ReadOverviewAsync(new(
+            MinimumSeverity: EventSeverity.Error));
+        Assert.Equal(TimeSpan.FromMinutes(13),
+            all.Summary.PairedMonitoringGapTimestampSpan);
+        Assert.Equal(1, all.Summary.UnpairedMonitoringTransitions);
+
+        EventHistoryOverview firstOnly = await reader.ReadOverviewAsync(new(
+            ProfileId: first, FromUtc: origin.AddMinutes(3),
+            ThroughUtc: origin.AddMinutes(21)));
+        Assert.Equal(TimeSpan.Zero,
+            firstOnly.Summary.PairedMonitoringGapTimestampSpan);
+        Assert.Equal(2, firstOnly.Summary.UnpairedMonitoringTransitions);
+    }
+
+    [Fact]
     public async Task Dashboard_milestones_use_latest_recorded_outage_and_stable_automatic_recovery()
     {
         using var directory = new TestDirectory();

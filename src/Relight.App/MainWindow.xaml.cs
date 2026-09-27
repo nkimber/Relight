@@ -204,6 +204,17 @@ public partial class MainWindow : Window
         }
     }
 
+    private void CopyHistoryDetailsClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: HistoryRow row }) return;
+        try { Clipboard.SetText(row.Details); }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Could not copy event details",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
     private async void ExportHistoryClick(object sender, RoutedEventArgs e)
     {
         if (sender is not Button button || DataContext is not ShellViewModel model) return;
