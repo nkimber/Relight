@@ -346,6 +346,34 @@ public sealed class ProfileCoordinatorTests
     }
 
     [Fact]
+    public async Task Detection_restoration_closes_gap_without_claiming_target_disappearance()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var discovery = new MutableDiscovery(Detection.Present("session|app|100|start"));
+        var recorder = new CapturingRecorder();
+        using var coordinator = ProfileCoordinator.CreateNew(Guid.NewGuid(),
+            RecoveryPolicy.Default, store, discovery, new CountingLauncher(), clock,
+            recorder: recorder);
+
+        await TickAt(coordinator, clock, 0);
+        discovery.Result = Detection.Unavailable("Controlled permission failure");
+        await TickAt(coordinator, clock, 5);
+        Assert.True(coordinator.Snapshot.DetectionUnavailable);
+        discovery.Result = Detection.Absent();
+        await TickAt(coordinator, clock, 6);
+
+        Assert.False(coordinator.Snapshot.DetectionUnavailable);
+        Assert.Single(recorder.Events, entry =>
+            entry.Kind == OperationalEventKind.MonitoringGap);
+        Assert.Single(recorder.Events, entry =>
+            entry.Kind == OperationalEventKind.MonitoringRestored);
+        Assert.DoesNotContain(recorder.Events, entry =>
+            entry.Kind == OperationalEventKind.TargetDisappeared);
+    }
+
+    [Fact]
     public async Task Explicit_start_dispatches_without_charging_budget_and_observes_appearance()
     {
         using var directory = new TestDirectory();

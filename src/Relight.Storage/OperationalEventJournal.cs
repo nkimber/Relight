@@ -34,6 +34,7 @@ public enum OperationalEventKind
     ExplicitStartUncertain,
     PolicyChanged,
     MonitoringGap,
+    MonitoringRestored,
     StorageDegraded
 }
 

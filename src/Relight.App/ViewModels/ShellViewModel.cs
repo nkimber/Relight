@@ -35,6 +35,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         [new("All applications", null)];
     private IReadOnlyList<HistoryRow> _historyRows = [];
     private string _historyStatus = "Open History to load recorded events.";
+    private string _historySummaryText = "Open History to see an event-based summary.";
     private HistoryProfileOption _selectedHistoryProfile;
     private HistorySeverityOption _selectedHistorySeverity;
     private HistoryKindOption _selectedHistoryKind;
@@ -99,6 +100,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     }
     public IReadOnlyList<HistoryRow> HistoryRows => _historyRows;
     public string HistoryStatus => _historyStatus;
+    public string HistorySummaryText => _historySummaryText;
     public bool HasHistory => _historyRows.Count > 0;
     public bool HasNoHistory => !HasHistory;
     public string HistoryEpisodeText
@@ -231,17 +233,21 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     {
         _historyRows = [];
         _historyStatus = "Loading local event history…";
+        _historySummaryText = "Calculating the selected period from retained events…";
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
     }
 
     public void ShowHistoryProblem(string problem)
     {
         _historyStatus = $"History could not be loaded: {problem}";
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HistoryStatus)));
+        _historySummaryText = "Summary unavailable.";
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
     }
 
-    public void UpdateHistory(EventHistoryResult result)
+    public void UpdateHistory(EventHistoryOverview overview)
     {
+        EventHistoryResult result = overview.Results;
+        EventHistorySummary summary = overview.Summary;
         _historyRows = result.Events.Select(entry => new HistoryRow(
             entry.OccurredUtc.ToLocalTime().ToString("g"),
             entry.OccurredUtc.ToString("u"),
@@ -255,6 +261,16 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
                 : $"Showing {result.TotalMatches} matching event(s).";
         if (result.SkippedMalformedLines > 0)
             _historyStatus += $" {result.SkippedMalformedLines} damaged log line(s) could not be read.";
+        _historySummaryText =
+            $"Selected period: {summary.ObservedDisappearances} observed disappearance(s), " +
+            $"{summary.AutomaticAttemptsReserved} automatic attempt(s) reserved " +
+            $"({summary.AutomaticLaunchesDispatched} dispatched), " +
+            $"{summary.StableAutomaticRecoveries} stable automatic recovery(ies), " +
+            $"{summary.OtherStableStarts} other stable start(s), " +
+            $"and {summary.Lockouts} lockout(s). " +
+            $"Monitoring gaps: {summary.MonitoringGaps} reported, " +
+            $"{summary.MonitoringRestorations} restoration(s) observed. " +
+            "Gap time is unknown and is never counted as confirmed application downtime.";
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
     }
 

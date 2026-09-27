@@ -163,6 +163,54 @@ public sealed class OperationalEventJournalTests
     }
 
     [Fact]
+    public async Task Overnight_summary_counts_full_period_independently_of_list_filters()
+    {
+        using var directory = new TestDirectory();
+        using var journal = new OperationalEventJournal(directory.Path,
+            GlobalConfiguration.Default);
+        Guid profile = Guid.NewGuid();
+        Guid another = Guid.NewGuid();
+        OperationalEventKind[] kinds =
+        [
+            OperationalEventKind.TargetDisappeared,
+            OperationalEventKind.LaunchReserved,
+            OperationalEventKind.LaunchDispatched,
+            OperationalEventKind.ObservationCompleted,
+            OperationalEventKind.LockoutEntered,
+            OperationalEventKind.MonitoringGap,
+            OperationalEventKind.MonitoringRestored
+        ];
+        foreach (OperationalEventKind kind in kinds)
+            await journal.AppendAsync(NewEvent() with
+            {
+                ProfileId = profile,
+                Kind = kind,
+                Origin = Relight.Core.ObservationOrigin.AutomaticLaunch,
+                Severity = kind == OperationalEventKind.LaunchReserved
+                    ? EventSeverity.Warning : EventSeverity.Information
+            });
+        await journal.AppendAsync(NewEvent() with
+        {
+            ProfileId = another,
+            Kind = OperationalEventKind.LockoutEntered
+        });
+
+        EventHistoryOverview overview = await new OperationalEventHistoryReader(directory.Path)
+            .ReadOverviewAsync(new(ProfileId: profile,
+                MinimumSeverity: EventSeverity.Warning,
+                Kind: OperationalEventKind.LaunchReserved));
+        Assert.Single(overview.Results.Events);
+        Assert.Equal(1, overview.Summary.ObservedDisappearances);
+        Assert.Equal(1, overview.Summary.AutomaticAttemptsReserved);
+        Assert.Equal(1, overview.Summary.AutomaticLaunchesDispatched);
+        Assert.Equal(1, overview.Summary.StableAutomaticRecoveries);
+        Assert.Equal(0, overview.Summary.OtherStableStarts);
+        Assert.Equal(1, overview.Summary.Lockouts);
+        Assert.Equal(1, overview.Summary.MonitoringGaps);
+        Assert.Equal(1, overview.Summary.MonitoringRestorations);
+    }
+
+    [Fact]
     public async Task Filtered_export_includes_full_episode_beyond_display_limit()
     {
         using var directory = new TestDirectory();

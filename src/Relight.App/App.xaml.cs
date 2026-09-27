@@ -155,9 +155,9 @@ public partial class App : Application
         {
             EventHistoryQuery query = _viewModel.CreateHistoryQuery(DateTimeOffset.UtcNow);
             string dataDirectory = _viewModel.DataDirectory;
-            EventHistoryResult result = await Task.Run(() =>
+            EventHistoryOverview result = await Task.Run(() =>
                 new OperationalEventHistoryReader(dataDirectory)
-                    .ReadAsync(query, cancellation.Token), cancellation.Token);
+                    .ReadOverviewAsync(query, cancellation.Token), cancellation.Token);
             if (!cancellation.IsCancellationRequested)
                 _viewModel.UpdateHistory(result);
         }

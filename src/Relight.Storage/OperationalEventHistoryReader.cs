@@ -20,6 +20,19 @@ public sealed record EventHistoryResult(
     public bool Truncated => TotalMatches > Events.Count;
 }
 
+public sealed record EventHistorySummary(
+    int ObservedDisappearances,
+    int AutomaticAttemptsReserved,
+    int AutomaticLaunchesDispatched,
+    int StableAutomaticRecoveries,
+    int OtherStableStarts,
+    int Lockouts,
+    int MonitoringGaps,
+    int MonitoringRestorations);
+
+public sealed record EventHistoryOverview(EventHistoryResult Results,
+    EventHistorySummary Summary);
+
 public enum EventHistoryExportFormat { Text, Csv }
 public sealed record EventHistoryExportResult(int ExportedEvents, int SkippedMalformedLines);
 
@@ -34,21 +47,53 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
 
     public async Task<EventHistoryResult> ReadAsync(EventHistoryQuery query,
         CancellationToken cancellationToken = default)
+        => (await ReadOverviewAsync(query, cancellationToken).ConfigureAwait(false)).Results;
+
+    public async Task<EventHistoryOverview> ReadOverviewAsync(EventHistoryQuery query,
+        CancellationToken cancellationToken = default)
     {
         ValidateQuery(query);
         var latest = new PriorityQueue<OperationalEvent, DateTimeOffset>();
+        int disappearances = 0;
+        int reservations = 0;
+        int dispatches = 0;
+        int automaticRecoveries = 0;
+        int otherStableStarts = 0;
+        int lockouts = 0;
+        int gaps = 0;
+        int restorations = 0;
         ScanSummary summary = await ScanAsync(query, entry =>
         {
             latest.Enqueue(entry, entry.OccurredUtc);
             if (latest.Count > query.Limit) latest.Dequeue();
             return Task.CompletedTask;
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, entry =>
+        {
+            switch (entry.Kind)
+            {
+                case OperationalEventKind.TargetDisappeared: disappearances++; break;
+                case OperationalEventKind.LaunchReserved: reservations++; break;
+                case OperationalEventKind.LaunchDispatched: dispatches++; break;
+                case OperationalEventKind.ObservationCompleted:
+                    if (entry.Origin == Relight.Core.ObservationOrigin.AutomaticLaunch)
+                        automaticRecoveries++;
+                    else if (entry.Origin is Relight.Core.ObservationOrigin.ExplicitStart or
+                             Relight.Core.ObservationOrigin.ExternalStart)
+                        otherStableStarts++;
+                    break;
+                case OperationalEventKind.LockoutEntered: lockouts++; break;
+                case OperationalEventKind.MonitoringGap: gaps++; break;
+                case OperationalEventKind.MonitoringRestored: restorations++; break;
+            }
+        }).ConfigureAwait(false);
         OperationalEvent[] rows = latest.UnorderedItems
             .Select(item => item.Element)
             .OrderByDescending(entry => entry.OccurredUtc)
             .ThenBy(entry => entry.EventId)
             .ToArray();
-        return new(rows, summary.Matched, summary.Malformed);
+        return new(new(rows, summary.Matched, summary.Malformed),
+            new(disappearances, reservations, dispatches, automaticRecoveries,
+                otherStableStarts, lockouts, gaps, restorations));
     }
 
     public async Task<EventHistoryExportResult> ExportAsync(EventHistoryQuery query,
@@ -101,7 +146,8 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
     private sealed record ScanSummary(int Matched, int Malformed);
 
     private async Task<ScanSummary> ScanAsync(EventHistoryQuery query,
-        Func<OperationalEvent, Task> visit, CancellationToken cancellationToken)
+        Func<OperationalEvent, Task> visit, CancellationToken cancellationToken,
+        Action<OperationalEvent>? beforeSeverityAndKind = null)
     {
         if (!Directory.Exists(_directory)) return new(0, 0);
         if ((File.GetAttributes(_directory) & FileAttributes.ReparsePoint) != 0)
@@ -144,11 +190,13 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
                 }
                 if (!seenIds.Add(entry.EventId)) continue;
                 if (query.ProfileId is { } profile && entry.ProfileId != profile ||
-                    query.MinimumSeverity is { } severity && entry.Severity < severity ||
-                    query.Kind is { } kind && entry.Kind != kind ||
                     query.EpisodeId is { } episode && entry.EpisodeId != episode ||
                     query.FromUtc is { } from && entry.OccurredUtc < from ||
                     query.ThroughUtc is { } through && entry.OccurredUtc > through)
+                    continue;
+                beforeSeverityAndKind?.Invoke(entry);
+                if (query.MinimumSeverity is { } severity && entry.Severity < severity ||
+                    query.Kind is { } kind && entry.Kind != kind)
                     continue;
                 matched++;
                 await visit(entry).ConfigureAwait(false);

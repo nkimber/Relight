@@ -143,6 +143,10 @@
                             </StackPanel>
                             <TextBlock Text="{Binding HistoryStatus}" Style="{StaticResource Muted}"
                                        TextWrapping="Wrap" Margin="0,0,0,12" />
+                            <Border Background="{DynamicResource AccentSoftBrush}" CornerRadius="6"
+                                    Padding="12" Margin="0,0,0,12">
+                                <TextBlock Text="{Binding HistorySummaryText}" TextWrapping="Wrap" />
+                            </Border>
                             <ItemsControl ItemsSource="{Binding HistoryRows}">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>

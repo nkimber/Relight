@@ -406,6 +406,8 @@ public sealed class ProfileCoordinator : IDisposable
             Record(OperationalEventKind.DetectionUnavailable, EventSeverity.Warning, before, after);
             Record(OperationalEventKind.MonitoringGap, EventSeverity.Warning, before, after);
         }
+        if (before.DetectionUnavailable && !after.DetectionUnavailable)
+            Record(OperationalEventKind.MonitoringRestored, EventSeverity.Information, before, after);
         if (before.TargetIdentity != after.TargetIdentity && after.TargetIdentity is not null)
             Record(OperationalEventKind.TargetObserved, EventSeverity.Information, before, after);
         if (before.State != RecoveryState.Observing && after.State == RecoveryState.Observing)
