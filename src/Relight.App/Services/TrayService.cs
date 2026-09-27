@@ -10,10 +10,12 @@ internal sealed class TrayService : IDisposable
     private readonly Forms.NotifyIcon _icon;
     private readonly Forms.ContextMenuStrip _menu;
     private readonly Forms.ToolStripMenuItem _startupItem;
+    private readonly Forms.ToolStripMenuItem _pauseAllItem;
+    private readonly Forms.ToolStripMenuItem _resumeAllItem;
     private readonly Icon _image;
 
-    public TrayService(Action open, Action add, Action history, Action toggleStartup,
-        Action exit)
+    public TrayService(Action open, Action add, Action history, Action pauseAll,
+        Action resumeAll, Action toggleStartup, Action exit)
     {
         using var resource = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/Relight.ico"))!.Stream;
         _image = new Icon(resource);
@@ -21,8 +23,12 @@ internal sealed class TrayService : IDisposable
         _menu.Items.Add("Open dashboard", null, (_, _) => open());
         _menu.Items.Add("Add application", null, (_, _) => add());
         _menu.Items.Add(new Forms.ToolStripSeparator());
-        _menu.Items.Add(Unavailable("Pause all"));
-        _menu.Items.Add(Unavailable("Resume all"));
+        _pauseAllItem = new Forms.ToolStripMenuItem("Pause all", null,
+            (_, _) => pauseAll()) { Enabled = false };
+        _resumeAllItem = new Forms.ToolStripMenuItem("Resume all", null,
+            (_, _) => resumeAll()) { Enabled = false };
+        _menu.Items.Add(_pauseAllItem);
+        _menu.Items.Add(_resumeAllItem);
         _menu.Items.Add("View history", null, (_, _) => history());
         _startupItem = new Forms.ToolStripMenuItem("Start at sign-in", null,
             (_, _) => toggleStartup()) { Enabled = false };
@@ -41,12 +47,6 @@ internal sealed class TrayService : IDisposable
         _icon.DoubleClick += (_, _) => open();
     }
 
-    private static Forms.ToolStripMenuItem Unavailable(string text) => new(text)
-    {
-        Enabled = false,
-        ToolTipText = "Available in a later milestone."
-    };
-
     public void UpdateStatus(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return;
@@ -58,6 +58,12 @@ internal sealed class TrayService : IDisposable
         _startupItem.Checked = enabled;
         _startupItem.Enabled = available;
         _startupItem.ToolTipText = explanation;
+    }
+
+    public void UpdatePauseAvailability(bool canPause, bool canResume)
+    {
+        _pauseAllItem.Enabled = canPause;
+        _resumeAllItem.Enabled = canResume;
     }
 
     public void Dispose()

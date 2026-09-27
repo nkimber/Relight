@@ -49,6 +49,48 @@ public sealed class RecoveryApplicationHostIntegrationTests
 
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Pause_all_keeps_other_profiles_independent_when_one_ledger_fails()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-pause-all-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            string secondExecutable = Path.Combine(root, "SecondTarget.exe");
+            File.Copy(TestExecutable(), secondExecutable);
+            await using var host = await RecoveryApplicationHost.OpenAsync(root,
+                new FakeClock());
+            Guid first = await host.RegisterExecutableAsync("First target", TestExecutable());
+            Guid second = await host.RegisterExecutableAsync("Second target", secondExecutable);
+            var stateStore = new RecoveryStateStore(root);
+            StoredRecoveryState stale = stateStore.Load(first);
+            stateStore.Save(first, stale.Revision, stale.Checkpoint);
+
+            ProfileBatchResult paused = await host.SetAllPausedAsync(true);
+
+            Assert.Equal(2, paused.Requested);
+            Assert.Equal(1, paused.Completed);
+            Assert.Single(paused.Errors);
+            Assert.Contains("First target", paused.Errors[0]);
+            Assert.False(host.GetProfiles().Single(profile => profile.Id == first)
+                .AutomaticActionsAllowed);
+            Assert.False(stateStore.Load(first).Checkpoint.Paused);
+            Assert.True(host.GetProfiles().Single(profile => profile.Id == second).Recovery?.Paused);
+            Assert.True(stateStore.Load(second).Checkpoint.Paused);
+
+            ProfileBatchResult resumed = await host.SetAllPausedAsync(false);
+            Assert.Equal(1, resumed.Requested);
+            Assert.Equal(1, resumed.Completed);
+            Assert.Empty(resumed.Errors);
+            Assert.False(stateStore.Load(second).Checkpoint.Paused);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Explicit_repair_reopens_last_good_profile_with_its_existing_state()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-host-repair-{Guid.NewGuid():N}");

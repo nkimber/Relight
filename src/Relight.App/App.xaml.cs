@@ -1,5 +1,6 @@
 using System;
 using System.ComponentModel;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -25,6 +26,7 @@ public partial class App : Application
     private bool _exiting;
     private bool _repairingConfiguration;
     private bool _changingStartup;
+    private bool _changingAllPause;
     private CurrentUserStartupRegistration? _startupRegistration;
     private string? _startupUnavailable;
     private CancellationTokenSource? _historyCancellation;
@@ -70,6 +72,8 @@ public partial class App : Application
                 () => ShowDashboard(ShellPage.Applications),
                 ShowAddApplication,
                 () => ShowDashboard(ShellPage.History),
+                () => ChangeAllPauseFromTray(paused: true),
+                () => ChangeAllPauseFromTray(paused: false),
                 ToggleStartupFromTray,
                 RequestExit);
             _instance.Listen(() => Dispatcher.BeginInvoke(() => ShowDashboard()));
@@ -177,6 +181,13 @@ public partial class App : Application
             _viewModel?.UpdateStartAtSignIn(registered, startupAvailable, explanation);
             if (_viewModel is not null) _tray?.UpdateStatus(_viewModel.TrayStatus);
             _tray?.UpdateStartupStatus(registered, startupAvailable, explanation);
+            bool canPause = !_changingAllPause && profiles.Any(profile =>
+                profile.AutomaticActionsAllowed && profile.Problem is null &&
+                profile.Recovery is { Enabled: true, Paused: false });
+            bool canResume = !_changingAllPause && profiles.Any(profile =>
+                profile.AutomaticActionsAllowed && profile.Problem is null &&
+                profile.Recovery is { Enabled: true, Paused: true });
+            _tray?.UpdatePauseAvailability(canPause, canResume);
         }
         catch (Exception error)
         {
@@ -219,6 +230,43 @@ public partial class App : Application
             MessageBox.Show(_dashboard!, error.Message, "Could not change sign-in startup",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+    }
+
+    private async void ChangeAllPauseFromTray(bool paused)
+    {
+        if (_exiting || _changingAllPause) return;
+        RecoveryApplicationHost? host = Volatile.Read(ref _host);
+        if (host is null) return;
+        _changingAllPause = true;
+        _tray?.UpdatePauseAvailability(false, false);
+        try
+        {
+            ProfileBatchResult result = await host.SetAllPausedAsync(paused,
+                _monitoringCancellation?.Token ?? CancellationToken.None);
+            if (result.Errors.Count > 0)
+            {
+                ShowDashboard(ShellPage.Applications);
+                string errors = string.Join("\n", result.Errors.Take(8));
+                if (result.Errors.Count > 8)
+                    errors += $"\n…and {result.Errors.Count - 8} more. Check application status.";
+                MessageBox.Show(_dashboard!,
+                    $"Updated {result.Completed} of {result.Requested} profiles.\n\n" +
+                    errors,
+                    paused ? "Pause all partially completed" : "Resume all partially completed",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+        catch (Exception error)
+        {
+            if (!_exiting)
+            {
+                ShowDashboard(ShellPage.Applications);
+                MessageBox.Show(_dashboard!, error.Message,
+                    paused ? "Could not pause all" : "Could not resume all",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+        finally { _changingAllPause = false; }
     }
 
     private async void RepairConfiguration()

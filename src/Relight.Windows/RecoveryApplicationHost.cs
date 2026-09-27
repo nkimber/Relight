@@ -14,6 +14,9 @@ public sealed record HostedProfileStatus(
     string? Problem,
     bool ConfiguredEnabled = true);
 
+public sealed record ProfileBatchResult(int Requested, int Completed,
+    IReadOnlyList<string> Errors);
+
 /// <summary>
 /// Composes existing executable profiles without inventing recovery state.
 /// A missing/corrupt state or invalid configuration never becomes a fresh
@@ -463,6 +466,39 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         CancellationToken cancellationToken = default) =>
         RunProfileCommandAsync(profileId,
             coordinator => coordinator.SetPausedAsync(paused, cancellationToken));
+
+    public async Task<ProfileBatchResult> SetAllPausedAsync(bool paused,
+        CancellationToken cancellationToken = default)
+    {
+        (Guid Id, string Name)[] targets = GetProfiles()
+            .Where(profile => profile.Recovery is { Enabled: true } recovery &&
+                recovery.Paused != paused && profile.AutomaticActionsAllowed &&
+                profile.Problem is null)
+            .Select(profile => (profile.Id, profile.Name))
+            .ToArray();
+        Task<(bool Succeeded, string? Error)>[] commands = targets.Select(async target =>
+        {
+            try
+            {
+                await SetProfilePausedAsync(target.Id, paused, cancellationToken)
+                    .ConfigureAwait(false);
+                return (true, (string?)null);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception error)
+            {
+                return (false, $"{target.Name}: {error.Message}");
+            }
+        }).ToArray();
+        (bool Succeeded, string? Error)[] outcomes = await Task.WhenAll(commands)
+            .ConfigureAwait(false);
+        return new(targets.Length, outcomes.Count(outcome => outcome.Succeeded),
+            outcomes.Where(outcome => outcome.Error is not null)
+                .Select(outcome => outcome.Error!).ToArray());
+    }
 
     public Task ResetProfileRecoveryAsync(Guid profileId,
         CancellationToken cancellationToken = default) =>
