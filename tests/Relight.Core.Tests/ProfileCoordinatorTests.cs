@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Relight.Core;
 using Relight.Engine;
 using Relight.Storage;
@@ -228,6 +229,84 @@ public sealed class ProfileCoordinatorTests
         Assert.True(coordinator.Snapshot.Paused);
     }
 
+    [Fact]
+    public async Task Reserved_attempt_and_dispatch_failure_emit_distinct_structured_events()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var recorder = new CapturingRecorder();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id, AutoPolicy, store,
+            new ConstantDiscovery(Detection.Absent()), new FailingLauncher(), clock,
+            recorder: recorder);
+        await TickAt(coordinator, clock, 0);
+        await TickAt(coordinator, clock, 2);
+        await TickAt(coordinator, clock, 32);
+
+        int reservation = recorder.Events.FindIndex(entry =>
+            entry.Kind == OperationalEventKind.LaunchReserved);
+        int failure = recorder.Events.FindIndex(entry =>
+            entry.Kind == OperationalEventKind.LaunchFailed);
+        Assert.True(reservation >= 0 && failure > reservation);
+        Assert.Equal(id, recorder.Events[reservation].ProfileId);
+        Assert.Equal(recorder.Events[reservation].OperationId,
+            recorder.Events[failure].OperationId);
+        Assert.DoesNotContain(recorder.Events, entry =>
+            entry.Kind == OperationalEventKind.LaunchDispatched);
+        Assert.All(recorder.Events, entry => Assert.Equal(TimeSpan.Zero, entry.OccurredUtc.Offset));
+    }
+
+    [Fact]
+    public async Task Full_event_queue_is_visible_but_does_not_prevent_a_reserved_launch()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var launcher = new CountingLauncher();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id, AutoPolicy, store,
+            new ConstantDiscovery(Detection.Absent()), launcher, clock,
+            recorder: new RejectingRecorder());
+        await TickAt(coordinator, clock, 0);
+        await TickAt(coordinator, clock, 2);
+        CoordinatorResult result = await TickAt(coordinator, clock, 32);
+
+        Assert.True(result.LaunchDispatched);
+        Assert.True(result.LoggingDegraded);
+        Assert.Equal(1, launcher.Dispatches);
+        Assert.Equal(1, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+    }
+
+    [Fact]
+    public async Task Coordinator_events_reach_the_durable_journal_without_blocking_dispatch()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        using var journal = new OperationalEventJournal(directory.Path, GlobalConfiguration.Default);
+        var clock = new FakeClock();
+        Guid id = Guid.NewGuid();
+        await using (var recorder = new QueuedEventRecorder(journal))
+        {
+            using var coordinator = ProfileCoordinator.CreateNew(id, AutoPolicy, store,
+                new ConstantDiscovery(Detection.Absent()), new FailingLauncher(), clock,
+                recorder: recorder);
+            await TickAt(coordinator, clock, 0);
+            await TickAt(coordinator, clock, 2);
+            await TickAt(coordinator, clock, 32);
+        }
+
+        string logs = Path.Combine(directory.Path, "Logs");
+        string[] lines = Directory.GetFiles(logs, "*.jsonl")
+            .SelectMany(File.ReadAllLines).ToArray();
+        using var documents = new DisposableDocuments(lines.Select(line => JsonDocument.Parse(line)));
+        string[] kinds = documents.Values.Select(document =>
+            document.RootElement.GetProperty("kind").GetString()!).ToArray();
+        Assert.Contains("LaunchReserved", kinds);
+        Assert.Contains("LaunchFailed", kinds);
+        Assert.DoesNotContain("LaunchDispatched", kinds);
+    }
+
     private static async Task<CoordinatorResult> TickAt(ProfileCoordinator coordinator,
         FakeClock clock, int seconds)
     {
@@ -305,6 +384,30 @@ public sealed class ProfileCoordinatorTests
             return new NoopLease();
         }
         private sealed class NoopLease : IDisposable { public void Dispose() { } }
+    }
+
+    private sealed class CapturingRecorder : IEventRecorder
+    {
+        public List<OperationalEvent> Events { get; } = [];
+        public bool TryRecord(OperationalEvent entry)
+        {
+            Events.Add(entry);
+            return true;
+        }
+    }
+
+    private sealed class RejectingRecorder : IEventRecorder
+    {
+        public bool TryRecord(OperationalEvent entry) => false;
+    }
+
+    private sealed class DisposableDocuments(IEnumerable<JsonDocument> documents) : IDisposable
+    {
+        public JsonDocument[] Values { get; } = documents.ToArray();
+        public void Dispose()
+        {
+            foreach (JsonDocument document in Values) document.Dispose();
+        }
     }
 
     private sealed class FailReservationStore(IRecoveryStateStore inner) : IRecoveryStateStore

@@ -31,7 +31,9 @@ public sealed record CoordinatorResult(
     RecoveryTransition Transition,
     bool LaunchDispatched,
     bool StorageDegraded,
-    string? Error);
+    string? Error,
+    bool LoggingDegraded,
+    string? LoggingError);
 
 /// <summary>
 /// Serializes one profile's polling and commands. Other profiles own independent
@@ -44,6 +46,7 @@ public sealed class ProfileCoordinator : IDisposable
     private readonly IProcessDiscovery _discovery;
     private readonly IProcessLauncher _launcher;
     private readonly ILaunchGate _launchGate;
+    private readonly IEventRecorder _recorder;
     private readonly IMonotonicClock _clock;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _launchSync = new();
@@ -53,17 +56,21 @@ public sealed class ProfileCoordinator : IDisposable
     private long _revision;
     private bool _storageDegraded;
     private string? _storageError;
+    private bool _loggingDegraded;
+    private string? _loggingError;
+    private bool _storageEventEmitted;
 
     private ProfileCoordinator(Guid profileId, IRecoveryStateStore store,
         IProcessDiscovery discovery, IProcessLauncher launcher,
         IMonotonicClock clock, RecoveryMachine machine, long revision,
-        ILaunchGate launchGate)
+        ILaunchGate launchGate, IEventRecorder recorder)
     {
         _profileId = profileId;
         _store = store;
         _discovery = discovery;
         _launcher = launcher;
         _launchGate = launchGate;
+        _recorder = recorder;
         _clock = clock;
         _machine = machine;
         _revision = revision;
@@ -71,27 +78,33 @@ public sealed class ProfileCoordinator : IDisposable
 
     public static ProfileCoordinator CreateNew(Guid profileId, RecoveryPolicy policy,
         IRecoveryStateStore store, IProcessDiscovery discovery, IProcessLauncher launcher,
-        IMonotonicClock clock, ILaunchGate? launchGate = null)
+        IMonotonicClock clock, ILaunchGate? launchGate = null,
+        IEventRecorder? recorder = null)
     {
         var machine = new RecoveryMachine(policy);
         StoredRecoveryState initial = store.Create(profileId, machine.ExportCheckpoint());
         return new(profileId, store, discovery, launcher, clock, machine, initial.Revision,
-            launchGate ?? UnboundedLaunchGate.Instance);
+            launchGate ?? UnboundedLaunchGate.Instance,
+            recorder ?? NullEventRecorder.Instance);
     }
 
     public static ProfileCoordinator OpenExisting(Guid profileId, RecoveryPolicy policy,
         IRecoveryStateStore store, IProcessDiscovery discovery, IProcessLauncher launcher,
-        IMonotonicClock clock, ILaunchGate? launchGate = null)
+        IMonotonicClock clock, ILaunchGate? launchGate = null,
+        IEventRecorder? recorder = null)
     {
         StoredRecoveryState saved = store.Load(profileId);
         var machine = RecoveryMachine.Restore(policy, saved.Checkpoint);
         return new(profileId, store, discovery, launcher, clock, machine, saved.Revision,
-            launchGate ?? UnboundedLaunchGate.Instance);
+            launchGate ?? UnboundedLaunchGate.Instance,
+            recorder ?? NullEventRecorder.Instance);
     }
 
     public RecoverySnapshot Snapshot => _machine.Snapshot;
     public bool StorageDegraded => _storageDegraded;
     public string? StorageError => _storageError;
+    public bool LoggingDegraded => _loggingDegraded;
+    public string? LoggingError => _loggingError;
 
     public async Task<CoordinatorResult> TickAsync(CancellationToken cancellationToken = default)
     {
@@ -100,9 +113,12 @@ public sealed class ProfileCoordinator : IDisposable
         {
             int commandGeneration = Volatile.Read(ref _commandGeneration);
             RecoveryCheckpoint before = _machine.ExportCheckpoint();
+            RecoverySnapshot previous = _machine.Snapshot;
             Detection found = await Discover(cancellationToken).ConfigureAwait(false);
             RecoveryTransition transition = _machine.Advance(found, _clock.Elapsed);
-            if (!PersistIfChanged(before) || _storageDegraded)
+            bool persisted = PersistIfChanged(before);
+            RecordTransition(previous, _machine.Snapshot);
+            if (!persisted || _storageDegraded)
                 return Result(transition);
 
             if (transition.Signal != RecoverySignal.LaunchDue)
@@ -124,21 +140,30 @@ public sealed class ProfileCoordinator : IDisposable
                 using IDisposable permit = await _launchGate.EnterAsync(
                     launchCancellation.Token).ConfigureAwait(false);
                 before = _machine.ExportCheckpoint();
+                previous = _machine.Snapshot;
                 found = await Discover(launchCancellation.Token).ConfigureAwait(false);
                 transition = _machine.Advance(found, _clock.Elapsed);
-                if (!PersistIfChanged(before) || _storageDegraded ||
+                persisted = PersistIfChanged(before);
+                RecordTransition(previous, _machine.Snapshot);
+                if (!persisted || _storageDegraded ||
                     found.Kind != DetectionKind.Absent ||
                     transition.Signal != RecoverySignal.LaunchDue)
                     return Result(transition);
 
                 Guid operationId = Guid.NewGuid();
+                previous = _machine.Snapshot;
                 _machine.ReserveAutomaticAttempt(_clock.Elapsed, operationId);
                 if (!Persist())
                     return Result(new(RecoveryState.RetryWaiting, _machine.Snapshot.State,
                         RecoverySignal.None, "Reservation could not be committed"));
                 reservedOperationId = operationId;
+                RecordTransition(previous, _machine.Snapshot);
+                Record(OperationalEventKind.LaunchReserved, EventSeverity.Information,
+                    previous, _machine.Snapshot, operationId);
                 launchCancellation.Token.ThrowIfCancellationRequested();
                 await _launcher.LaunchAsync(operationId, launchCancellation.Token).ConfigureAwait(false);
+                Record(OperationalEventKind.LaunchDispatched, EventSeverity.Information,
+                    _machine.Snapshot, _machine.Snapshot, operationId);
                 return Result(new(RecoveryState.RetryWaiting, RecoveryState.Starting,
                     RecoverySignal.None, "Reserved launch dispatched"), dispatched: true);
             }
@@ -152,8 +177,12 @@ public sealed class ProfileCoordinator : IDisposable
             {
                 if (reservedOperationId is { } reserved)
                 {
+                    previous = _machine.Snapshot;
                     _machine.FailLaunch(reserved, _clock.Elapsed);
                     Persist();
+                    RecordTransition(previous, _machine.Snapshot);
+                    Record(OperationalEventKind.LaunchFailed, EventSeverity.Warning,
+                        previous, _machine.Snapshot, reserved);
                     return Result(new(RecoveryState.Starting, _machine.Snapshot.State,
                         RecoverySignal.None, "Launch canceled by profile command; reservation remains consumed"));
                 }
@@ -164,8 +193,12 @@ public sealed class ProfileCoordinator : IDisposable
             {
                 if (reservedOperationId is { } reserved)
                 {
+                    previous = _machine.Snapshot;
                     _machine.FailLaunch(reserved, _clock.Elapsed);
                     Persist();
+                    RecordTransition(previous, _machine.Snapshot);
+                    Record(OperationalEventKind.LaunchFailed, EventSeverity.Error,
+                        previous, _machine.Snapshot, reserved);
                     return Result(new(RecoveryState.Starting, _machine.Snapshot.State,
                         RecoverySignal.None, $"Launch dispatch failed: {error.Message}"));
                 }
@@ -202,9 +235,12 @@ public sealed class ProfileCoordinator : IDisposable
         {
             if (_storageDegraded)
                 throw new RecoveryStateUnavailableException("Recovery state is degraded; policy change cannot be trusted.");
+            RecoverySnapshot previous = _machine.Snapshot;
             _machine.SetPaused(paused);
             if (!Persist())
                 throw new RecoveryStateUnavailableException(_storageError ?? "State write failed.");
+            Record(OperationalEventKind.ManualAction, EventSeverity.Information,
+                previous, _machine.Snapshot);
         }
         finally { _gate.Release(); }
     }
@@ -231,12 +267,79 @@ public sealed class ProfileCoordinator : IDisposable
         {
             _storageDegraded = true;
             _storageError = error.Message;
+            if (!_storageEventEmitted)
+            {
+                _storageEventEmitted = true;
+                Record(OperationalEventKind.StorageDegraded, EventSeverity.Error,
+                    _machine.Snapshot, _machine.Snapshot);
+            }
             return false;
         }
     }
 
+    private void RecordTransition(RecoverySnapshot before, RecoverySnapshot after)
+    {
+        if (before.State != after.State)
+            Record(OperationalEventKind.StateChanged, EventSeverity.Information, before, after);
+        if (!before.DetectionUnavailable && after.DetectionUnavailable)
+        {
+            Record(OperationalEventKind.DetectionUnavailable, EventSeverity.Warning, before, after);
+            Record(OperationalEventKind.MonitoringGap, EventSeverity.Warning, before, after);
+        }
+        if (before.TargetIdentity != after.TargetIdentity && after.TargetIdentity is not null)
+            Record(OperationalEventKind.TargetObserved, EventSeverity.Information, before, after);
+        if (before.State != RecoveryState.Observing && after.State == RecoveryState.Observing)
+            Record(OperationalEventKind.ObservationStarted, EventSeverity.Information, before, after);
+        if (before.State == RecoveryState.Observing && after.State == RecoveryState.Healthy)
+        {
+            Record(OperationalEventKind.ObservationCompleted, EventSeverity.Information, before, after);
+            if (before.LockedOut && !after.LockedOut)
+                Record(OperationalEventKind.RecoveryRearmed, EventSeverity.Information, before, after);
+        }
+        if ((before.State is RecoveryState.Healthy or RecoveryState.Observing) &&
+            (after.State is RecoveryState.RetryWaiting or RecoveryState.AwaitingIntervention))
+            Record(OperationalEventKind.TargetDisappeared, EventSeverity.Warning, before, after);
+        if (before.State == RecoveryState.Observing &&
+            (after.State != RecoveryState.Observing || after.ObservationStartedAt is null))
+            Record(OperationalEventKind.ObservationInterrupted, EventSeverity.Warning, before, after);
+        if (!before.LockedOut && after.LockedOut)
+            Record(OperationalEventKind.LockoutEntered, EventSeverity.Warning, before, after);
+        if (before.State == RecoveryState.Starting && !before.DetectionUnavailable &&
+            before.AppearanceDeadline is { } appearanceDeadline &&
+            _clock.Elapsed >= appearanceDeadline && after.State != RecoveryState.Starting &&
+            after.TargetIdentity is null)
+            Record(OperationalEventKind.AppearanceTimedOut, EventSeverity.Warning, before, after);
+    }
+
+    private void Record(OperationalEventKind kind, EventSeverity severity,
+        RecoverySnapshot before, RecoverySnapshot after, Guid? operationId = null)
+    {
+        var entry = new OperationalEvent(DateTimeOffset.UtcNow, Guid.NewGuid(), severity, kind,
+            ProfileId: _profileId, EpisodeId: after.EpisodeId ?? before.EpisodeId,
+            OperationId: operationId ?? after.OperationId ?? before.OperationId,
+            PreviousState: before.State, NewState: after.State,
+            Origin: after.ObservationOrigin ?? before.ObservationOrigin,
+            AttemptNumber: after.ReservedAutomaticAttempts,
+            AttemptLimit: _machine.Policy.MaximumAutomaticAttempts,
+            ProcessIdentity: after.TargetIdentity ?? before.TargetIdentity);
+        try
+        {
+            if (!_recorder.TryRecord(entry))
+            {
+                _loggingDegraded = true;
+                _loggingError = "Event queue is full; some events were dropped.";
+            }
+        }
+        catch (Exception error)
+        {
+            _loggingDegraded = true;
+            _loggingError = $"Event recorder failed ({error.GetType().Name}).";
+        }
+    }
+
     private CoordinatorResult Result(RecoveryTransition transition, bool dispatched = false) =>
-        new(_machine.Snapshot, transition, dispatched, _storageDegraded, _storageError);
+        new(_machine.Snapshot, transition, dispatched, _storageDegraded, _storageError,
+            _loggingDegraded, _loggingError);
 
     public void Dispose() => _gate.Dispose();
 }
