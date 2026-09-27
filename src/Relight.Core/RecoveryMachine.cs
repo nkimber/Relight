@@ -88,7 +88,8 @@ public sealed class RecoveryMachine
                 DetectionUnavailable = true,
                 ObservationStartedAt = null,
                 LastVerifiedAt = null,
-                AbsenceStartedAt = null
+                AbsenceStartedAt = null,
+                RetryDeadline = null
             };
             return Changed(before, detection.Reason ?? "Detection unavailable");
         }
@@ -368,6 +369,18 @@ public sealed class RecoveryMachine
                 Snapshot = Snapshot with { State = RecoveryState.AwaitingIntervention, LockedOut = true,
                     RetryDeadline = null };
                 return Changed(before, "Automatic recovery budget exhausted");
+            }
+            if (now - retryDeadline > TimeSpan.FromSeconds(5))
+            {
+                // A timer that resumed well after its deadline cannot prove
+                // continuous monitoring across that gap. Reconfirm absence
+                // and give the target a fresh retry delay.
+                Snapshot = Snapshot with
+                {
+                    RetryDeadline = null,
+                    AbsenceStartedAt = now
+                };
+                return Changed(before, "Missed retry deadline; confirming absence after monitoring gap");
             }
             // The outage was already confirmed when this retry was scheduled.
             // This call itself is the fresh presence check before dispatch.

@@ -68,6 +68,36 @@ public sealed class RecoveryMachineTests
     }
 
     [Fact]
+    public void Missed_retry_deadline_after_monitoring_gap_cannot_launch_immediately()
+    {
+        var machine = HealthyMachine();
+        machine.Advance(Missing, S(601));
+        machine.Advance(Missing, S(603));
+        Assert.Equal(S(633), machine.Snapshot.RetryDeadline);
+
+        Assert.Equal(RecoverySignal.None, machine.Advance(Missing, S(900)).Signal);
+        Assert.Null(machine.Snapshot.RetryDeadline);
+        Assert.Equal(S(900), machine.Snapshot.AbsenceStartedAt);
+        machine.Advance(Missing, S(902));
+        Assert.Equal(S(932), machine.Snapshot.RetryDeadline);
+        Assert.Equal(RecoverySignal.LaunchDue, machine.Advance(Missing, S(932)).Signal);
+    }
+
+    [Fact]
+    public void Detection_failure_discards_retry_deadline_without_refunding_budget()
+    {
+        var machine = HealthyMachine();
+        machine.Advance(Missing, S(601));
+        machine.Advance(Missing, S(603));
+        machine.Advance(Detection.Unavailable("Controlled inspection failure"), S(620));
+
+        Assert.Null(machine.Snapshot.RetryDeadline);
+        Assert.Equal(RecoverySignal.None, machine.Advance(Missing, S(633)).Signal);
+        Assert.Equal(S(633), machine.Snapshot.AbsenceStartedAt);
+        Assert.Equal(0, machine.Snapshot.ReservedAutomaticAttempts);
+    }
+
+    [Fact]
     public void Three_failed_dispatches_exhaust_exact_budget_and_fourth_is_rejected()
     {
         var machine = HealthyMachine();
