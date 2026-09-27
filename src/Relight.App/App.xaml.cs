@@ -44,7 +44,7 @@ public partial class App : Application
             _viewModel = new ShellViewModel(HideDashboard, RequestExit, ShowAddApplication);
             _viewModel.HistoryRefreshRequested += OnHistoryRefreshRequested;
             _dashboard = new MainWindow(SetProfilePausedAsync, ResetProfileRecoveryAsync,
-                StartProfileNowAsync)
+                StartProfileNowAsync, ExportHistoryAsync)
             {
                 DataContext = _viewModel
             };
@@ -234,6 +234,18 @@ public partial class App : Application
             throw new InvalidOperationException("Monitoring is unavailable.");
         return host.StartProfileNowAsync(profileId,
             _monitoringCancellation?.Token ?? CancellationToken.None);
+    }
+
+    private Task<EventHistoryExportResult> ExportHistoryAsync(EventHistoryQuery query,
+        string destination, EventHistoryExportFormat format)
+    {
+        if (_exiting) throw new InvalidOperationException("Relight is exiting.");
+        string directory = _viewModel?.DataDirectory ??
+            throw new InvalidOperationException("History is unavailable.");
+        CancellationToken cancellationToken = _monitoringCancellation?.Token ??
+            CancellationToken.None;
+        return Task.Run(() => new OperationalEventHistoryReader(directory)
+            .ExportAsync(query, destination, format, cancellationToken), cancellationToken);
     }
 
     private void HideDashboard() => _dashboard?.Hide();

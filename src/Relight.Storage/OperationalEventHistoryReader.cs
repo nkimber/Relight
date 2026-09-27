@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text;
 
 namespace Relight.Storage;
 
@@ -19,29 +20,92 @@ public sealed record EventHistoryResult(
     public bool Truncated => TotalMatches > Events.Count;
 }
 
+public enum EventHistoryExportFormat { Text, Csv }
+public sealed record EventHistoryExportResult(int ExportedEvents, int SkippedMalformedLines);
+
 /// <summary>
 /// Reads only files owned by the journal. A bounded latest-first result keeps the
 /// dashboard responsive while reporting when matching older events were omitted.
 /// </summary>
 public sealed class OperationalEventHistoryReader(string dataDirectory)
 {
-    private readonly string _directory = Path.Combine(
-        Path.GetFullPath(dataDirectory), "Logs");
+    private readonly string _dataDirectory = Path.GetFullPath(dataDirectory);
+    private readonly string _directory = Path.Combine(Path.GetFullPath(dataDirectory), "Logs");
 
     public async Task<EventHistoryResult> ReadAsync(EventHistoryQuery query,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(query);
-        if (query.Limit is < 1 or > 5000 ||
-            query.FromUtc?.Offset is { } fromOffset && fromOffset != TimeSpan.Zero ||
-            query.ThroughUtc?.Offset is { } throughOffset && throughOffset != TimeSpan.Zero ||
-            query.FromUtc > query.ThroughUtc)
-            throw new ArgumentException("History query is invalid.", nameof(query));
-        if (!Directory.Exists(_directory)) return new([], 0, 0);
+        ValidateQuery(query);
+        var latest = new PriorityQueue<OperationalEvent, DateTimeOffset>();
+        ScanSummary summary = await ScanAsync(query, entry =>
+        {
+            latest.Enqueue(entry, entry.OccurredUtc);
+            if (latest.Count > query.Limit) latest.Dequeue();
+            return Task.CompletedTask;
+        }, cancellationToken).ConfigureAwait(false);
+        OperationalEvent[] rows = latest.UnorderedItems
+            .Select(item => item.Element)
+            .OrderByDescending(entry => entry.OccurredUtc)
+            .ThenBy(entry => entry.EventId)
+            .ToArray();
+        return new(rows, summary.Matched, summary.Malformed);
+    }
+
+    public async Task<EventHistoryExportResult> ExportAsync(EventHistoryQuery query,
+        string destination, EventHistoryExportFormat format,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateQuery(query);
+        if (!Enum.IsDefined(format))
+            throw new ArgumentOutOfRangeException(nameof(format));
+        if (string.IsNullOrWhiteSpace(destination))
+            throw new ArgumentException("Choose an export destination.", nameof(destination));
+        string output = Path.GetFullPath(destination);
+        string relative = Path.GetRelativePath(_dataDirectory, output);
+        if (relative != ".." && !relative.StartsWith(".." + Path.DirectorySeparatorChar,
+                StringComparison.Ordinal) && !Path.IsPathRooted(relative))
+            throw new ArgumentException("Choose a destination outside Relight's data directory.",
+                nameof(destination));
+        string parent = Path.GetDirectoryName(output)!;
+        if (!Directory.Exists(parent))
+            throw new DirectoryNotFoundException("The export folder does not exist.");
+        string temporary = Path.Combine(parent, $".relight-export-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            ScanSummary summary;
+            {
+                await using var stream = new FileStream(temporary, FileMode.CreateNew,
+                    FileAccess.Write, FileShare.None, 4096,
+                    FileOptions.Asynchronous | FileOptions.WriteThrough);
+                await using var writer = new StreamWriter(stream, new UTF8Encoding(false));
+                if (format == EventHistoryExportFormat.Csv)
+                    await writer.WriteLineAsync(CsvHeader.AsMemory(), cancellationToken)
+                        .ConfigureAwait(false);
+                summary = await ScanAsync(query, entry =>
+                    writer.WriteLineAsync((format == EventHistoryExportFormat.Csv
+                        ? CsvLine(entry) : TextBlock(entry)).AsMemory(), cancellationToken),
+                    cancellationToken).ConfigureAwait(false);
+                await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Move(temporary, output, overwrite: true);
+            return new(summary.Matched, summary.Malformed);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+    }
+
+    private sealed record ScanSummary(int Matched, int Malformed);
+
+    private async Task<ScanSummary> ScanAsync(EventHistoryQuery query,
+        Func<OperationalEvent, Task> visit, CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(_directory)) return new(0, 0);
         if ((File.GetAttributes(_directory) & FileAttributes.ReparsePoint) != 0)
             throw new IOException("The log directory cannot be a reparse point.");
-
-        var latest = new PriorityQueue<OperationalEvent, DateTimeOffset>();
         var seenIds = new HashSet<Guid>();
         int matched = 0;
         int malformed = 0;
@@ -87,15 +151,39 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
                     query.ThroughUtc is { } through && entry.OccurredUtc > through)
                     continue;
                 matched++;
-                latest.Enqueue(entry, entry.OccurredUtc);
-                if (latest.Count > query.Limit) latest.Dequeue();
+                await visit(entry).ConfigureAwait(false);
             }
         }
-        OperationalEvent[] rows = latest.UnorderedItems
-            .Select(item => item.Element)
-            .OrderByDescending(entry => entry.OccurredUtc)
-            .ThenBy(entry => entry.EventId)
-            .ToArray();
-        return new(rows, matched, malformed);
+        return new(matched, malformed);
     }
+
+    private static void ValidateQuery(EventHistoryQuery query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        if (query.Limit is < 1 or > 5000 ||
+            query.FromUtc?.Offset is { } fromOffset && fromOffset != TimeSpan.Zero ||
+            query.ThroughUtc?.Offset is { } throughOffset && throughOffset != TimeSpan.Zero ||
+            query.FromUtc > query.ThroughUtc)
+            throw new ArgumentException("History query is invalid.", nameof(query));
+    }
+
+    private const string CsvHeader = "occurredUtc,eventId,severity,kind,profileId,profileName,episodeId,operationId,previousState,newState,origin,attemptNumber,attemptLimit,processIdentity,nativeErrorCode";
+
+    private static string CsvLine(OperationalEvent entry) => string.Join(",",
+        new string?[]
+        {
+            entry.OccurredUtc.ToString("O"), entry.EventId.ToString(),
+            entry.Severity.ToString(), entry.Kind.ToString(), entry.ProfileId?.ToString(),
+            entry.ProfileName, entry.EpisodeId?.ToString(), entry.OperationId?.ToString(),
+            entry.PreviousState?.ToString(), entry.NewState?.ToString(),
+            entry.Origin?.ToString(), entry.AttemptNumber?.ToString(),
+            entry.AttemptLimit?.ToString(), entry.ProcessIdentity,
+            entry.NativeErrorCode?.ToString()
+        }.Select(value => "\"" + (value ?? "").Replace("\"", "\"\"") + "\""));
+
+    private static string TextBlock(OperationalEvent entry) =>
+        $"{entry.OccurredUtc:O} | {entry.Severity} | {entry.Kind} | {entry.ProfileName ?? "Relight"}\n" +
+        $"  Event: {entry.EventId}  Profile: {entry.ProfileId?.ToString() ?? "—"}  Episode: {entry.EpisodeId?.ToString() ?? "—"}  Operation: {entry.OperationId?.ToString() ?? "—"}\n" +
+        $"  State: {entry.PreviousState?.ToString() ?? "—"} → {entry.NewState?.ToString() ?? "—"}  Origin: {entry.Origin?.ToString() ?? "—"}  Attempt: {entry.AttemptNumber?.ToString() ?? "—"}/{entry.AttemptLimit?.ToString() ?? "—"}\n" +
+        $"  Process identity: {entry.ProcessIdentity ?? "—"}  Native error: {entry.NativeErrorCode?.ToString() ?? "—"}\n";
 }

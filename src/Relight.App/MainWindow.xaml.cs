@@ -4,6 +4,8 @@ using System.IO;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using Microsoft.Win32;
+using Relight.Storage;
 using Relight.ViewModels;
 
 namespace Relight;
@@ -13,13 +15,18 @@ public partial class MainWindow : Window
     private readonly Func<Guid, bool, Task> _setPaused;
     private readonly Func<Guid, Task> _resetRecovery;
     private readonly Func<Guid, Task> _startNow;
+    private readonly Func<EventHistoryQuery, string, EventHistoryExportFormat,
+        Task<EventHistoryExportResult>> _exportHistory;
 
     public MainWindow(Func<Guid, bool, Task> setPaused, Func<Guid, Task> resetRecovery,
-        Func<Guid, Task> startNow)
+        Func<Guid, Task> startNow,
+        Func<EventHistoryQuery, string, EventHistoryExportFormat,
+            Task<EventHistoryExportResult>> exportHistory)
     {
         _setPaused = setPaused;
         _resetRecovery = resetRecovery;
         _startNow = startNow;
+        _exportHistory = exportHistory;
         InitializeComponent();
     }
 
@@ -58,6 +65,65 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(this, error.Message, "Could not open log folder",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private async void ExportHistoryClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button || DataContext is not ShellViewModel model) return;
+        EventHistoryQuery query;
+        try
+        {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            query = model.CreateHistoryQuery(now) with
+            {
+                ThroughUtc = now
+            };
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "History filter is invalid",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        var picker = new SaveFileDialog
+        {
+            Title = "Export filtered Relight history",
+            FileName = $"Relight-history-{DateTime.Now:yyyyMMdd}",
+            Filter = "CSV file (*.csv)|*.csv|Text file (*.txt)|*.txt",
+            DefaultExt = ".csv",
+            AddExtension = true,
+            OverwritePrompt = true,
+            CheckPathExists = true
+        };
+        if (picker.ShowDialog(this) != true) return;
+        EventHistoryExportFormat format = picker.FilterIndex == 2
+            ? EventHistoryExportFormat.Text : EventHistoryExportFormat.Csv;
+        button.IsEnabled = false;
+        button.Content = "Exporting…";
+        try
+        {
+            EventHistoryExportResult result = await _exportHistory(query,
+                picker.FileName, format);
+            string warning = result.SkippedMalformedLines > 0
+                ? $"\n\n{result.SkippedMalformedLines} damaged log line(s) could not be exported; this export may be incomplete."
+                : "";
+            MessageBox.Show(this,
+                $"Exported {result.ExportedEvents} matching event(s) to:\n{picker.FileName}{warning}",
+                "Relight history", MessageBoxButton.OK,
+                result.SkippedMalformedLines > 0 ? MessageBoxImage.Warning :
+                    MessageBoxImage.Information);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "History export failed",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            button.Content = "Export filtered history";
+            button.IsEnabled = true;
         }
     }
 

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Relight.Storage;
 
 namespace Relight.Core.Tests;
@@ -159,6 +160,80 @@ public sealed class OperationalEventJournalTests
         Assert.Empty(result.Events);
         Assert.Equal(1, result.SkippedMalformedLines);
         Assert.True(File.Exists(foreign));
+    }
+
+    [Fact]
+    public async Task Filtered_export_includes_full_episode_beyond_display_limit()
+    {
+        using var directory = new TestDirectory();
+        using var exports = new TestDirectory();
+        string logs = Path.Combine(directory.Path, "Logs");
+        Directory.CreateDirectory(logs);
+        string owned = Path.Combine(logs,
+            $"events-20260927T0000000000000Z-{Guid.NewGuid():N}.jsonl");
+        Guid episode = Guid.NewGuid();
+        var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        json.Converters.Add(new JsonStringEnumConverter(allowIntegerValues: false));
+        OperationalEvent[] entries = Enumerable.Range(0, 506)
+            .Select(i => NewEvent() with
+            {
+                OccurredUtc = DateTimeOffset.UtcNow.AddMinutes(i),
+                EpisodeId = i == 505 ? Guid.NewGuid() : episode,
+                ProfileName = "Alpha,\"Beta\"",
+                Kind = OperationalEventKind.LaunchReserved
+            }).ToArray();
+        File.WriteAllLines(owned, entries.Select(entry => JsonSerializer.Serialize(entry, json)));
+        var reader = new OperationalEventHistoryReader(directory.Path);
+        EventHistoryQuery query = new(EpisodeId: episode);
+        EventHistoryResult display = await reader.ReadAsync(query);
+        Assert.Equal(500, display.Events.Count);
+        Assert.Equal(505, display.TotalMatches);
+
+        string csv = Path.Combine(exports.Path, "episode.csv");
+        EventHistoryExportResult exported = await reader.ExportAsync(query, csv,
+            EventHistoryExportFormat.Csv);
+        Assert.Equal(505, exported.ExportedEvents);
+        Assert.Equal(0, exported.SkippedMalformedLines);
+        string[] lines = File.ReadAllLines(csv);
+        Assert.Equal(506, lines.Length);
+        Assert.Contains("\"Alpha,\"\"Beta\"\"\"", lines[1]);
+        Assert.DoesNotContain(entries[505].EpisodeId!.Value.ToString(),
+            File.ReadAllText(csv));
+
+        string text = Path.Combine(exports.Path, "episode.txt");
+        EventHistoryExportResult textResult = await reader.ExportAsync(query, text,
+            EventHistoryExportFormat.Text);
+        Assert.Equal(505, textResult.ExportedEvents);
+        Assert.Contains("LaunchReserved", File.ReadAllText(text));
+    }
+
+    [Fact]
+    public async Task Export_refuses_to_overwrite_relight_state()
+    {
+        using var directory = new TestDirectory();
+        string configuration = Path.Combine(directory.Path, "configuration.json");
+        File.WriteAllText(configuration, "untouched");
+        var reader = new OperationalEventHistoryReader(directory.Path);
+        await Assert.ThrowsAsync<ArgumentException>(() => reader.ExportAsync(new(),
+            configuration, EventHistoryExportFormat.Csv));
+        Assert.Equal("untouched", File.ReadAllText(configuration));
+    }
+
+    [Fact]
+    public async Task Cancelled_export_preserves_existing_destination()
+    {
+        using var directory = new TestDirectory();
+        using var exports = new TestDirectory();
+        string destination = Path.Combine(exports.Path, "history.csv");
+        File.WriteAllText(destination, "previous export");
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            new OperationalEventHistoryReader(directory.Path).ExportAsync(new(),
+                destination, EventHistoryExportFormat.Csv, cancellation.Token));
+        Assert.Equal("previous export", File.ReadAllText(destination));
+        Assert.Single(Directory.GetFiles(exports.Path));
     }
 
     private static OperationalEvent NewEvent() =>
