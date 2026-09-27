@@ -200,6 +200,11 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
         ValidateQuery(query);
         if (!Enum.IsDefined(format))
             throw new ArgumentOutOfRangeException(nameof(format));
+        // An episode export is a diagnostic chain. Row-view filters must not
+        // silently omit its earlier events or other transition kinds.
+        EventHistoryQuery exportQuery = query.EpisodeId is { } episodeId
+            ? new(EpisodeId: episodeId, Limit: query.Limit)
+            : query;
         if (string.IsNullOrWhiteSpace(destination))
             throw new ArgumentException("Choose an export destination.", nameof(destination));
         string output = Path.GetFullPath(destination);
@@ -223,9 +228,11 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
                 if (format == EventHistoryExportFormat.Csv)
                     await writer.WriteLineAsync(CsvHeader.AsMemory(), cancellationToken)
                         .ConfigureAwait(false);
-                summary = await ScanAsync(query, entry =>
+                summary = await ScanAsync(exportQuery, entry =>
                     writer.WriteLineAsync((format == EventHistoryExportFormat.Csv
-                        ? CsvLine(entry) : TextBlock(entry)).AsMemory(), cancellationToken),
+                        ? CsvLine(entry with { ProcessIdentity = null })
+                        : TextBlock(entry with { ProcessIdentity = null })).AsMemory(),
+                        cancellationToken),
                     cancellationToken).ConfigureAwait(false);
                 await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);

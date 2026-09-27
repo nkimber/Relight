@@ -342,6 +342,57 @@ public sealed class OperationalEventJournalTests
     }
 
     [Fact]
+    public async Task Episode_export_ignores_row_filters_and_redacts_process_identity()
+    {
+        using var directory = new TestDirectory();
+        using var exports = new TestDirectory();
+        using var journal = new OperationalEventJournal(directory.Path,
+            GlobalConfiguration.Default);
+        Guid episode = Guid.NewGuid();
+        Guid profile = Guid.NewGuid();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        await journal.AppendAsync(NewEvent() with
+        {
+            EpisodeId = episode, ProfileId = profile,
+            OccurredUtc = now.AddHours(-2),
+            Kind = OperationalEventKind.TargetDisappeared,
+            ProcessIdentity = @"C:\private-path\secret.exe|123"
+        });
+        await journal.AppendAsync(NewEvent() with
+        {
+            EpisodeId = episode, ProfileId = profile,
+            OccurredUtc = now,
+            Kind = OperationalEventKind.LaunchReserved,
+            Severity = EventSeverity.Warning
+        });
+        await journal.AppendAsync(NewEvent() with
+        {
+            EpisodeId = Guid.NewGuid(), ProfileId = profile,
+            Kind = OperationalEventKind.LaunchReserved
+        });
+        var reader = new OperationalEventHistoryReader(directory.Path);
+        EventHistoryQuery query = new(ProfileId: Guid.NewGuid(),
+            MinimumSeverity: EventSeverity.Warning,
+            Kind: OperationalEventKind.LaunchReserved, EpisodeId: episode,
+            FromUtc: now.AddMinutes(-1), ThroughUtc: now.AddMinutes(1));
+        string csv = Path.Combine(exports.Path, "episode.csv");
+        EventHistoryExportResult result = await reader.ExportAsync(query, csv,
+            EventHistoryExportFormat.Csv);
+
+        Assert.Equal(2, result.ExportedEvents);
+        string content = File.ReadAllText(csv);
+        Assert.Contains("TargetDisappeared", content);
+        Assert.Contains("LaunchReserved", content);
+        Assert.DoesNotContain("private-path", content);
+        Assert.DoesNotContain("secret.exe", content);
+        string textPath = Path.Combine(exports.Path, "episode.txt");
+        EventHistoryExportResult textResult = await reader.ExportAsync(query, textPath,
+            EventHistoryExportFormat.Text);
+        Assert.Equal(2, textResult.ExportedEvents);
+        Assert.DoesNotContain("private-path", File.ReadAllText(textPath));
+    }
+
+    [Fact]
     public async Task Export_refuses_to_overwrite_relight_state()
     {
         using var directory = new TestDirectory();

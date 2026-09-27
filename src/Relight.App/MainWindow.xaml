@@ -181,12 +181,13 @@
                             </WrapPanel>
                             <TextBlock Text="Episode ID (optional)" Style="{StaticResource Muted}" Margin="0,0,0,4" />
                             <TextBox Text="{Binding HistoryEpisodeText, UpdateSourceTrigger=PropertyChanged}"
-                                     ToolTip="Optional episode ID. Copy it from an event's details."
+                                     ToolTip="Optional episode ID. Copy it from an event's details. Export includes all retained events for this episode, regardless of the other filters."
                                      AutomationProperties.Name="Filter history by episode ID"
                                      Margin="0,0,0,12" />
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
                                 <Button Content="Refresh history" Command="{Binding RefreshHistoryCommand}" Margin="0,0,10,0" />
-                                <Button Content="Export filtered history" Click="ExportHistoryClick" Margin="0,0,10,0" />
+                                <Button Content="Export history" Click="ExportHistoryClick" Margin="0,0,10,0"
+                                        ToolTip="With an episode ID, export all retained events for that episode. Otherwise export matching filters." />
                                 <Button Content="Open log folder" Click="OpenLogFolderClick" />
                             </StackPanel>
                             <TextBlock Text="{Binding HistoryStatus}" Style="{StaticResource Muted}"

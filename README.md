@@ -52,6 +52,7 @@ A self-contained preview can be produced locally with:
 
 ```powershell
 dotnet publish src/Relight.App -c Release -r win-x64 --self-contained true -o artifacts/preview
+pwsh -File scripts/Test-Shell.ps1 -Executable artifacts/preview/Relight.exe
 ```
 
 This is a development preview, not the production release or overnight pilot described in the PRD.

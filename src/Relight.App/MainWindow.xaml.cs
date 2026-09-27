@@ -238,7 +238,9 @@ public partial class MainWindow : Window
         }
         var picker = new SaveFileDialog
         {
-            Title = "Export filtered Relight history",
+            Title = query.EpisodeId is null
+                ? "Export filtered Relight history"
+                : "Export all retained events for this episode",
             FileName = $"Relight-history-{DateTime.Now:yyyyMMdd}",
             Filter = "CSV file (*.csv)|*.csv|Text file (*.txt)|*.txt",
             DefaultExt = ".csv",

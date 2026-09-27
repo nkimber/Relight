@@ -42,6 +42,8 @@ Environment: Windows 11 x64, OS build 26200, .NET SDK 10.0.102 / Desktop Runtime
 
 The process-level interruption check is not full AT-29: there are no monitored targets yet. These results establish a shell checkpoint, not readiness for unattended recovery.
 
+On 27 September 2026, the later `0.1.0` development preview was published again as a self-contained `win-x64` folder on this Windows 11 x64 desktop. It contained 261 files (about 155 MiB), including the .NET runtime and WPF assemblies. `pwsh -File scripts/Test-Shell.ps1 -Executable artifacts/preview/Relight.exe` passed tray startup, second-instance activation and restart after interruption against the published executable. This confirms the local publish/run path only; a clean machine without .NET, upgrade/removal, startup registration, full UI and real-target recovery are not validated by it.
+
 ## Next work
 
 Return to target validation and the executable recovery model in M0/M1. Finish the outstanding shell interaction checks as part of M5; retain the engine's durable budget and identity gates before enabling protection controls.
