@@ -4,7 +4,7 @@ A Windows tray application that will watch selected desktop apps and bring them 
 
 [Public repository](https://github.com/nkimber/Relight)
 
-**Current status: WPF development preview (0.1.0) with executable recovery.** The resident shell starts the host and shows live profile status. You can browse for an executable, verify whether it is already running, and add it with a durable recovery ledger. The default waits for the first user launch when the target is absent. Per-profile Start now, pause/resume and explicit recovery reset are available. Packaged-app activation, advanced profile editing, other manual controls, notifications and sign-in startup are still in development; this is not ready for unattended protection of a valuable job.
+**Current status: WPF development preview (0.1.0) with executable recovery.** The resident shell starts the host and shows live profile status. You can browse for an executable, verify whether it is already running, and add it with a durable recovery ledger. The default waits for the first user launch when the target is absent. Per-profile Start now, pause/resume and explicit recovery reset are available. The History page can browse local events. Packaged-app activation, advanced profile editing, history export and summaries, notifications and sign-in startup are still in development; this is not ready for unattended protection of a valuable job.
 
 ## Build and run
 
@@ -23,6 +23,7 @@ Or run `src\Relight.App\bin\Release\net10.0-windows\Relight.exe` after building.
 - Navigate Applications, History and Settings, or press **Ctrl+1**, **Ctrl+2** and **Ctrl+3**.
 - Choose **Add application**, browse to the actual `.exe`, select **Detect now**, then **Add and protect**. A running match is adopted for observation; an absent target waits for your first launch. Adding does not start or close the target. Duplicate enabled identities are rejected.
 - Use **Start now** on a configured application to check for a matching instance and launch it if absent. This explicit launch does not consume an automatic attempt or clear an existing lockout. Use **Pause protection** or **Resume protection** without closing the target or clearing its recovery budget. **Reset recovery** explicitly clears the episode attempt count after a confirmation; if the target is absent, a new automatic launch can follow absence confirmation and the retry delay.
+- Open **History** to load local recovery events. Filter by application, severity, event type, episode ID and time range, then select **Refresh history**. Expand a row for UTC time and correlation IDs; use **Open log folder** for the original JSON Lines files. At most 500 matching rows are displayed, with a count when older matches are omitted.
 - Close the dashboard or press **Ctrl+W** to hide it and keep Relight resident.
 - Double-click the flame in the notification area, choose **Open dashboard** from its menu, or launch Relight again to return to the existing instance. Windows may place the icon in its tray overflow.
 - Choose **Exit Relight** or press **Ctrl+Q** to quit. The confirmation defaults to Cancel. Other applications stay running.
@@ -61,6 +62,6 @@ This is a development preview, not the production release or overnight pilot des
 | `docs` | Requirements, delivery plan, architecture and verification evidence |
 | `AGENTS.md` | Engineering and recovery rules for contributors/agents |
 
-Start with [the docs index](docs/index.md) and [development plan](docs/development-plan.md). Recovery policy remains independent of WPF. The dashboard displays host snapshots and supports basic executable registration, Start now, pause/resume and reset; policy editing and other recovery commands are pending.
+Start with [the docs index](docs/index.md) and [development plan](docs/development-plan.md). Recovery policy remains independent of WPF. The dashboard displays host snapshots and supports basic executable registration, Start now, pause/resume, reset and local event browsing; policy editing and other recovery commands are pending.
 
 The flame artwork is original to this repository. WPF and Windows Forms are provided by the Microsoft .NET Windows Desktop framework; no Resurrector code or assets are copied into the shell.

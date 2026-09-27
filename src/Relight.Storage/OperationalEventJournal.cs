@@ -77,10 +77,10 @@ public interface IOperationalEventWriter
 /// </summary>
 public sealed class OperationalEventJournal : IOperationalEventWriter, IDisposable
 {
-    private static readonly Regex OwnedFileName = new(
+    internal static readonly Regex OwnedFileName = new(
         @"^events-\d{8}T\d{13}Z-[0-9a-f]{32}\.jsonl$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
-    private static readonly JsonSerializerOptions Json = CreateJsonOptions();
+    internal static readonly JsonSerializerOptions Json = CreateJsonOptions();
     private readonly string _directory;
     private readonly int _retentionDays;
     private readonly long _maximumBytes;

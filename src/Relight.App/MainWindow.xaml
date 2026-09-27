@@ -113,12 +113,58 @@
                     </StackPanel>
                     <Border Style="{StaticResource Card}" VerticalAlignment="Top"
                             Visibility="{Binding IsHistory, Converter={StaticResource VisibleWhenTrue}}">
-                        <StackPanel Margin="0,12">
-                            <TextBlock Text="History view is in development" FontSize="22" FontWeight="SemiBold" />
-                            <TextBlock Text="Recovery events are recorded locally. Search, summaries and export will be available in a later milestone."
-                                       Style="{StaticResource Muted}" Margin="0,12,0,24" />
-                            <Button Content="Export history" IsEnabled="False" HorizontalAlignment="Left"
-                                    ToolTip="History export is not available in this preview." />
+                        <StackPanel>
+                            <TextBlock Text="Event history" FontSize="22" FontWeight="SemiBold" />
+                            <TextBlock Text="Local records of monitoring and recovery. Times below use this computer's time zone."
+                                       Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,16" />
+                            <WrapPanel Margin="0,0,0,12">
+                                <ComboBox ItemsSource="{Binding HistoryProfiles}" SelectedItem="{Binding SelectedHistoryProfile}"
+                                          DisplayMemberPath="Label" Width="174" Margin="0,0,8,8"
+                                          AutomationProperties.Name="Filter history by application" />
+                                <ComboBox ItemsSource="{Binding HistorySeverities}" SelectedItem="{Binding SelectedHistorySeverity}"
+                                          DisplayMemberPath="Label" Width="154" Margin="0,0,8,8"
+                                          AutomationProperties.Name="Filter history by severity" />
+                                <ComboBox ItemsSource="{Binding HistoryKinds}" SelectedItem="{Binding SelectedHistoryKind}"
+                                          DisplayMemberPath="Label" Width="174" Margin="0,0,8,8"
+                                          AutomationProperties.Name="Filter history by event type" />
+                                <ComboBox ItemsSource="{Binding HistoryRanges}" SelectedItem="{Binding SelectedHistoryRange}"
+                                          DisplayMemberPath="Label" Width="130" Margin="0,0,8,8"
+                                          AutomationProperties.Name="Filter history by time range" />
+                            </WrapPanel>
+                            <TextBlock Text="Episode ID (optional)" Style="{StaticResource Muted}" Margin="0,0,0,4" />
+                            <TextBox Text="{Binding HistoryEpisodeText, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="Optional episode ID. Copy it from an event's details."
+                                     AutomationProperties.Name="Filter history by episode ID"
+                                     Margin="0,0,0,12" />
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                                <Button Content="Refresh history" Command="{Binding RefreshHistoryCommand}" Margin="0,0,10,0" />
+                                <Button Content="Open log folder" Click="OpenLogFolderClick" />
+                            </StackPanel>
+                            <TextBlock Text="{Binding HistoryStatus}" Style="{StaticResource Muted}"
+                                       TextWrapping="Wrap" Margin="0,0,0,12" />
+                            <ItemsControl ItemsSource="{Binding HistoryRows}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border BorderBrush="{DynamicResource LineBrush}" BorderThickness="0,0,0,1" Padding="0,10">
+                                            <Expander>
+                                                <Expander.Header>
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding Summary}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                            <TextBlock Text="{Binding LocalTime}" Style="{StaticResource Muted}" Margin="0,0,12,0" />
+                                                            <TextBlock Text="{Binding Profile}" Style="{StaticResource Muted}" Margin="0,0,12,0" />
+                                                            <TextBlock Text="{Binding Severity}" Style="{StaticResource Muted}" />
+                                                        </StackPanel>
+                                                    </StackPanel>
+                                                </Expander.Header>
+                                                <TextBox Text="{Binding Details, Mode=OneWay}" IsReadOnly="True"
+                                                         TextWrapping="Wrap" BorderThickness="0" Padding="8"
+                                                         Background="{DynamicResource CanvasBrush}" Foreground="{DynamicResource TextBrush}" />
+                                            </Expander>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
                         </StackPanel>
                     </Border>
                     <StackPanel Visibility="{Binding IsSettings, Converter={StaticResource VisibleWhenTrue}}">
@@ -139,7 +185,7 @@
                                 <TextBox Text="{Binding DataDirectory, Mode=OneWay}" IsReadOnly="True" BorderThickness="0" Padding="4,6"
                                          TextWrapping="Wrap" Background="{DynamicResource CanvasBrush}" Foreground="{DynamicResource TextBrush}"
                                          AutomationProperties.Name="Local data directory" />
-                                <TextBlock Text="Profile editing and history browsing are still in development." Style="{StaticResource Muted}" Margin="0,12,0,0" />
+                                <TextBlock Text="Profile editing, history export and advanced diagnostics are still in development." Style="{StaticResource Muted}" Margin="0,12,0,0" />
                             </StackPanel>
                         </Border>
                     </StackPanel>

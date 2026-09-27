@@ -12,6 +12,7 @@ Relight is a C# Windows application with a WPF/MVVM dashboard and resident syste
 | [shell-checkpoint.md](shell-checkpoint.md) | Initial shell deliverables, verification evidence and outstanding interactive/acceptance checks. | Understanding exactly what works in the preview and what still needs testing. |
 | [target-findings.md](target-findings.md) | Read-only inventory of both installed ChatGPT desktop packages, their activation IDs and outstanding M0 questions. | Building or testing an installed-app adapter. |
 | [engine-checkpoint.md](engine-checkpoint.md) | Implemented recovery model, stores, event journal, coordinator, scheduler, executable host, registration and Start now/pause/reset commands, WPF wiring, controllable test target, test evidence and remaining work. | Continuing M1–M6 or reviewing attempt-accounting claims. |
+| [history-checkpoint.md](history-checkpoint.md) | Local event-history reader, History page filters/details, test evidence and remaining M7 work. | Building or reviewing history, export and notifications. |
 | [../README.md](../README.md) | Build/run instructions, preview controls, smoke checks and project layout. | Getting a checkout running locally. |
 | [../AGENTS.md](../AGENTS.md) | Repository-wide engineering rules, recovery invariants, verification and documentation expectations. Located at repository root. | Starting any agent task or reviewing a change. |
 
@@ -33,7 +34,7 @@ Section numbers below refer to headings in [PRD.md](PRD.md). Search for the sect
 | Manual controls, safe stopping, live edits and configuration validation | Section 7, `CTL-01`–`CTL-06` | M2, M3, M6 |
 | Single instance, current-user startup, Explorer and tray lifecycle | Section 7 `CTL-07`; Section 8 “Tray” | M5, M8 |
 | Dashboard, editor, history, settings and accessibility | Section 8 | M5–M7 |
-| Event schema, rotation, retention, redaction and diagnostic failures | Section 9, `LOG-01`–`LOG-07` | M2, M7, M8 |
+| Event schema, rotation, retention, redaction and diagnostic failures | Section 9, `LOG-01`–`LOG-07`; [history checkpoint](history-checkpoint.md) | M2, M7, M8 |
 | Configuration/state schemas, migration, monotonic time and session safety | Section 10 | M0–M3, M8 |
 | Component boundaries, WPF/MVVM, adapters and distribution | Section 11 | M0, M1, M5, M9 |
 | Timing, scale, CPU, memory, responsiveness and soak targets | Section 12 | M8–M9 |

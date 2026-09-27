@@ -1,4 +1,6 @@
 using System;
+using System.Diagnostics;
+using System.IO;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -38,6 +40,24 @@ public partial class MainWindow : Window
         {
             button.Content = original;
             button.IsEnabled = row.CanStartNow;
+        }
+    }
+
+    private void OpenLogFolderClick(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not ShellViewModel model) return;
+        string logs = Path.Combine(model.DataDirectory, "Logs");
+        if (!Directory.Exists(logs))
+        {
+            MessageBox.Show(this, "There are no log files yet.", "Relight history",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        try { Process.Start(new ProcessStartInfo(logs) { UseShellExecute = true }); }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Could not open log folder",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 

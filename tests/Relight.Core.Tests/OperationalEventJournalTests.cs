@@ -107,6 +107,60 @@ public sealed class OperationalEventJournalTests
         Assert.True(files.Sum(path => new FileInfo(path).Length) <= settings.MaximumLogBytes);
     }
 
+    [Fact]
+    public async Task History_reader_filters_and_returns_latest_events_with_truncation()
+    {
+        using var directory = new TestDirectory();
+        using var journal = new OperationalEventJournal(directory.Path,
+            GlobalConfiguration.Default);
+        Guid firstProfile = Guid.NewGuid();
+        Guid secondProfile = Guid.NewGuid();
+        DateTimeOffset origin = DateTimeOffset.UtcNow.AddHours(-1);
+        for (int i = 0; i < 5; i++)
+        {
+            await journal.AppendAsync(NewEvent() with
+            {
+                OccurredUtc = origin.AddMinutes(i),
+                ProfileId = i == 4 ? secondProfile : firstProfile,
+                Kind = i % 2 == 0 ? OperationalEventKind.LaunchReserved :
+                    OperationalEventKind.StateChanged,
+                Severity = i == 3 ? EventSeverity.Warning : EventSeverity.Information
+            });
+        }
+        var reader = new OperationalEventHistoryReader(directory.Path);
+        EventHistoryResult result = await reader.ReadAsync(new(
+            ProfileId: firstProfile, Limit: 2));
+        Assert.Equal(4, result.TotalMatches);
+        Assert.True(result.Truncated);
+        Assert.Equal(origin.AddMinutes(3), result.Events[0].OccurredUtc);
+        Assert.Equal(origin.AddMinutes(2), result.Events[1].OccurredUtc);
+        Assert.Equal(0, result.SkippedMalformedLines);
+
+        EventHistoryResult filtered = await reader.ReadAsync(new(
+            ProfileId: firstProfile, MinimumSeverity: EventSeverity.Warning));
+        Assert.Single(filtered.Events);
+        Assert.Equal(OperationalEventKind.StateChanged, filtered.Events[0].Kind);
+    }
+
+    [Fact]
+    public async Task History_reader_ignores_foreign_files_and_reports_corrupt_lines()
+    {
+        using var directory = new TestDirectory();
+        string logs = Path.Combine(directory.Path, "Logs");
+        Directory.CreateDirectory(logs);
+        string owned = Path.Combine(logs,
+            $"events-20260927T0000000000000Z-{Guid.NewGuid():N}.jsonl");
+        string foreign = Path.Combine(logs, "events-my-private-notes.jsonl");
+        File.WriteAllText(owned, "{bad json}\n");
+        File.WriteAllText(foreign, JsonSerializer.Serialize(NewEvent()));
+
+        EventHistoryResult result = await new OperationalEventHistoryReader(directory.Path)
+            .ReadAsync(new());
+        Assert.Empty(result.Events);
+        Assert.Equal(1, result.SkippedMalformedLines);
+        Assert.True(File.Exists(foreign));
+    }
+
     private static OperationalEvent NewEvent() =>
         new(DateTimeOffset.UtcNow, Guid.NewGuid(), EventSeverity.Information,
             OperationalEventKind.Startup);

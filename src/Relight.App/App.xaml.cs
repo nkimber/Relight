@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
 using Relight.Services;
+using Relight.Storage;
 using Relight.ViewModels;
 using Relight.Windows;
 
@@ -22,6 +23,7 @@ public partial class App : Application
     private DispatcherTimer? _statusTimer;
     private bool _updatingStatus;
     private bool _exiting;
+    private CancellationTokenSource? _historyCancellation;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -40,6 +42,7 @@ public partial class App : Application
             ApplyAccessibilityColors();
             SystemParameters.StaticPropertyChanged += OnSystemParametersChanged;
             _viewModel = new ShellViewModel(HideDashboard, RequestExit, ShowAddApplication);
+            _viewModel.HistoryRefreshRequested += OnHistoryRefreshRequested;
             _dashboard = new MainWindow(SetProfilePausedAsync, ResetProfileRecoveryAsync,
                 StartProfileNowAsync)
             {
@@ -140,6 +143,38 @@ public partial class App : Application
         _tray?.UpdateStatus("Relight · Monitoring unavailable");
     }
 
+    private async void OnHistoryRefreshRequested(object? sender, EventArgs e)
+    {
+        if (_exiting || _viewModel is null) return;
+        _historyCancellation?.Cancel();
+        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            _monitoringCancellation?.Token ?? CancellationToken.None);
+        _historyCancellation = cancellation;
+        _viewModel.ShowHistoryLoading();
+        try
+        {
+            EventHistoryQuery query = _viewModel.CreateHistoryQuery(DateTimeOffset.UtcNow);
+            string dataDirectory = _viewModel.DataDirectory;
+            EventHistoryResult result = await Task.Run(() =>
+                new OperationalEventHistoryReader(dataDirectory)
+                    .ReadAsync(query, cancellation.Token), cancellation.Token);
+            if (!cancellation.IsCancellationRequested)
+                _viewModel.UpdateHistory(result);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (Exception error)
+        {
+            if (!cancellation.IsCancellationRequested)
+                _viewModel.ShowHistoryProblem(error.Message);
+        }
+        finally
+        {
+            if (ReferenceEquals(_historyCancellation, cancellation))
+                _historyCancellation = null;
+            cancellation.Dispose();
+        }
+    }
+
     private void ShowDashboard(ShellPage? page = null)
     {
         if (_exiting || _dashboard is null || _viewModel is null)
@@ -235,6 +270,7 @@ public partial class App : Application
     private async Task CompleteExitAsync()
     {
         _statusTimer?.Stop();
+        _historyCancellation?.Cancel();
         _monitoringCancellation?.Cancel();
         try
         {

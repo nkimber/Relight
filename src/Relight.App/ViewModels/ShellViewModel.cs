@@ -18,12 +18,28 @@ internal sealed record ApplicationStatusRow(Guid Id, string Name, string State,
     public string PauseResumeLabel => IsPaused ? "Resume protection" : "Pause protection";
 }
 
+internal sealed record HistoryProfileOption(string Label, Guid? Id);
+internal sealed record HistorySeverityOption(string Label, EventSeverity? Minimum);
+internal sealed record HistoryKindOption(string Label, OperationalEventKind? Kind);
+internal sealed record HistoryRangeOption(string Label, TimeSpan? Lookback);
+internal sealed record HistoryRow(string LocalTime, string UtcTime, string Profile,
+    string Severity, string Kind, string Summary, string Details);
+
 internal sealed class ShellViewModel : INotifyPropertyChanged
 {
     private ShellPage _page;
     private IReadOnlyList<ApplicationStatusRow> _applicationRows = [];
     private string _monitoringBanner = "Loading monitoring configuration…";
     private string _footerStatus = "Relight is in the tray · Loading monitoring status";
+    private IReadOnlyList<HistoryProfileOption> _historyProfiles =
+        [new("All applications", null)];
+    private IReadOnlyList<HistoryRow> _historyRows = [];
+    private string _historyStatus = "Open History to load recorded events.";
+    private HistoryProfileOption _selectedHistoryProfile;
+    private HistorySeverityOption _selectedHistorySeverity;
+    private HistoryKindOption _selectedHistoryKind;
+    private HistoryRangeOption _selectedHistoryRange;
+    private string _historyEpisodeText = "";
 
     public ShellViewModel(Action hide, Action exit, Action add)
     {
@@ -33,6 +49,11 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         HideCommand = new RelayCommand(hide);
         ExitCommand = new RelayCommand(exit);
         AddCommand = new RelayCommand(add);
+        RefreshHistoryCommand = new RelayCommand(() => HistoryRefreshRequested?.Invoke(this, EventArgs.Empty));
+        _selectedHistoryProfile = _historyProfiles[0];
+        _selectedHistorySeverity = HistorySeverities[0];
+        _selectedHistoryKind = HistoryKinds[0];
+        _selectedHistoryRange = HistoryRanges[0];
     }
 
     public ICommand ApplicationsCommand { get; }
@@ -41,6 +62,51 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     public ICommand HideCommand { get; }
     public ICommand ExitCommand { get; }
     public ICommand AddCommand { get; }
+    public ICommand RefreshHistoryCommand { get; }
+    public IReadOnlyList<HistoryProfileOption> HistoryProfiles => _historyProfiles;
+    public IReadOnlyList<HistorySeverityOption> HistorySeverities { get; } =
+        [new("All levels", null), new("Warnings and errors", EventSeverity.Warning),
+         new("Errors", EventSeverity.Error)];
+    public IReadOnlyList<HistoryKindOption> HistoryKinds { get; } =
+        [new("All event types", null), .. Enum.GetValues<OperationalEventKind>()
+            .Select(kind => new HistoryKindOption(SplitName(kind.ToString()), kind))];
+    public IReadOnlyList<HistoryRangeOption> HistoryRanges { get; } =
+        [new("Last 24 hours", TimeSpan.FromDays(1)),
+         new("Last 7 days", TimeSpan.FromDays(7)), new("All retained", null)];
+    public HistoryProfileOption SelectedHistoryProfile
+    {
+        get => _selectedHistoryProfile;
+        set { _selectedHistoryProfile = value; PropertyChanged?.Invoke(this,
+            new PropertyChangedEventArgs(nameof(SelectedHistoryProfile))); }
+    }
+    public HistorySeverityOption SelectedHistorySeverity
+    {
+        get => _selectedHistorySeverity;
+        set { _selectedHistorySeverity = value; PropertyChanged?.Invoke(this,
+            new PropertyChangedEventArgs(nameof(SelectedHistorySeverity))); }
+    }
+    public HistoryKindOption SelectedHistoryKind
+    {
+        get => _selectedHistoryKind;
+        set { _selectedHistoryKind = value; PropertyChanged?.Invoke(this,
+            new PropertyChangedEventArgs(nameof(SelectedHistoryKind))); }
+    }
+    public HistoryRangeOption SelectedHistoryRange
+    {
+        get => _selectedHistoryRange;
+        set { _selectedHistoryRange = value; PropertyChanged?.Invoke(this,
+            new PropertyChangedEventArgs(nameof(SelectedHistoryRange))); }
+    }
+    public IReadOnlyList<HistoryRow> HistoryRows => _historyRows;
+    public string HistoryStatus => _historyStatus;
+    public bool HasHistory => _historyRows.Count > 0;
+    public bool HasNoHistory => !HasHistory;
+    public string HistoryEpisodeText
+    {
+        get => _historyEpisodeText;
+        set { _historyEpisodeText = value; PropertyChanged?.Invoke(this,
+            new PropertyChangedEventArgs(nameof(HistoryEpisodeText))); }
+    }
     public IReadOnlyList<ApplicationStatusRow> ApplicationRows => _applicationRows;
     public bool HasApplications => _applicationRows.Count > 0;
     public bool HasNoApplications => !HasApplications;
@@ -101,6 +167,18 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
                         Relight.Core.RecoveryState.AwaitingIntervention } &&
                     profile.AutomaticActionsAllowed && profile.Problem is null))
             .ToArray();
+        Guid? selectedId = _selectedHistoryProfile.Id;
+        HistoryProfileOption[] availableProfiles =
+            [new("All applications", null), .. profiles
+                .OrderBy(profile => profile.Name, StringComparer.CurrentCultureIgnoreCase)
+                .Select(profile => new HistoryProfileOption(profile.Name, profile.Id))];
+        if (!_historyProfiles.SequenceEqual(availableProfiles))
+        {
+            _historyProfiles = availableProfiles;
+            _selectedHistoryProfile = availableProfiles.FirstOrDefault(option =>
+                option.Id == selectedId) ?? availableProfiles[0];
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
+        }
         int active = profiles.Count(profile => profile.AutomaticActionsAllowed);
         int attention = profiles.Count(profile => profile.Problem is not null);
         string banner = configurationProblem is not null
@@ -130,6 +208,76 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         _footerStatus = "Relight is in the tray · Monitoring unavailable";
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
     }
+
+    public EventHistoryQuery CreateHistoryQuery(DateTimeOffset nowUtc)
+    {
+        Guid? episode = null;
+        if (!string.IsNullOrWhiteSpace(_historyEpisodeText))
+        {
+            if (!Guid.TryParse(_historyEpisodeText.Trim(), out Guid parsed) ||
+                parsed == Guid.Empty)
+                throw new FormatException("Episode filter must be a valid nonempty ID.");
+            episode = parsed;
+        }
+        return new(
+            ProfileId: _selectedHistoryProfile.Id,
+            MinimumSeverity: _selectedHistorySeverity.Minimum,
+            Kind: _selectedHistoryKind.Kind,
+            EpisodeId: episode,
+            FromUtc: _selectedHistoryRange.Lookback is { } span ? nowUtc - span : null);
+    }
+
+    public void ShowHistoryLoading()
+    {
+        _historyRows = [];
+        _historyStatus = "Loading local event history…";
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
+    }
+
+    public void ShowHistoryProblem(string problem)
+    {
+        _historyStatus = $"History could not be loaded: {problem}";
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HistoryStatus)));
+    }
+
+    public void UpdateHistory(EventHistoryResult result)
+    {
+        _historyRows = result.Events.Select(entry => new HistoryRow(
+            entry.OccurredUtc.ToLocalTime().ToString("g"),
+            entry.OccurredUtc.ToString("u"),
+            entry.ProfileName ?? (entry.ProfileId?.ToString() ?? "Relight"),
+            entry.Severity.ToString(), SplitName(entry.Kind.ToString()),
+            FormatSummary(entry), FormatDetails(entry))).ToArray();
+        _historyStatus = result.TotalMatches == 0
+            ? "No recorded events match these filters."
+            : result.Truncated
+                ? $"Showing the latest {_historyRows.Count} of {result.TotalMatches} matching events. Narrow the filters to see older events."
+                : $"Showing {result.TotalMatches} matching event(s).";
+        if (result.SkippedMalformedLines > 0)
+            _historyStatus += $" {result.SkippedMalformedLines} damaged log line(s) could not be read.";
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
+    }
+
+    private static string FormatSummary(OperationalEvent entry)
+    {
+        string transition = entry.PreviousState is { } before &&
+            entry.NewState is { } after ? $" · {SplitName(before.ToString())} → {SplitName(after.ToString())}" : "";
+        string attempt = entry.AttemptNumber is { } number
+            ? $" · attempt {number}" + (entry.AttemptLimit is { } limit ? $" of {limit}" : "") : "";
+        return $"{SplitName(entry.Kind.ToString())}{transition}{attempt}";
+    }
+
+    private static string FormatDetails(OperationalEvent entry) =>
+        $"UTC: {entry.OccurredUtc:u}\nEvent ID: {entry.EventId}\n" +
+        $"Profile ID: {entry.ProfileId?.ToString() ?? "—"}\n" +
+        $"Episode ID: {entry.EpisodeId?.ToString() ?? "—"}\n" +
+        $"Operation ID: {entry.OperationId?.ToString() ?? "—"}\n" +
+        $"Origin: {entry.Origin?.ToString() ?? "—"}\n" +
+        $"Process identity: {entry.ProcessIdentity ?? "—"}\n" +
+        $"Native error code: {entry.NativeErrorCode?.ToString() ?? "—"}";
+
+    private static string SplitName(string value) =>
+        System.Text.RegularExpressions.Regex.Replace(value, "(?<!^)([A-Z])", " $1");
 
     private static string StatusText(HostedProfileStatus profile)
     {
@@ -163,10 +311,18 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
 
     public void Navigate(ShellPage page)
     {
-        if (_page == page) return;
+        if (_page == page)
+        {
+            if (page == ShellPage.History)
+                HistoryRefreshRequested?.Invoke(this, EventArgs.Empty);
+            return;
+        }
         _page = page;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
+        if (page == ShellPage.History)
+            HistoryRefreshRequested?.Invoke(this, EventArgs.Empty);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+    public event EventHandler? HistoryRefreshRequested;
 }
