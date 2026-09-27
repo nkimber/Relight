@@ -240,7 +240,11 @@
                                         Margin="0,16,0,0" HorizontalAlignment="Left" />
                                 <TextBlock Text="When the current configuration is invalid, this restores the last-good backup, preserves the invalid file, and restarts monitoring. Review the backup before continuing."
                                            Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0" />
-                                <TextBlock Text="Advanced diagnostics are still in development." Style="{StaticResource Muted}" Margin="0,12,0,0" />
+                                <Button Content="Export diagnostic bundle" Click="ExportDiagnosticsClick"
+                                        HorizontalAlignment="Left" Margin="0,16,0,0"
+                                        AutomationProperties.Name="Export local diagnostic bundle" />
+                                <TextBlock Text="Creates a local ZIP with application and OS versions, redacted settings, and up to 500 recent events. Target identities, arguments, working directories and process paths are omitted. Choose a destination outside Relight's data folder."
+                                           Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0" />
                             </StackPanel>
                         </Border>
                     </StackPanel>

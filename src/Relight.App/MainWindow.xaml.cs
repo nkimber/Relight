@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     private readonly Func<Guid, Task> _removeProfile;
     private readonly Action<Guid> _editProfile;
     private readonly Func<bool, Task> _setStartAtSignIn;
+    private readonly Func<string, Task<DiagnosticBundleResult>> _exportDiagnostics;
     private bool _changingStartAtSignIn;
 
     public MainWindow(Func<Guid, bool, Task> setPaused, Func<Guid, Task> resetRecovery,
@@ -30,7 +31,8 @@ public partial class MainWindow : Window
         Func<Guid, bool, Task> setEnabled,
         Func<Guid, Task> removeProfile,
         Action<Guid> editProfile,
-        Func<bool, Task> setStartAtSignIn)
+        Func<bool, Task> setStartAtSignIn,
+        Func<string, Task<DiagnosticBundleResult>> exportDiagnostics)
     {
         _setPaused = setPaused;
         _resetRecovery = resetRecovery;
@@ -40,6 +42,7 @@ public partial class MainWindow : Window
         _removeProfile = removeProfile;
         _editProfile = editProfile;
         _setStartAtSignIn = setStartAtSignIn;
+        _exportDiagnostics = exportDiagnostics;
         InitializeComponent();
     }
 
@@ -136,6 +139,47 @@ public partial class MainWindow : Window
         finally
         {
             button.Content = "Export filtered history";
+            button.IsEnabled = true;
+        }
+    }
+
+    private async void ExportDiagnosticsClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button) return;
+        var picker = new SaveFileDialog
+        {
+            Title = "Save local Relight diagnostics",
+            FileName = $"Relight-diagnostics-{DateTime.Now:yyyyMMdd}",
+            Filter = "ZIP archive (*.zip)|*.zip",
+            DefaultExt = ".zip",
+            AddExtension = true,
+            OverwritePrompt = true,
+            CheckPathExists = true
+        };
+        if (picker.ShowDialog(this) != true) return;
+        button.IsEnabled = false;
+        button.Content = "Creating bundle…";
+        try
+        {
+            DiagnosticBundleResult result = await _exportDiagnostics(picker.FileName);
+            string warning = result.SkippedMalformedLines > 0
+                ? $"\n\n{result.SkippedMalformedLines} damaged log line(s) were skipped."
+                : "";
+            MessageBox.Show(this,
+                $"Saved local diagnostics with {result.ExportedEvents} recent event(s) to:\n" +
+                $"{picker.FileName}{warning}", "Relight diagnostics", MessageBoxButton.OK,
+                result.SkippedMalformedLines > 0 ? MessageBoxImage.Warning :
+                    MessageBoxImage.Information);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Diagnostic export failed",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            button.Content = "Export diagnostic bundle";
             button.IsEnabled = true;
         }
     }

@@ -65,7 +65,8 @@ public partial class App : Application
             _viewModel.HistoryRefreshRequested += OnHistoryRefreshRequested;
             _dashboard = new MainWindow(SetProfilePausedAsync, ResetProfileRecoveryAsync,
                 StartProfileNowAsync, ExportHistoryAsync, SetProfileEnabledAsync,
-                RemoveProfileAsync, ShowEditProfile, SetStartAtSignInAsync)
+                RemoveProfileAsync, ShowEditProfile, SetStartAtSignInAsync,
+                ExportDiagnosticsAsync)
             {
                 DataContext = _viewModel
             };
@@ -485,6 +486,23 @@ public partial class App : Application
             CancellationToken.None;
         return Task.Run(() => new OperationalEventHistoryReader(directory)
             .ExportAsync(query, destination, format, cancellationToken), cancellationToken);
+    }
+
+    private async Task<DiagnosticBundleResult> ExportDiagnosticsAsync(string destination)
+    {
+        if (_exiting) throw new InvalidOperationException("Relight is exiting.");
+        RecoveryApplicationHost? host = Volatile.Read(ref _host);
+        string directory = _viewModel?.DataDirectory ??
+            throw new InvalidOperationException("Diagnostics are unavailable.");
+        CancellationToken cancellationToken = _monitoringCancellation?.Token ??
+            CancellationToken.None;
+        EventRecorderStatus? logging = host is null ? null :
+            await host.GetLoggingStatusAsync(cancellationToken);
+        StoredConfiguration? configuration = host?.Configuration;
+        string version = typeof(App).Assembly.GetName().Version?.ToString() ?? "unknown";
+        return await Task.Run(() => new DiagnosticBundleExporter(directory)
+            .ExportAsync(destination, configuration, logging, version, cancellationToken),
+            cancellationToken);
     }
 
     private void HideDashboard() => _dashboard?.Hide();

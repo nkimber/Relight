@@ -1,0 +1,86 @@
+using System.IO.Compression;
+using Relight.Core;
+using Relight.Storage;
+
+namespace Relight.Core.Tests;
+
+public sealed class DiagnosticBundleExporterTests
+{
+    [Fact]
+    public async Task Bundle_redacts_launch_data_and_event_process_paths()
+    {
+        using var data = new TestDirectory();
+        using var exports = new TestDirectory();
+        Guid profileId = Guid.NewGuid();
+        var profile = new ProfileConfiguration(profileId, "Disposable app", true,
+            new(TargetKind.Executable, @"C:\folder-secret\app.exe",
+                ["argument-secret"], @"C:\working-secret",
+                "required-secret", "excluded-secret"), RecoveryPolicy.Default);
+        StoredConfiguration configuration = new ConfigurationStore(data.Path)
+            .Initialize(new([profile], GlobalConfiguration.Default));
+        using (var journal = new OperationalEventJournal(data.Path,
+                   GlobalConfiguration.Default))
+            await journal.AppendAsync(new(DateTimeOffset.UtcNow, Guid.NewGuid(),
+                EventSeverity.Warning, OperationalEventKind.TargetDisappeared,
+                ProfileId: profileId, ProcessIdentity: "path-secret"));
+        string destination = Path.Combine(exports.Path, "diagnostics.zip");
+
+        DiagnosticBundleResult result = await new DiagnosticBundleExporter(data.Path)
+            .ExportAsync(destination, configuration, null, "1.2.3");
+
+        Assert.Equal(1, result.ExportedEvents);
+        Assert.Equal(0, result.SkippedMalformedLines);
+        using ZipArchive bundle = ZipFile.OpenRead(destination);
+        string metadata = await Read(bundle, "diagnostics.json");
+        string events = await Read(bundle, "events.jsonl");
+        Assert.Contains("1.2.3", metadata);
+        Assert.Contains("Executable", metadata);
+        Assert.DoesNotContain("app.exe", metadata);
+        Assert.Contains("TargetDisappeared", events);
+        foreach (string secret in new[] { "folder-secret", "working-secret",
+                     "argument-secret", "required-secret", "excluded-secret", "path-secret" })
+        {
+            Assert.DoesNotContain(secret, metadata);
+            Assert.DoesNotContain(secret, events);
+        }
+        Assert.Single(events.Split('\n', StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    [Fact]
+    public async Task Bundle_rejects_internal_destination_and_preserves_existing_on_cancellation()
+    {
+        using var data = new TestDirectory();
+        using var exports = new TestDirectory();
+        var exporter = new DiagnosticBundleExporter(data.Path);
+        await Assert.ThrowsAsync<ArgumentException>(() => exporter.ExportAsync(
+            Path.Combine(data.Path, "State", "bundle.zip"), null, null, "1.0"));
+        string destination = Path.Combine(exports.Path, "diagnostics.zip");
+        File.WriteAllText(destination, "previous export");
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            exporter.ExportAsync(destination, null, null, "1.0", cancellation.Token));
+
+        Assert.Equal("previous export", File.ReadAllText(destination));
+        Assert.Single(Directory.GetFiles(exports.Path));
+    }
+
+    private static async Task<string> Read(ZipArchive archive, string name)
+    {
+        await using Stream stream = archive.GetEntry(name)!.Open();
+        using var reader = new StreamReader(stream);
+        return await reader.ReadToEndAsync();
+    }
+
+    private sealed class TestDirectory : IDisposable
+    {
+        public string Path { get; } = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(), $"relight-diagnostics-{Guid.NewGuid():N}");
+        public TestDirectory() => Directory.CreateDirectory(Path);
+        public void Dispose()
+        {
+            if (Directory.Exists(Path)) Directory.Delete(Path, recursive: true);
+        }
+    }
+}
