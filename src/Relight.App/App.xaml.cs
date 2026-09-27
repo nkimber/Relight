@@ -162,7 +162,8 @@ public partial class App : Application
                 }
             }
             _viewModel?.UpdateMonitoring(host.ConfigurationProblem,
-                host.Configuration?.FromLastGoodBackup == true, profiles, logging);
+                host.Configuration?.FromLastGoodBackup == true, profiles, logging,
+                host.Elapsed);
             bool configured = host.Configuration?.Configuration.Settings.StartAtSignIn == true;
             bool registered = startupStatus?.EnabledForThisExecutable == true;
             bool startupAvailable = host.Configuration?.AutomaticActionsAllowed == true &&

@@ -12,7 +12,8 @@ public sealed record HostedProfileStatus(
     Detection? Detection,
     RecoverySnapshot? Recovery,
     string? Problem,
-    bool ConfiguredEnabled = true);
+    bool ConfiguredEnabled = true,
+    RecoveryPolicy? Policy = null);
 
 public sealed record ProfileBatchResult(int Requested, int Completed,
     IReadOnlyList<string> Errors);
@@ -53,6 +54,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
 
     public StoredConfiguration? Configuration { get; private set; }
     public string? ConfigurationProblem { get; private set; }
+    public TimeSpan Elapsed => _clock.Elapsed;
 
     public static async Task<RecoveryApplicationHost> OpenAsync(
         string? dataDirectory = null, IMonotonicClock? clock = null,
@@ -200,6 +202,9 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
 
     public IReadOnlyList<HostedProfileStatus> GetProfiles()
     {
+        IReadOnlyDictionary<Guid, RecoveryPolicy> policies = Configuration?.Configuration.Profiles
+            .ToDictionary(profile => profile.Id, profile => profile.Policy) ??
+            new Dictionary<Guid, RecoveryPolicy>();
         (HostedProfileStatus Status, ProfileCoordinator? Coordinator)[] statuses;
         lock (_statusSync)
             statuses = _statuses.Values.Select(status =>
@@ -212,6 +217,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             if (last is null)
                 return status with
                 {
+                    Policy = policies.GetValueOrDefault(status.Id),
                     Detection = _scheduler.GetPassiveLast(status.Id) ?? status.Detection,
                     Recovery = coordinator?.Snapshot ?? status.Recovery,
                     AutomaticActionsAllowed = status.AutomaticActionsAllowed &&
@@ -220,6 +226,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 };
             return status with
             {
+                Policy = policies.GetValueOrDefault(status.Id),
                 Recovery = coordinator?.Snapshot ?? last.Value.Result?.Snapshot ?? status.Recovery,
                 AutomaticActionsAllowed = status.AutomaticActionsAllowed &&
                     !(coordinator?.StorageDegraded ?? last.Value.Result?.StorageDegraded ?? false),

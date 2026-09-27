@@ -92,6 +92,16 @@
                                                     </DockPanel>
                                                     <TextBlock Text="{Binding Detail}" Style="{StaticResource Muted}"
                                                                TextWrapping="Wrap" Margin="0,6,0,0" />
+                                                    <TextBlock Text="{Binding NextAction}" TextWrapping="Wrap"
+                                                               Margin="0,8,0,0" FontWeight="SemiBold" />
+                                                    <WrapPanel Margin="0,6,0,0">
+                                                        <TextBlock Text="{Binding Attempts}" Style="{StaticResource Muted}"
+                                                                   Margin="0,0,16,4" />
+                                                        <TextBlock Text="{Binding LastSeen}" Style="{StaticResource Muted}"
+                                                                   Margin="0,0,16,4" />
+                                                        <TextBlock Text="{Binding Instance}" Style="{StaticResource Muted}"
+                                                                   Margin="0,0,16,4" />
+                                                    </WrapPanel>
                                                     <WrapPanel Margin="0,12,0,0">
                                                         <Button Content="Start now" IsEnabled="{Binding CanStartNow}"
                                                                 Click="StartNowClick" Margin="0,0,10,8" />

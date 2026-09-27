@@ -11,14 +11,64 @@ namespace Relight.ViewModels;
 
 internal enum ShellPage { Applications, History, Settings }
 
-internal sealed record ApplicationStatusRow(Guid Id, string Name, string State,
-    string Detail, bool IsPaused, bool CanPauseResume, bool CanReset,
-    bool CanStartNow, bool ConfiguredEnabled, bool CanToggleEnabled,
-    bool CanRemove, bool CanEdit)
+internal sealed class ApplicationStatusRow(
+    Guid id, string name, string state, string detail,
+    bool isPaused, bool canPauseResume, bool canReset, bool canStartNow,
+    bool configuredEnabled, bool canToggleEnabled, bool canRemove, bool canEdit,
+    ProfileTimingPresentation timing) : INotifyPropertyChanged
 {
+    public Guid Id { get; } = id;
+    public string Name { get; private set; } = name;
+    public string State { get; private set; } = state;
+    public string Detail { get; private set; } = detail;
+    public bool IsPaused { get; private set; } = isPaused;
+    public bool CanPauseResume { get; private set; } = canPauseResume;
+    public bool CanReset { get; private set; } = canReset;
+    public bool CanStartNow { get; private set; } = canStartNow;
+    public bool ConfiguredEnabled { get; private set; } = configuredEnabled;
+    public bool CanToggleEnabled { get; private set; } = canToggleEnabled;
+    public bool CanRemove { get; private set; } = canRemove;
+    public bool CanEdit { get; private set; } = canEdit;
+    public string NextAction { get; private set; } = timing.NextAction;
+    public string LastSeen { get; private set; } = timing.LastSeen;
+    public string Attempts { get; private set; } = timing.Attempts;
+    public string Instance { get; private set; } = timing.Instance;
     public string PauseResumeLabel => IsPaused ? "Resume protection" : "Pause protection";
     public string EnableDisableLabel => ConfiguredEnabled ? "Disable protection" :
         "Enable protection";
+
+    public bool UpdateFrom(ApplicationStatusRow next)
+    {
+        if (Id != next.Id) throw new ArgumentException("Profile IDs do not match.", nameof(next));
+        bool changed = Name != next.Name || State != next.State || Detail != next.Detail ||
+            IsPaused != next.IsPaused || CanPauseResume != next.CanPauseResume ||
+            CanReset != next.CanReset || CanStartNow != next.CanStartNow ||
+            ConfiguredEnabled != next.ConfiguredEnabled ||
+            CanToggleEnabled != next.CanToggleEnabled || CanRemove != next.CanRemove ||
+            CanEdit != next.CanEdit || NextAction != next.NextAction ||
+            LastSeen != next.LastSeen || Attempts != next.Attempts ||
+            Instance != next.Instance;
+        if (!changed) return false;
+        Name = next.Name;
+        State = next.State;
+        Detail = next.Detail;
+        IsPaused = next.IsPaused;
+        CanPauseResume = next.CanPauseResume;
+        CanReset = next.CanReset;
+        CanStartNow = next.CanStartNow;
+        ConfiguredEnabled = next.ConfiguredEnabled;
+        CanToggleEnabled = next.CanToggleEnabled;
+        CanRemove = next.CanRemove;
+        CanEdit = next.CanEdit;
+        NextAction = next.NextAction;
+        LastSeen = next.LastSeen;
+        Attempts = next.Attempts;
+        Instance = next.Instance;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
+        return true;
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
 }
 
 internal sealed record HistoryProfileOption(string Label, Guid? Id);
@@ -166,14 +216,15 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Relight");
 
     public void UpdateMonitoring(string? configurationProblem, bool canRepairConfiguration,
-        IReadOnlyList<HostedProfileStatus> profiles, EventRecorderStatus? logging)
+        IReadOnlyList<HostedProfileStatus> profiles, EventRecorderStatus? logging,
+        TimeSpan elapsed)
     {
         if (_canRepairConfiguration != canRepairConfiguration)
         {
             _canRepairConfiguration = canRepairConfiguration;
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CanRepairConfiguration)));
         }
-        IReadOnlyList<ApplicationStatusRow> rows = profiles
+        ApplicationStatusRow[] rows = profiles
             .OrderBy(profile => profile.Name, StringComparer.CurrentCultureIgnoreCase)
             .Select(profile => new ApplicationStatusRow(profile.Id, profile.Name,
                 StatusText(profile), profile.Problem ?? DetailText(profile),
@@ -193,11 +244,20 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
                 configurationProblem is null &&
                     (profile.ConfiguredEnabled || profile.Problem is null),
                 configurationProblem is null,
-                configurationProblem is null))
+                configurationProblem is null,
+                ProfileTimingPresentation.FromProfile(profile, elapsed)))
             .ToArray();
-        RefreshHistoryProfiles(rows);
-        int active = profiles.Count(profile => profile.AutomaticActionsAllowed);
-        int attention = profiles.Count(profile => profile.Problem is not null);
+        bool structureChanged = !_applicationRows.Select(row => row.Id)
+            .SequenceEqual(rows.Select(row => row.Id));
+        if (structureChanged) _applicationRows = rows;
+        else
+            for (int i = 0; i < rows.Length; i++)
+                _applicationRows[i].UpdateFrom(rows[i]);
+        RefreshHistoryProfiles(_applicationRows);
+        TraySnapshotSummary tray = TraySnapshotSummary.FromProfiles(profiles,
+            configurationProblem is not null, logging?.Degraded == true);
+        int active = tray.Protected;
+        int attention = tray.Alerts;
         string banner = configurationProblem is not null
             ? $"Configuration needs attention: {configurationProblem}"
             : attention > 0
@@ -210,12 +270,9 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         string footer = profiles.Count == 0
             ? "Relight is in the tray · No applications are configured"
             : $"Relight is in the tray · {active} protected · {attention} need attention";
-        TraySnapshotSummary tray = TraySnapshotSummary.FromProfiles(profiles,
-            configurationProblem is not null, logging?.Degraded == true);
-        if (rows.SequenceEqual(_applicationRows) && banner == _monitoringBanner &&
+        if (!structureChanged && banner == _monitoringBanner &&
             footer == _footerStatus && tray.Tooltip == _trayStatus &&
             tray.IconState == _trayIconState) return;
-        _applicationRows = rows;
         _monitoringBanner = banner;
         _footerStatus = footer;
         _trayStatus = tray.Tooltip;

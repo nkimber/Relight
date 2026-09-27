@@ -19,6 +19,8 @@ For a new executable profile, the host validates its canonical path and current-
 
 `--shell-test` bypasses the host solely for the destructive process-level shell smoke check. Normal launches, including `--tray`, start monitoring. The smoke check uses this mode so its forced process interruption cannot affect a configured target.
 
+Dashboard rows display attempt accounting, an in-session verified-instance summary and monotonic countdowns for retry eligibility, appearance timeout and stability qualification. The wording leaves discovery/confirmation as a separate step and marks overdue observation as unverified. Rows update in place under the dispatcher so one-second countdown updates do not replace focused controls. Last-outage and last-success timestamps still need durable event-backed presentation.
+
 ## Windows integration
 
 - Use the framework's Windows Forms `NotifyIcon` inside the WPF application for tray integration. Its menu provides dashboard, add application, independent pause/resume all, history, current-user startup and exit actions. This avoids a third-party tray package for the initial shell. A snapshot-derived tooltip counts protected, observing, paused and alert conditions. Four generated icon variants prioritize attention, recovery, healthy monitoring and all-paused/disabled; the tooltip supplies words alongside icon color/shape. `NotifyIcon` supplies Explorer `TaskbarCreated` handling; actual Explorer restart and live icon transitions still need interactive verification.
