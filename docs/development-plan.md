@@ -41,7 +41,7 @@ Trigger this checkpoint when the first buildable WPF/tray shell runs successfull
 - Create the public repository, configure the remote and push the initial commit. Verify the remote contents and visibility, then record its URL here and in the README.
 - If authentication or a repository-name collision blocks creation, preserve the completed local shell and commit, record the specific blocker and request only the information needed to resolve it.
 
-**Status:** Shell built and verified; public repository created at [nkimber/Relight](https://github.com/nkimber/Relight). Initial source push and remote verification in progress.
+**Status:** Complete for the initial shell checkpoint. Source and documentation are pushed to the public [nkimber/Relight](https://github.com/nkimber/Relight) repository on `main`; remote visibility and the pushed commit were verified. This checkpoint does not mark the full M5 milestone complete. See [shell verification evidence](shell-checkpoint.md).
 
 ## M0 — Validate the target and settle the foundation
 

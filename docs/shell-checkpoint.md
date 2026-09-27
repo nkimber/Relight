@@ -4,6 +4,8 @@
 **Scope:** First runnable WPF/tray shell and initial public repository.  
 **Product stage:** Development preview; no monitoring or automatic recovery.
 
+**Repository:** [nkimber/Relight](https://github.com/nkimber/Relight), public, default branch `main`. Initial source commit: `7c31f22`. Local and remote commit identities matched after push. The [Windows build workflow](https://github.com/nkimber/Relight/actions/workflows/build.yml) provides current CI results.
+
 The user requested the shell and GitHub checkpoint before continuing the complete engine-first sequence. This is a bounded initial slice of M1/M5. M0 target validation and the remaining milestone criteria are not implicitly complete.
 
 ## Delivered
