@@ -4,6 +4,8 @@ An attempted 24-hour isolated soak on 28 September 2026 stopped after about eigh
 
 After that change, two simultaneous isolated tray previews remained alive with closed dashboards. A three-minute two-profile soak completed in 190.3 seconds while another preview launched and the full 220-test suite ran; its report is in ignored `artifacts/soak/20260928-090455-3766be82`. The normal-shell single-instance smoke script also passed. This verifies preview isolation on this Windows 11 x64 session, not a 24-hour endurance result.
 
+A Windows process regression test now starts two different preview data directories and asserts that both tray processes remain alive with no dashboard. It guards the singleton collision that invalidated the first long run. It does not substitute for the 24-hour acceptance result.
+
 A replacement 24-hour run started at 2026-09-28 09:09:22 UTC in the isolated worktree, with live progress in ignored `artifacts/soak/20260928-090922-03931c08`. At launch it was running with two disposable profiles and a closed dashboard. Its completion and acceptance remain pending; a progress file by itself is not proof the runner and Relight process are still alive.
 
 This is a partial M9 reliability run with disposable executables. It does not close or restart ChatGPT and does not establish the actual-target pilot or the complete 24-hour release gate.

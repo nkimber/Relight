@@ -11,6 +11,50 @@ public sealed class RecoveryWpfPreviewProcessTests
 {
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Distinct_preview_directories_keep_separate_closed_tray_instances()
+    {
+        string root = Path.Combine(Path.GetTempPath(),
+            $"relight-preview-isolation-{Guid.NewGuid():N}");
+        string firstDirectory = Path.Combine(root, "first");
+        string secondDirectory = Path.Combine(root, "second");
+        Directory.CreateDirectory(firstDirectory);
+        Directory.CreateDirectory(secondDirectory);
+        string executable = FindBuiltExecutable("Relight.App", "Relight.exe");
+        Process? first = null, second = null;
+        try
+        {
+            first = StartPreview(executable, firstDirectory);
+            await WaitUntilAsync(() => File.Exists(Path.Combine(firstDirectory,
+                "configuration.json")), TimeSpan.FromSeconds(10));
+            second = StartPreview(executable, secondDirectory);
+            await WaitUntilAsync(() => File.Exists(Path.Combine(secondDirectory,
+                "configuration.json")), TimeSpan.FromSeconds(10));
+            await Task.Delay(500);
+            first.Refresh();
+            second.Refresh();
+            Assert.False(first.HasExited);
+            Assert.False(second.HasExited);
+            Assert.Equal(nint.Zero, first.MainWindowHandle);
+            Assert.Equal(nint.Zero, second.MainWindowHandle);
+        }
+        finally
+        {
+            foreach (Process? preview in new[] { first, second })
+            {
+                if (preview is null) continue;
+                if (!preview.HasExited)
+                {
+                    preview.Kill(entireProcessTree: false);
+                    await preview.WaitForExitAsync();
+                }
+                preview.Dispose();
+            }
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Preview_crash_leaves_disposable_target_running_and_charged_budget_intact()
     {
         string directory = Path.Combine(Path.GetTempPath(),
