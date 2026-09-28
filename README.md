@@ -67,6 +67,8 @@ pwsh -File scripts/Test-Shell.ps1 -Executable artifacts/preview/Relight.exe
 
 To create a versioned portable preview ZIP with dependency notices, a manifest and SHA-256 checksum from a clean committed checkout, run `pwsh -File scripts/Build-PortablePreview.ps1`. It writes a new directory under ignored `artifacts/releases` and smoke-checks the published executable before archiving it. See [the release checkpoint](docs/release-checkpoint.md) for verified scope and remaining release gates.
 
+For a controlled disposable-target soak, build the Release solution and run `dotnet run --project tools/Relight.SoakProbe -c Release -- 1440`. This runs two isolated profiles for 24 hours and leaves progress and result JSON under ignored `artifacts/soak`; see [the soak checkpoint](docs/soak-checkpoint.md). It does not exercise ChatGPT or open/close the dashboard.
+
 This is a development preview, not the production release or overnight pilot described in the PRD.
 
 ## Project layout

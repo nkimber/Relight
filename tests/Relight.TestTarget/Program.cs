@@ -9,6 +9,7 @@ internal sealed record TargetOptions(
     bool Helper,
     bool Handoff,
     bool SpawnHelper,
+    bool Hidden,
     bool BlockClose,
     int? ExitAfterMs,
     int HelperMs,
@@ -17,7 +18,8 @@ internal sealed record TargetOptions(
     public static TargetOptions Parse(string[] args)
     {
         string label = "test";
-        bool helper = false, handoff = false, spawnHelper = false, blockClose = false;
+        bool helper = false, handoff = false, spawnHelper = false, hidden = false,
+            blockClose = false;
         int? exitAfterMs = null;
         int helperMs = 30_000;
         string? readyFile = null;
@@ -32,6 +34,7 @@ internal sealed record TargetOptions(
                 case "--helper": helper = true; break;
                 case "--handoff": handoff = true; break;
                 case "--spawn-helper": spawnHelper = true; break;
+                case "--hidden": hidden = true; break;
                 case "--block-close": blockClose = true; break;
                 case "--exit-after-ms": exitAfterMs = ParseDuration(Next()); break;
                 case "--helper-ms": helperMs = ParseDuration(Next()); break;
@@ -44,7 +47,7 @@ internal sealed record TargetOptions(
             throw new ArgumentException("Label must be 1–60 characters.");
         if (helper && (handoff || spawnHelper))
             throw new ArgumentException("A helper cannot hand off or spawn another helper.");
-        return new(label, helper, handoff, spawnHelper, blockClose,
+        return new(label, helper, handoff, spawnHelper, hidden, blockClose,
             exitAfterMs, helperMs, readyFile);
     }
 
@@ -85,6 +88,7 @@ internal static class Program
         var start = new ProcessStartInfo(executable) { UseShellExecute = false };
         start.ArgumentList.Add("--label");
         start.ArgumentList.Add(options.Label);
+        if (options.Hidden) start.ArgumentList.Add("--hidden");
         if (helper)
         {
             start.ArgumentList.Add("--helper");
@@ -99,6 +103,8 @@ internal static class Program
         else
         {
             if (options.SpawnHelper) start.ArgumentList.Add("--spawn-helper");
+            start.ArgumentList.Add("--helper-ms");
+            start.ArgumentList.Add(options.HelperMs.ToString());
             if (options.BlockClose) start.ArgumentList.Add("--block-close");
             if (options.ExitAfterMs is { } duration)
             {
@@ -125,10 +131,10 @@ internal sealed class TargetForm : Form
     public TargetForm(TargetOptions options)
     {
         Text = options.Helper ? $"Relight helper: {options.Label}" : $"Relight target: {options.Label}";
-        ShowInTaskbar = !options.Helper;
-        Width = options.Helper ? 1 : 460;
-        Height = options.Helper ? 1 : 180;
-        if (options.Helper) Opacity = 0;
+        ShowInTaskbar = !options.Helper && !options.Hidden;
+        Width = options.Helper || options.Hidden ? 1 : 460;
+        Height = options.Helper || options.Hidden ? 1 : 180;
+        if (options.Helper || options.Hidden) Opacity = 0;
 
         var label = new Label
         {

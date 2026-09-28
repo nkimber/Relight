@@ -12,5 +12,6 @@
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/Relight.PerformanceProbe/Relight.PerformanceProbe.csproj" />
+    <Project Path="tools/Relight.SoakProbe/Relight.SoakProbe.csproj" />
   </Folder>
 </Solution>
