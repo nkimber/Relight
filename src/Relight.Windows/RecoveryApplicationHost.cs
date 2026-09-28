@@ -39,6 +39,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     private readonly BoundedLaunchGate _launchGate = new();
     private readonly RecoveryScheduler _scheduler;
     private readonly IMonotonicClock _clock;
+    private readonly Func<ExecutableTarget, IProcessLauncher> _executableLauncherFactory;
     private readonly Dictionary<Guid, HostedProfileStatus> _statuses = new();
     private readonly Dictionary<Guid, ProfileCoordinator> _coordinators = new();
     private readonly Dictionary<Task, Guid> _activeCommands = new();
@@ -49,7 +50,8 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     private bool _disposed;
 
     private RecoveryApplicationHost(string dataDirectory, IMonotonicClock clock,
-        bool useSharedSessionState, bool allowLegacyMigration)
+        bool useSharedSessionState, bool allowLegacyMigration,
+        Func<ExecutableTarget, IProcessLauncher>? executableLauncherFactory)
     {
         _configurationStore = new(dataDirectory);
         _stateStore = new(dataDirectory);
@@ -62,6 +64,8 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         }
         _activeStateStore = (IRecoveryStateStore?)_sessionStateStore ?? _stateStore;
         _clock = clock;
+        _executableLauncherFactory = executableLauncherFactory ??
+            (target => new ExecutableLauncher(target));
         _scheduler = new(clock);
     }
 
@@ -82,9 +86,11 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     internal static Task<RecoveryApplicationHost> OpenSharedSessionAsync(
         string? dataDirectory = null, IMonotonicClock? clock = null,
         bool allowLegacyMigration = false,
-        CancellationToken cancellationToken = default) =>
+        CancellationToken cancellationToken = default,
+        Func<ExecutableTarget, IProcessLauncher>? executableLauncherFactory = null) =>
         OpenCoreAsync(dataDirectory, clock, cancellationToken,
-            useSharedSessionState: true, allowLegacyMigration);
+            useSharedSessionState: true, allowLegacyMigration,
+            executableLauncherFactory);
 
     /// <summary>
     /// Opt-in WPF test entry point. Never migrates legacy state implicitly.
@@ -110,11 +116,12 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     private static async Task<RecoveryApplicationHost> OpenCoreAsync(
         string? dataDirectory, IMonotonicClock? clock,
         CancellationToken cancellationToken, bool useSharedSessionState,
-        bool allowLegacyMigration)
+        bool allowLegacyMigration,
+        Func<ExecutableTarget, IProcessLauncher>? executableLauncherFactory = null)
     {
         var host = new RecoveryApplicationHost(dataDirectory ?? DefaultDataDirectory,
             clock ?? new StopwatchClock(), useSharedSessionState,
-            allowLegacyMigration);
+            allowLegacyMigration, executableLauncherFactory);
         try
         {
             await host.InitializeAsync(dataDirectory ?? DefaultDataDirectory, cancellationToken)
@@ -275,7 +282,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             {
                 ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(profile.Id,
                     profile.Policy, StateStoreForExisting(profile), GuardDiscovery(discovery),
-                    GuardLauncher(new ExecutableLauncher(target)), _clock, _launchGate,
+                    GuardLauncher(_executableLauncherFactory(target)), _clock, _launchGate,
                     _notificationTap, GuardStopper(new ExecutableStopper(target)), _sharedBudgetStore);
                 _scheduler.Add(profile.Id, coordinator, profile.Policy);
                 lock (_statusSync)
@@ -539,7 +546,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         return await RegisterNewProfileAsync(name,
             new(TargetKind.Executable, target.CanonicalPath, target.Arguments.ToList(),
                 target.WorkingDirectory), discovery,
-            new ExecutableLauncher(target), new ExecutableStopper(target), detected,
+            _executableLauncherFactory(target), new ExecutableStopper(target), detected,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -1099,7 +1106,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 throw new FileNotFoundException("The target executable is missing.",
                     target.CanonicalPath);
             discovery = new ExecutableDiscovery(target);
-            launcher = new ExecutableLauncher(target);
+            launcher = _executableLauncherFactory(target);
             stopper = new ExecutableStopper(target);
         }
         else if (profile.Target.Kind == TargetKind.PackagedApplication &&
