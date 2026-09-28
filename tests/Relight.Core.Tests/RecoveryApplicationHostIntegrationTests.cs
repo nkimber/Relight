@@ -1047,6 +1047,47 @@ public sealed class RecoveryApplicationHostIntegrationTests
 
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Inaccessible_shared_budget_lease_prevents_due_launch()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-budget-lease-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        string ready = Path.Combine(root, "unexpected.ready");
+        try
+        {
+            var clock = new FakeClock();
+            await using var host = await RecoveryApplicationHost.OpenSharedSessionAsync(root, clock);
+            Guid id = await host.RegisterExecutableAsync("Disposable target", TestExecutable(),
+                ["--ready-file", ready, "--exit-after-ms", "30000"], Path.GetTempPath(),
+                RecoveryPolicy.Default with { StartAutomaticallyWhenInitiallyAbsent = true });
+            foreach (int second in new[] { 0, 2 })
+            {
+                clock.Elapsed = TimeSpan.FromSeconds(second);
+                await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+
+            string leasePath = Path.Combine(root, "Budgets", $"{id:N}.json.lock");
+            using (var blocked = new FileStream(leasePath, FileMode.OpenOrCreate,
+                       FileAccess.ReadWrite, FileShare.None))
+            {
+                clock.Elapsed = TimeSpan.FromSeconds(32);
+                await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(8));
+            }
+
+            Assert.False(File.Exists(ready));
+            Assert.Equal(0, new SharedRecoveryBudgetStore(root).Load(id)
+                .ReservedAutomaticAttempts);
+            HostedProfileStatus degraded = Assert.Single(host.GetProfiles());
+            Assert.False(degraded.AutomaticActionsAllowed);
+            Assert.NotNull(degraded.Problem);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Stale_configuration_does_not_publish_new_profile_or_refund_its_ledger()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-register-stale-{Guid.NewGuid():N}");
