@@ -9,6 +9,99 @@ public sealed class RecoverySessionStateStoreTests
     private const string SecondKey = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
 
     [Fact]
+    public void Explicit_checkpoint_repair_preserves_corrupt_bytes_and_shared_lockout()
+    {
+        using var directory = new TestDirectory();
+        Guid profile = Guid.NewGuid();
+        Guid episode = Guid.NewGuid();
+        Guid operation = Guid.NewGuid();
+        var budgets = new SharedRecoveryBudgetStore(directory.Path);
+        SharedRecoveryBudget created = budgets.Create(profile);
+        SharedRecoveryBudget reserved = budgets.ReserveAutomatic(profile,
+            created.Revision, 1, episode, operation);
+        SharedRecoveryBudget resolved = budgets.ResolveAutomatic(profile,
+            reserved.Revision, operation);
+        SharedRecoveryBudget locked = budgets.EnterLockout(profile,
+            resolved.Revision, episode);
+        var session = new RecoverySessionStateStore(directory.Path, FirstKey, budgets);
+        StoredRecoveryState initial = session.InitializeForNewSignIn(profile, true);
+        session.Save(profile, initial.Revision, initial.Checkpoint with { Paused = true });
+        string path = Path.Combine(directory.Path, "Sessions", FirstKey, "State",
+            $"{profile:N}.json");
+        byte[] damaged = "untrusted checkpoint bytes"u8.ToArray();
+        byte[] damagedBackup = "untrusted backup bytes"u8.ToArray();
+        File.WriteAllBytes(path, damaged);
+        File.WriteAllBytes(path + ".bak", damagedBackup);
+
+        StoredRecoveryState repaired = session.RepairUnavailableCheckpointExplicitly(
+            profile, enabled: true);
+
+        Assert.True(repaired.Checkpoint.Paused);
+        Assert.True(repaired.Checkpoint.LockedOut);
+        Assert.Equal(1, repaired.Checkpoint.ReservedAutomaticAttempts);
+        Assert.Equal(episode, repaired.Checkpoint.EpisodeId);
+        Assert.Equal(locked.Revision, repaired.Checkpoint.SharedBudgetRevision);
+        Assert.Equal(locked, budgets.Load(profile));
+        string evidenceRoot = Path.Combine(directory.Path, "Sessions", FirstKey,
+            "State", "RepairEvidence", profile.ToString("N"));
+        string saved = Assert.Single(Directory.GetFiles(evidenceRoot,
+            "state.json", SearchOption.AllDirectories));
+        Assert.Equal(damaged, File.ReadAllBytes(saved));
+        string savedBackup = Assert.Single(Directory.GetFiles(evidenceRoot,
+            "state.json.bak", SearchOption.AllDirectories));
+        Assert.Equal(damagedBackup, File.ReadAllBytes(savedBackup));
+        Assert.Equal(repaired, session.Load(profile));
+    }
+
+    [Fact]
+    public void Explicit_checkpoint_repair_recreates_missing_bytes_but_requires_prior_session_marker()
+    {
+        using var directory = new TestDirectory();
+        Guid profile = Guid.NewGuid();
+        var budgets = new SharedRecoveryBudgetStore(directory.Path);
+        budgets.Create(profile);
+        var session = new RecoverySessionStateStore(directory.Path, FirstKey, budgets);
+        Assert.Throws<RecoveryStateUnavailableException>(() =>
+            session.RepairUnavailableCheckpointExplicitly(profile, true));
+        session.InitializeForNewSignIn(profile, true);
+        string path = Path.Combine(directory.Path, "Sessions", FirstKey, "State",
+            $"{profile:N}.json");
+        File.Delete(path);
+
+        StoredRecoveryState repaired = session.RepairUnavailableCheckpointExplicitly(
+            profile, true);
+
+        Assert.True(repaired.Checkpoint.Paused);
+        Assert.Equal(RecoveryState.WaitingForFirstStart, repaired.Checkpoint.LastState);
+        Assert.Equal(0, repaired.Checkpoint.ReservedAutomaticAttempts);
+        Assert.Equal(repaired, session.Load(profile));
+    }
+
+    [Fact]
+    public void Explicit_checkpoint_repair_refuses_pending_or_trusted_state()
+    {
+        using var directory = new TestDirectory();
+        Guid profile = Guid.NewGuid();
+        var budgets = new SharedRecoveryBudgetStore(directory.Path);
+        SharedRecoveryBudget created = budgets.Create(profile);
+        var session = new RecoverySessionStateStore(directory.Path, FirstKey, budgets);
+        StoredRecoveryState initial = session.InitializeForNewSignIn(profile, true);
+        Assert.Throws<InvalidOperationException>(() =>
+            session.RepairUnavailableCheckpointExplicitly(profile, true));
+        Assert.Equal(initial, session.Load(profile));
+
+        SharedRecoveryBudget reserved = budgets.ReserveAutomatic(profile,
+            created.Revision, 1, Guid.NewGuid(), Guid.NewGuid());
+        string path = Path.Combine(directory.Path, "Sessions", FirstKey, "State",
+            $"{profile:N}.json");
+        File.WriteAllText(path, "damaged");
+        Assert.Throws<RecoveryStateUnavailableException>(() =>
+            session.RepairUnavailableCheckpointExplicitly(profile, true));
+        Assert.Equal("damaged", File.ReadAllText(path));
+        Assert.Equal(reserved, budgets.Load(profile));
+    }
+
+    [Fact]
     public void Two_sign_ins_keep_live_pause_state_separate_but_share_budget()
     {
         using var directory = new TestDirectory();

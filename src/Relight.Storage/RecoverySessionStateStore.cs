@@ -64,6 +64,49 @@ public sealed class RecoverySessionStateStore : IRecoveryStateStore
         return created;
     }
 
+    /// <summary>
+    /// Explicitly repairs only this sign-in's untrusted checkpoint. The shared
+    /// budget remains authoritative, including lockout and charged attempts.
+    /// The replacement starts paused, so a later user action is required to
+    /// resume monitoring policy after discovery.
+    /// </summary>
+    public StoredRecoveryState RepairUnavailableCheckpointExplicitly(Guid profileId,
+        bool enabled)
+    {
+        SharedRecoveryBudget budget = _budgets.Load(profileId);
+        if (budget.PendingAutomaticOperationId is not null ||
+            budget.PendingExplicitOperationId is not null)
+            throw new RecoveryStateUnavailableException(
+                "An unresolved launch prevents checkpoint repair.");
+        if (!File.Exists(MarkerPath(profileId)))
+            throw new RecoveryStateUnavailableException(
+                "This sign-in has no session ownership evidence to repair.");
+        EnsureMarker(profileId);
+        try
+        {
+            _session.Load(profileId);
+            throw new InvalidOperationException(
+                "The session checkpoint is readable; reconcile its budget instead of replacing it.");
+        }
+        catch (RecoveryStateUnavailableException)
+        {
+            // Missing or corrupt session bytes require this explicit repair.
+        }
+        RecoveryState state = !enabled ? RecoveryState.Disabled :
+            budget.LockedOut ? RecoveryState.AwaitingIntervention :
+            RecoveryState.WaitingForFirstStart;
+        var replacement = new RecoveryCheckpoint(enabled, true, false,
+            budget.LockedOut, budget.ReservedAutomaticAttempts, budget.EpisodeId,
+            state, null, SharedBudgetRevision: budget.Revision);
+        StoredRecoveryState repaired = _session.ReplaceUntrustedAfterExplicitRepair(
+            profileId, replacement);
+        if (_budgets.Load(profileId) != budget)
+            throw new StaleRecoveryRevisionException(
+                "The shared budget changed during checkpoint repair; automatic actions remain suspended.");
+        _knownBudgetRevisions[profileId] = budget.Revision;
+        return repaired;
+    }
+
     public StoredRecoveryState Load(Guid profileId)
     {
         SharedRecoveryBudget budget = _budgets.Load(profileId);

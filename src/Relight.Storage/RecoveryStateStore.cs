@@ -88,6 +88,54 @@ public sealed class RecoveryStateStore : IRecoveryStateStore
         return next;
     }
 
+    internal StoredRecoveryState ReplaceUntrustedAfterExplicitRepair(Guid profileId,
+        RecoveryCheckpoint checkpoint)
+    {
+        CheckId(profileId);
+        using FileStream guard = Lock(profileId);
+        RejectMigratedProfile(profileId);
+        string path = PathFor(profileId);
+        try
+        {
+            Read(path, profileId);
+            throw new InvalidOperationException(
+                "Trusted recovery state must be updated through its revision, not repaired.");
+        }
+        catch (RecoveryStateUnavailableException)
+        {
+            // The caller explicitly requested repair. Preserve every existing
+            // byte before replacing the unreadable checkpoint.
+        }
+        string evidence = Path.Combine(_directory, "RepairEvidence", profileId.ToString("N"),
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(evidence);
+        CopyEvidence(path, Path.Combine(evidence, "state.json"));
+        CopyEvidence(path + ".bak", Path.Combine(evidence, "state.json.bak"));
+        var replacement = new StoredRecoveryState(profileId, 1, checkpoint);
+        Write(path, replacement, initialCreate: !File.Exists(path));
+        return replacement;
+    }
+
+    private static void CopyEvidence(string source, string destination)
+    {
+        if (!File.Exists(source)) return;
+        try
+        {
+            using var input = new FileStream(source, FileMode.Open, FileAccess.Read,
+                FileShare.Read);
+            using var output = new FileStream(destination, FileMode.CreateNew,
+                FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough);
+            input.CopyTo(output);
+            output.Flush(flushToDisk: true);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            throw new RecoveryStateUnavailableException(
+                "Untrusted recovery evidence could not be preserved; repair remains suspended.",
+                error);
+        }
+    }
+
     public bool HasStateEvidence(Guid profileId)
     {
         CheckId(profileId);
