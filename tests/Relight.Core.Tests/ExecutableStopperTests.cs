@@ -29,8 +29,7 @@ public sealed class ExecutableStopperTests
                 .TryGracefulCloseAsync(selected.Identity!, TimeSpan.FromSeconds(3));
 
             Assert.Equal(TargetStopOutcome.Stopped, result.Outcome);
-            Assert.Equal(DetectionKind.Absent, (await new ExecutableDiscovery(target)
-                .DetectAsync(CancellationToken.None)).Kind);
+            await WaitUntilAbsent(target);
         }
         finally
         {
@@ -114,6 +113,19 @@ public sealed class ExecutableStopperTests
                 try { return await File.ReadAllTextAsync(path, timeout.Token); }
                 catch (IOException) { }
             }
+            await Task.Delay(50, timeout.Token);
+        }
+    }
+
+    private static async Task WaitUntilAbsent(ExecutableTarget target)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        var discovery = new ExecutableDiscovery(target);
+        while (true)
+        {
+            timeout.Token.ThrowIfCancellationRequested();
+            Detection found = await discovery.DetectAsync(timeout.Token);
+            if (found.Kind == DetectionKind.Absent) return;
             await Task.Delay(50, timeout.Token);
         }
     }

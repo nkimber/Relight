@@ -507,7 +507,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
             $"and {summary.Lockouts} lockout(s). " +
             $"Monitoring gaps: {summary.MonitoringGaps} reported, " +
             $"{summary.MonitoringRestorations} restoration(s) observed. " +
-            $"Recorded UTC span between complete monitoring gap/restoration pairs: " +
+            $"Selected-period UTC span within complete monitoring gap/restoration pairs: " +
             $"{summary.PairedMonitoringGapTimestampSpan:c}. Clock changes may affect this span. " +
             $"{summary.UnpairedMonitoringTransitions} incomplete or ambiguous transition(s) " +
             "have unknown duration. Monitoring gaps are never counted as confirmed application downtime.";

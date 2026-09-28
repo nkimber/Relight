@@ -1110,12 +1110,16 @@ public sealed class RecoveryApplicationHostIntegrationTests
     private static async Task<string> WaitForFile(string path)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        while (!timeout.Token.IsCancellationRequested)
+        while (true)
         {
-            if (File.Exists(path)) return await File.ReadAllTextAsync(path, timeout.Token);
+            timeout.Token.ThrowIfCancellationRequested();
+            if (File.Exists(path))
+            {
+                try { return await File.ReadAllTextAsync(path, timeout.Token); }
+                catch (IOException) { /* The target is still writing its readiness record. */ }
+            }
             await Task.Delay(50, timeout.Token);
         }
-        throw new TimeoutException("Disposable target did not report readiness.");
     }
 
     private sealed class FakeClock : IMonotonicClock

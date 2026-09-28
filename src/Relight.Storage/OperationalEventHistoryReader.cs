@@ -121,17 +121,19 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
                 case OperationalEventKind.LockoutEntered: lockouts++; break;
                 case OperationalEventKind.MonitoringGap:
                     gaps++;
-                    monitoringTransitions.Add((entry.ProfileId, entry.OccurredUtc,
-                        entry.EventId, entry.Kind));
                     break;
                 case OperationalEventKind.MonitoringRestored:
                     restorations++;
-                    monitoringTransitions.Add((entry.ProfileId, entry.OccurredUtc,
-                        entry.EventId, entry.Kind));
                     break;
             }
         }, entry =>
         {
+            if ((entry.Kind is OperationalEventKind.MonitoringGap or
+                    OperationalEventKind.MonitoringRestored) &&
+                (query.ProfileId is null || entry.ProfileId == query.ProfileId) &&
+                (query.EpisodeId is null || entry.EpisodeId == query.EpisodeId))
+                monitoringTransitions.Add((entry.ProfileId, entry.OccurredUtc,
+                    entry.EventId, entry.Kind));
             if (entry.ProfileId is not { } id) return;
             string? name = string.IsNullOrWhiteSpace(entry.ProfileName)
                 ? null : entry.ProfileName;
@@ -146,7 +148,8 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
             .ThenBy(entry => entry.EventId)
             .ToArray();
         (TimeSpan pairedTimestampSpan, int unpairedTransitions) =
-            SumPairedMonitoringTimestampSpans(monitoringTransitions);
+            SumPairedMonitoringTimestampSpans(monitoringTransitions,
+                query.FromUtc, query.ThroughUtc);
         return new(new(rows, summary.Matched, summary.Malformed),
             new(disappearances, reservations, dispatches, automaticRecoveries,
                 otherStableStarts, lockouts, gaps, restorations,
@@ -157,10 +160,12 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
 
     private static (TimeSpan PairedTimestampSpan, int UnpairedTransitions)
         SumPairedMonitoringTimestampSpans(List<(Guid? ProfileId, DateTimeOffset OccurredUtc,
-            Guid EventId, OperationalEventKind Kind)> transitions)
+            Guid EventId, OperationalEventKind Kind)> transitions,
+            DateTimeOffset? fromUtc, DateTimeOffset? throughUtc)
     {
         // File rotation and concurrent writers do not guarantee scan order.
-        // Only complete, non-overlapping pairs in the selected period contribute.
+        // Pair retained events before clipping complete intervals to the selected
+        // period. A missing or ambiguous endpoint never earns a duration.
         var open = new Dictionary<Guid, (DateTimeOffset StartedUtc, bool Ambiguous)>();
         TimeSpan known = TimeSpan.Zero;
         int unpaired = 0;
@@ -169,7 +174,7 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
         {
             if (entry.ProfileId is not { } profileId)
             {
-                unpaired++;
+                if (InRange(entry.OccurredUtc, fromUtc, throughUtc)) unpaired++;
                 continue;
             }
             if (entry.Kind == OperationalEventKind.MonitoringGap)
@@ -178,20 +183,38 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
                 {
                     var previous = open[profileId];
                     open[profileId] = (previous.StartedUtc, true);
-                    unpaired++;
+                    if (InRange(entry.OccurredUtc, fromUtc, throughUtc)) unpaired++;
                 }
                 else open.Add(profileId, (entry.OccurredUtc, false));
             }
             else if (open.Remove(profileId, out var gap))
             {
                 if (!gap.Ambiguous && entry.OccurredUtc >= gap.StartedUtc)
-                    known += entry.OccurredUtc - gap.StartedUtc;
-                else unpaired++;
+                {
+                    DateTimeOffset start = fromUtc is { } from && from > gap.StartedUtc
+                        ? from : gap.StartedUtc;
+                    DateTimeOffset end = throughUtc is { } through &&
+                        through < entry.OccurredUtc ? through : entry.OccurredUtc;
+                    if (end > start) known += end - start;
+                }
+                else if (Overlaps(gap.StartedUtc, entry.OccurredUtc,
+                             fromUtc, throughUtc)) unpaired++;
             }
-            else unpaired++;
+            else if (InRange(entry.OccurredUtc, fromUtc, throughUtc)) unpaired++;
         }
-        return (known, unpaired + open.Count);
+        return (known, unpaired + open.Values.Count(gap =>
+            throughUtc is null || gap.StartedUtc <= throughUtc));
     }
+
+    private static bool InRange(DateTimeOffset timestamp, DateTimeOffset? fromUtc,
+        DateTimeOffset? throughUtc) =>
+        (fromUtc is null || timestamp >= fromUtc) &&
+        (throughUtc is null || timestamp <= throughUtc);
+
+    private static bool Overlaps(DateTimeOffset start, DateTimeOffset end,
+        DateTimeOffset? fromUtc, DateTimeOffset? throughUtc) =>
+        (throughUtc is null || start < throughUtc) &&
+        (fromUtc is null || end > fromUtc);
 
     public async Task<EventHistoryExportResult> ExportAsync(EventHistoryQuery query,
         string destination, EventHistoryExportFormat format,

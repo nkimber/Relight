@@ -251,9 +251,58 @@ public sealed class OperationalEventJournalTests
         EventHistoryOverview firstOnly = await reader.ReadOverviewAsync(new(
             ProfileId: first, FromUtc: origin.AddMinutes(3),
             ThroughUtc: origin.AddMinutes(21)));
-        Assert.Equal(TimeSpan.Zero,
+        Assert.Equal(TimeSpan.FromMinutes(9),
             firstOnly.Summary.PairedMonitoringGapTimestampSpan);
-        Assert.Equal(2, firstOnly.Summary.UnpairedMonitoringTransitions);
+        Assert.Equal(1, firstOnly.Summary.UnpairedMonitoringTransitions);
+    }
+
+    [Fact]
+    public async Task Overnight_summary_clips_complete_gap_pairs_across_both_period_edges()
+    {
+        using var directory = new TestDirectory();
+        using var journal = new OperationalEventJournal(directory.Path,
+            GlobalConfiguration.Default);
+        Guid profile = Guid.NewGuid();
+        DateTimeOffset origin = new(2026, 9, 27, 0, 0, 0, TimeSpan.Zero);
+        await journal.AppendAsync(NewEvent() with { ProfileId = profile,
+            Kind = OperationalEventKind.MonitoringRestored,
+            OccurredUtc = origin.AddMinutes(20) });
+        await journal.AppendAsync(NewEvent() with { ProfileId = profile,
+            Kind = OperationalEventKind.MonitoringGap,
+            OccurredUtc = origin.AddMinutes(-5) });
+        await journal.AppendAsync(NewEvent() with { ProfileId = profile,
+            Kind = OperationalEventKind.MonitoringRestored,
+            OccurredUtc = origin.AddMinutes(-10) });
+
+        EventHistoryOverview selected = await new OperationalEventHistoryReader(directory.Path)
+            .ReadOverviewAsync(new(ProfileId: profile, FromUtc: origin,
+                ThroughUtc: origin.AddMinutes(10)));
+
+        Assert.Equal(TimeSpan.FromMinutes(10),
+            selected.Summary.PairedMonitoringGapTimestampSpan);
+        Assert.Equal(0, selected.Summary.MonitoringGaps);
+        Assert.Equal(0, selected.Summary.MonitoringRestorations);
+        Assert.Equal(0, selected.Summary.UnpairedMonitoringTransitions);
+    }
+
+    [Fact]
+    public async Task Unclosed_gap_before_period_has_unknown_duration()
+    {
+        using var directory = new TestDirectory();
+        using var journal = new OperationalEventJournal(directory.Path,
+            GlobalConfiguration.Default);
+        Guid profile = Guid.NewGuid();
+        DateTimeOffset origin = new(2026, 9, 27, 0, 0, 0, TimeSpan.Zero);
+        await journal.AppendAsync(NewEvent() with { ProfileId = profile,
+            Kind = OperationalEventKind.MonitoringGap,
+            OccurredUtc = origin.AddMinutes(-5) });
+
+        EventHistoryOverview selected = await new OperationalEventHistoryReader(directory.Path)
+            .ReadOverviewAsync(new(ProfileId: profile, FromUtc: origin,
+                ThroughUtc: origin.AddMinutes(10)));
+
+        Assert.Equal(TimeSpan.Zero, selected.Summary.PairedMonitoringGapTimestampSpan);
+        Assert.Equal(1, selected.Summary.UnpairedMonitoringTransitions);
     }
 
     [Fact]
