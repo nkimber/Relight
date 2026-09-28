@@ -10,6 +10,7 @@ param(
     [switch]$ExerciseDisableRemove,
     [switch]$ExerciseExit,
     [switch]$ExerciseResetDuplicate,
+    [switch]$ExerciseNoRearm,
     [switch]$ExerciseStartNow,
     [switch]$ZeroAutomaticAttempts,
     [switch]$ExerciseHistoryNavigation,
@@ -117,7 +118,7 @@ if ($VerifyInitialStartConfirmation -and $AcceptInitialStart) {
     throw 'Choose either declining or accepting the initial-start warning for one run.'
 }
 if (($ExercisePauseResume -or $ExerciseDisableRemove -or $ExerciseExit -or
-    $ExerciseResetDuplicate -or $ExerciseHistoryNavigation) -and
+    $ExerciseResetDuplicate -or $ExerciseNoRearm -or $ExerciseHistoryNavigation) -and
     -not $AcceptInitialStart) {
     throw 'Lifecycle acceptance requires an automatically started disposable target.'
 }
@@ -148,6 +149,12 @@ if ($ExerciseHistoryNavigation -and ($ExercisePauseResume -or $ExerciseDisableRe
     $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
     throw 'History navigation acceptance uses one automatically started disposable profile.'
 }
+if ($ExerciseNoRearm -and ($ExercisePauseResume -or $ExerciseDisableRemove -or
+    $ExerciseExit -or $ExerciseResetDuplicate -or $ExerciseStartNow -or
+    $ExerciseHistoryNavigation -or $CancelPendingAction -or $ExplicitAction -or
+    $EditSavedExecutable -or $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
+    throw 'No-rearm acceptance uses only accepted initial start and one disposable profile.'
+}
 
 $executablePath = (Resolve-Path -LiteralPath $Executable).Path
 $targetPath = (Resolve-Path -LiteralPath $Target).Path
@@ -156,6 +163,7 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ('relight-setup-ui-' + [guid]::NewG
 $primary = $null
 $secondary = $null
 $targetPid = $null
+$external = $null
 try {
     $arguments = @('--shared-session-preview', $root, '--tray')
     $primary = Start-Process -FilePath $executablePath -ArgumentList $arguments -WindowStyle Hidden -PassThru
@@ -191,7 +199,7 @@ try {
         ([System.Windows.Automation.ControlType]::Edit)
     if ($null -eq $argumentsInput) { throw 'Launch arguments field is unavailable.' }
     $targetArguments = @('--label', $label, '--ready-file', $ready,
-        '--exit-after-ms', '180000')
+        '--exit-after-ms', $(if ($ExerciseNoRearm) { '100' } else { '180000' }))
     if (-not $ExplicitAction) { $targetArguments += '--hidden' }
     if ($ExplicitAction -like '*Force*') { $targetArguments += '--block-close' }
     $argumentsInput.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue(
@@ -246,6 +254,53 @@ try {
         Wait-For {
             Find-Control $dashboard 'Disposable UI target' ([System.Windows.Automation.ControlType]::Text)
         } 'new dashboard row' | Out-Null
+    }
+    if ($ExerciseNoRearm) {
+        Invoke-Button $dashboard 'Edit policy'
+        $editor = Wait-For {
+            Find-Control $dashboard 'Edit protection · Relight' `
+                ([System.Windows.Automation.ControlType]::Window)
+        } 'profile editor for disabled automatic rearm'
+        $attemptInput = Find-Control $editor 'Automatic attempt limit' `
+            ([System.Windows.Automation.ControlType]::Edit)
+        $observationInput = Find-Control $editor 'Stable observation period in minutes' `
+            ([System.Windows.Automation.ControlType]::Edit)
+        $appearanceInput = Find-Control $editor 'Launch appearance timeout in seconds' `
+            ([System.Windows.Automation.ControlType]::Edit)
+        $lockoutInput = Find-Control $editor 'Lockout discovery interval in seconds' `
+            ([System.Windows.Automation.ControlType]::Edit)
+        $rearmInput = Find-Control $editor 'Rearm after a stable external start' `
+            ([System.Windows.Automation.ControlType]::CheckBox)
+        if ($null -eq $attemptInput -or $null -eq $observationInput -or
+            $null -eq $appearanceInput -or $null -eq $lockoutInput -or
+            $null -eq $rearmInput) {
+            throw 'Profile editor does not expose the required recovery controls.'
+        }
+        $attemptInput.GetCurrentPattern(
+            [System.Windows.Automation.ValuePattern]::Pattern).SetValue('1')
+        $observationInput.GetCurrentPattern(
+            [System.Windows.Automation.ValuePattern]::Pattern).SetValue('1')
+        $appearanceInput.GetCurrentPattern(
+            [System.Windows.Automation.ValuePattern]::Pattern).SetValue('5')
+        $lockoutInput.GetCurrentPattern(
+            [System.Windows.Automation.ValuePattern]::Pattern).SetValue('5')
+        $rearmToggle = $rearmInput.GetCurrentPattern(
+            [System.Windows.Automation.TogglePattern]::Pattern)
+        if ($rearmToggle.Current.ToggleState -ne [System.Windows.Automation.ToggleState]::On) {
+            throw 'Automatic rearm did not default on.'
+        }
+        $rearmToggle.Toggle()
+        Invoke-Button $editor 'Save changes'
+        Wait-For {
+            $config = Read-Configuration (Join-Path $root 'configuration.json')
+            $saved = @($config.configuration.profiles | Where-Object id -eq $profile.id) |
+                Select-Object -First 1
+            $null -ne $saved -and $saved.policy.maximumAutomaticAttempts -eq 1 -and
+                $saved.policy.observationPeriod -eq '00:01:00' -and
+                $saved.policy.appearanceTimeout -eq '00:00:05' -and
+                $saved.policy.lockoutDiscoveryInterval -eq '00:00:05' -and
+                $saved.policy.rearmAfterStableExternalStart -eq $false
+        } 'saved disabled-rearm policy' 45 | Out-Null
     }
     if ($CancelPendingAction) {
         $budgetPath = Join-Path $root ('Budgets\' + $profile.id.Replace('-', '') + '.json')
@@ -313,6 +368,64 @@ try {
     }
     else {
         Write-Output 'PASS: Add dialog was accessible; detection found absence; saved profile kept automatic initial start off; dashboard showed the new profile.'
+    }
+
+    if ($ExerciseNoRearm) {
+        Wait-For {
+            $budget = Read-Configuration $budgetPath
+            $null -ne $budget -and $budget.budget.lockedOut -eq $true -and
+                $budget.budget.reservedAutomaticAttempts -eq 1
+        } 'one-attempt lockout' 35 | Out-Null
+        $externalReady = Join-Path $root 'external.ready'
+        $external = Start-Process -FilePath $targetPath -WindowStyle Hidden -PassThru `
+            -ArgumentList @('--label', $label, '--ready-file', $externalReady,
+                '--exit-after-ms', '180000', '--hidden')
+        Wait-For { Test-Path -LiteralPath $externalReady } 'external target start' 10 | Out-Null
+        Wait-For {
+            foreach ($log in @(Get-ChildItem -LiteralPath (Join-Path $root 'Logs') -File `
+                -Filter 'events-*.jsonl')) {
+                foreach ($line in @(Get-Content -LiteralPath $log.FullName)) {
+                    if ($line.Contains('"kind":"TargetObserved"') -and
+                        $line.Contains($profile.id) -and
+                        $line.Contains('"origin":"ExternalStart"')) { return $true }
+                }
+            }
+            return $false
+        } 'external target observation' 20 | Out-Null
+        Wait-For {
+            foreach ($log in @(Get-ChildItem -LiteralPath (Join-Path $root 'Logs') -File `
+                -Filter 'events-*.jsonl')) {
+                foreach ($line in @(Get-Content -LiteralPath $log.FullName)) {
+                    if ($line.Contains('"kind":"ObservationCompleted"') -and
+                        $line.Contains($profile.id) -and
+                        $line.Contains('"origin":"ExternalStart"')) { return $true }
+                }
+            }
+            return $false
+        } 'stable external observation' 80 | Out-Null
+        $locked = Read-Configuration $budgetPath
+        if ($null -eq $locked -or $locked.budget.lockedOut -ne $true -or
+            $locked.budget.reservedAutomaticAttempts -ne 1) {
+            throw 'Stable external observation rearmed the disabled-rearm profile.'
+        }
+        if ($external.HasExited) { throw 'External target exited before recovery reset.' }
+        $dispatchesBeforeReset = @(
+            Get-ChildItem -LiteralPath (Join-Path $root 'Logs') -File -Filter 'events-*.jsonl' |
+                Get-Content | Where-Object {
+                    $_.Contains('"kind":"LaunchDispatched"') -and $_.Contains($profile.id)
+                }).Count
+        if ($dispatchesBeforeReset -ne 1) { throw 'Unexpected automatic dispatch after lockout.' }
+        Wait-For { Find-EnabledButton $dashboard 'Reset recovery' } `
+            'enabled recovery reset' 15 | Out-Null
+        Invoke-Button $dashboard 'Reset recovery'
+        Click-NativeMessageChoice (Find-MessageBox $dashboard 'Reset recovery?') 'OK'
+        Wait-For {
+            $budget = Read-Configuration $budgetPath
+            $null -ne $budget -and $budget.budget.lockedOut -eq $false -and
+                $budget.budget.reservedAutomaticAttempts -eq 0
+        } 'explicit rearm after reset' 20 | Out-Null
+        if ($external.HasExited) { throw 'Reset recovery stopped the external target.' }
+        Write-Output 'PASS: stable external start remained locked out with automatic rearm disabled; WPF Reset recovery alone cleared the charged budget and preserved the target.'
     }
 
     if ($ExerciseStartNow) {
@@ -996,6 +1109,13 @@ try {
     }
 }
 finally {
+    if ($null -ne $external) {
+        if (-not $external.HasExited) {
+            Stop-Process -Id $external.Id
+            $external.WaitForExit(10000) | Out-Null
+        }
+        $external.Dispose()
+    }
     if ($null -ne $secondary) { $secondary.Dispose() }
     if ($null -ne $primary) {
         if (-not $primary.HasExited) {
