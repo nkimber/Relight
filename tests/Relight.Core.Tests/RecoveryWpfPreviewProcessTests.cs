@@ -130,6 +130,84 @@ public sealed class RecoveryWpfPreviewProcessTests
         }
     }
 
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Locked_out_external_start_rearms_only_after_stable_observation()
+    {
+        string directory = Path.Combine(Path.GetTempPath(),
+            $"relight-wpf-rearm-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        string targetExecutable = FindBuiltExecutable("Relight.TestTarget",
+            "Relight.TestTarget.exe");
+        string relightExecutable = FindBuiltExecutable("Relight.App", "Relight.exe");
+        string label = $"wpf-rearm-{Guid.NewGuid():N}";
+        string ready = Path.Combine(directory, "external.ready");
+        Process? preview = null, external = null;
+        try
+        {
+            Guid profileId = await ConfigureProfileAsync(directory, targetExecutable,
+                ["--label", label, "--exit-after-ms", "100"], maximumAttempts: 1);
+            var budgets = new SharedRecoveryBudgetStore(directory);
+            var history = new OperationalEventHistoryReader(directory);
+            preview = StartPreview(relightExecutable, directory);
+            await WaitUntilAsync(() =>
+            {
+                if (preview.HasExited)
+                    throw new InvalidOperationException(
+                        $"WPF preview exited before lockout: {preview.ExitCode}.");
+                SharedRecoveryBudget? budget = TryLoadBudget(budgets, profileId);
+                return budget?.LockedOut == true &&
+                    budget.ReservedAutomaticAttempts == 1;
+            }, TimeSpan.FromSeconds(40));
+            await WaitForEventCountAsync(history, profileId,
+                OperationalEventKind.LaunchDispatched, 1, TimeSpan.FromSeconds(10));
+            EventHistoryResult previouslyObserved = await history.ReadAsync(
+                new EventHistoryQuery(ProfileId: profileId,
+                    Kind: OperationalEventKind.TargetObserved));
+
+            var start = new ProcessStartInfo(targetExecutable) { UseShellExecute = false };
+            start.ArgumentList.Add("--label");
+            start.ArgumentList.Add(label);
+            start.ArgumentList.Add("--ready-file");
+            start.ArgumentList.Add(ready);
+            external = Process.Start(start) ??
+                throw new InvalidOperationException("External test target did not start.");
+            await WaitUntilAsync(() => File.Exists(ready), TimeSpan.FromSeconds(5));
+            await WaitForTargetObservationsAsync(history, profileId,
+                previouslyObserved.TotalMatches + 1,
+                TimeSpan.FromSeconds(15));
+
+            await Task.Delay(TimeSpan.FromSeconds(10));
+            SharedRecoveryBudget? early = null;
+            await WaitUntilAsync(() => (early = TryLoadBudget(budgets, profileId)) is not null,
+                TimeSpan.FromSeconds(5));
+            Assert.NotNull(early);
+            Assert.True(early.LockedOut);
+            Assert.Equal(1, early.ReservedAutomaticAttempts);
+            Assert.False(external.HasExited);
+
+            await WaitUntilAsync(() =>
+            {
+                if (preview.HasExited || external.HasExited)
+                    throw new InvalidOperationException(
+                        "Preview or external target exited before stable rearm.");
+                SharedRecoveryBudget? budget = TryLoadBudget(budgets, profileId);
+                return budget?.LockedOut == false &&
+                    budget.ReservedAutomaticAttempts == 0;
+            }, TimeSpan.FromSeconds(80));
+            EventHistoryResult dispatched = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.LaunchDispatched));
+            Assert.Equal(1, dispatched.TotalMatches);
+            Assert.False(external.HasExited);
+        }
+        finally
+        {
+            StopStartedProcess(preview);
+            StopStartedProcess(external);
+            DeleteTemporaryDirectory(directory);
+        }
+    }
+
     private static async Task<Guid> ConfigureProfileAsync(string directory,
         string targetExecutable, IReadOnlyList<string> arguments, int maximumAttempts)
     {
@@ -144,6 +222,7 @@ public sealed class RecoveryWpfPreviewProcessTests
             RetryDelay = TimeSpan.FromSeconds(5),
             AppearanceTimeout = TimeSpan.FromSeconds(5),
             AbsenceConfirmationDelay = TimeSpan.FromSeconds(1),
+            LockoutDiscoveryInterval = TimeSpan.FromSeconds(5),
             ObservationPollInterval = TimeSpan.FromSeconds(1),
             ObservationPeriod = TimeSpan.FromSeconds(60)
         };
