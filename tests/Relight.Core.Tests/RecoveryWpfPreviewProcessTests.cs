@@ -589,6 +589,75 @@ public sealed class RecoveryWpfPreviewProcessTests
         }
     }
 
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Already_running_target_is_adopted_without_duplicate_launch()
+    {
+        string directory = Path.Combine(Path.GetTempPath(),
+            $"relight-wpf-adoption-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        string targetExecutable = FindBuiltExecutable("Relight.TestTarget",
+            "Relight.TestTarget.exe");
+        string relightExecutable = FindBuiltExecutable("Relight.App", "Relight.exe");
+        string label = $"wpf-adoption-{Guid.NewGuid():N}";
+        string ready = Path.Combine(directory, "existing.ready");
+        Process? preview = null, existing = null;
+        try
+        {
+            var start = new ProcessStartInfo(targetExecutable) { UseShellExecute = false };
+            start.ArgumentList.Add("--label");
+            start.ArgumentList.Add(label);
+            start.ArgumentList.Add("--ready-file");
+            start.ArgumentList.Add(ready);
+            existing = Process.Start(start) ??
+                throw new InvalidOperationException("Existing test target did not start.");
+            await WaitUntilAsync(() => File.Exists(ready), TimeSpan.FromSeconds(5));
+            int existingPid = existing.Id;
+            long existingStartedTicks = existing.StartTime.ToUniversalTime().Ticks;
+
+            Guid profileId = await ConfigureProfileAsync(directory, targetExecutable,
+                ["--label", label, "--ready-file", ready], maximumAttempts: 3);
+            var budgets = new SharedRecoveryBudgetStore(directory);
+            var history = new OperationalEventHistoryReader(directory);
+            preview = StartPreview(relightExecutable, directory);
+            await WaitForTargetObservationsAsync(history, profileId, 1,
+                TimeSpan.FromSeconds(15));
+            EventHistoryResult observed = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.TargetObserved));
+            Assert.Contains(observed.Events, entry =>
+            {
+                string[] fields = entry.ProcessIdentity?.Split('|') ?? [];
+                return fields.Length == 4 &&
+                    fields[2] == existingPid.ToString(CultureInfo.InvariantCulture) &&
+                    fields[3] == existingStartedTicks.ToString(CultureInfo.InvariantCulture);
+            });
+            await WaitForEventCountAsync(history, profileId,
+                OperationalEventKind.ObservationCompleted, 1,
+                TimeSpan.FromSeconds(75));
+            EventHistoryResult completed = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.ObservationCompleted));
+            Assert.Contains(completed.Events, entry =>
+                entry.NewState == RecoveryState.Healthy &&
+                entry.Origin == ObservationOrigin.InitialAdoption);
+            Assert.True(IsSameTargetAlive(existingPid, existingStartedTicks,
+                targetExecutable));
+            Assert.False(preview.HasExited);
+            Assert.Equal(0, budgets.Load(profileId).ReservedAutomaticAttempts);
+            Assert.Equal(0, (await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.LaunchReserved)))
+                .TotalMatches);
+            Assert.Equal(0, (await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.LaunchDispatched)))
+                .TotalMatches);
+        }
+        finally
+        {
+            StopStartedProcess(preview);
+            StopStartedProcess(existing);
+            DeleteTemporaryDirectory(directory);
+        }
+    }
+
     private static async Task<Guid> ConfigureProfileAsync(string directory,
         string targetExecutable, IReadOnlyList<string> arguments, int maximumAttempts,
         TimeSpan? retryDelay = null, bool initialAutomaticStart = true)
