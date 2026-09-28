@@ -1,11 +1,23 @@
 param(
     [string]$Executable = (Join-Path $PSScriptRoot '..\src\Relight.App\bin\Release\net10.0-windows\Relight.exe'),
     [string]$Target = (Join-Path $PSScriptRoot '..\tests\Relight.TestTarget\bin\Release\net10.0-windows\Relight.TestTarget.exe'),
-    [switch]$RegisterSelectedChatGpt
+    [switch]$RegisterSelectedChatGpt,
+    [switch]$VerifyInitialStartConfirmation
 )
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
+Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class RelightUiNative {
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetClassName(IntPtr window, StringBuilder name, int capacity);
+    [DllImport("user32.dll")]
+    public static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+}
+'@
 
 function Wait-For([scriptblock]$Condition, [string]$Description, [int]$Seconds = 12) {
     $until = [DateTime]::UtcNow.AddSeconds($Seconds)
@@ -55,7 +67,9 @@ try {
     $dashboard = Wait-For {
         $primary.Refresh()
         if ($primary.HasExited -or $primary.MainWindowHandle -eq [IntPtr]::Zero) { return $null }
-        [System.Windows.Automation.AutomationElement]::FromHandle($primary.MainWindowHandle)
+        $candidate = [System.Windows.Automation.AutomationElement]::FromHandle($primary.MainWindowHandle)
+        if ($candidate.Current.Name -eq 'Relight dashboard') { return $candidate }
+        return $null
     } 'dashboard'
     if ($dashboard.Current.Name -ne 'Relight dashboard') { throw 'Dashboard has no expected accessible name.' }
 
@@ -85,6 +99,59 @@ try {
     $toggle = $initialStart.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
     if ($toggle.Current.ToggleState -ne [System.Windows.Automation.ToggleState]::Off) {
         throw 'Initial automatic start did not default off.'
+    }
+    if ($VerifyInitialStartConfirmation) {
+        $toggle.Toggle()
+        if ($toggle.Current.ToggleState -ne [System.Windows.Automation.ToggleState]::On) {
+            throw 'Initial automatic start could not be selected.'
+        }
+        Invoke-Button $dialog 'Add and protect'
+        $warning = Wait-For {
+            $nested = Find-Control $dashboard 'Enable automatic start?' `
+                ([System.Windows.Automation.ControlType]::Window)
+            if ($null -ne $nested) { return $nested }
+            $condition = [System.Windows.Automation.PropertyCondition]::new(
+                [System.Windows.Automation.AutomationElement]::NameProperty, 'Enable automatic start?')
+            [System.Windows.Automation.AutomationElement]::RootElement.FindFirst(
+                [System.Windows.Automation.TreeScope]::Children, $condition)
+        } 'automatic-start confirmation'
+        try { $decline = Wait-For {
+            $condition = [System.Windows.Automation.PropertyCondition]::new(
+                [System.Windows.Automation.AutomationElement]::NameProperty, 'No')
+            $warning.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+        } 'automatic-start No button' }
+        catch {
+            $all = $warning.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition)
+            $names = @($all | ForEach-Object {
+                "$($_.Current.ControlType.ProgrammaticName):$($_.Current.Name)"
+            })
+            throw "Warning window PID $($warning.Current.ProcessId), handle $($warning.Current.NativeWindowHandle), nodes $($all.Count): $($names -join ' | ')"
+        }
+        if ($null -eq $decline) {
+            $buttons = @($warning.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition) |
+                Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button } |
+                ForEach-Object { $_.Current.Name })
+            throw "The automatic-start warning element $($warning.Current.ControlType.ProgrammaticName) has no accessible No button: $($buttons -join ', ')"
+        }
+        $className = [Text.StringBuilder]::new(128)
+        [RelightUiNative]::GetClassName([IntPtr]::new($decline.Current.NativeWindowHandle),
+            $className, $className.Capacity) | Out-Null
+        if ($className.ToString() -ne 'Button') {
+            throw "The warning's No control has unexpected native class $className."
+        }
+        [RelightUiNative]::SendMessage([IntPtr]::new($decline.Current.NativeWindowHandle),
+            0xF5, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+        $config = Read-Configuration (Join-Path $root 'configuration.json')
+        if ($null -eq $config -or @($config.configuration.profiles).Count -ne 0) {
+            throw 'Declining automatic start still registered a profile.'
+        }
+        $toggle.Toggle()
+        if ($toggle.Current.ToggleState -ne [System.Windows.Automation.ToggleState]::Off) {
+            throw 'Initial automatic start did not return to off.'
+        }
+        Write-Output 'PASS: declining the automatic-start warning left the profile unregistered.'
     }
     Invoke-Button $dialog 'Add and protect'
     $profile = Wait-For {
