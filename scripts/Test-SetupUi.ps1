@@ -5,7 +5,8 @@ param(
     [switch]$VerifyInitialStartConfirmation,
     [switch]$AcceptInitialStart,
     [switch]$EditSavedExecutable,
-    [switch]$TestSavedLaunch
+    [switch]$TestSavedLaunch,
+    [switch]$ExercisePauseResume
 )
 
 $ErrorActionPreference = 'Stop'
@@ -88,6 +89,9 @@ function Complete-InitialStartWarning($Dashboard, [string]$Choice) {
 
 if ($VerifyInitialStartConfirmation -and $AcceptInitialStart) {
     throw 'Choose either declining or accepting the initial-start warning for one run.'
+}
+if ($ExercisePauseResume -and -not $AcceptInitialStart) {
+    throw 'Pause/resume acceptance requires an automatically started disposable target.'
 }
 
 $executablePath = (Resolve-Path -LiteralPath $Executable).Path
@@ -299,6 +303,65 @@ try {
             return $false
         } 'profile editor close' | Out-Null
         Write-Output 'PASS: WPF Test launch found the disposable target, avoided a duplicate on repeat, and preserved the automatic budget.'
+    }
+
+    if ($ExercisePauseResume) {
+        $budgetPath = Join-Path $root ('Budgets\' + $profile.id.Replace('-', '') + '.json')
+        $beforePause = Wait-For { Read-Configuration $budgetPath } 'budget before pause'
+        $sessionPath = Wait-For {
+            Get-ChildItem -LiteralPath (Join-Path $root 'Sessions') -Recurse `
+                -Filter ($profile.id.Replace('-', '') + '.json') -File |
+                Select-Object -First 1 -ExpandProperty FullName
+        } 'session checkpoint path'
+        Wait-For {
+            $button = Find-Control $dashboard 'Pause protection' `
+                ([System.Windows.Automation.ControlType]::Button)
+            if ($null -ne $button -and $button.Current.IsEnabled) { return $button }
+            return $null
+        } 'Pause protection action' | Out-Null
+        Invoke-Button $dashboard 'Pause protection'
+        Wait-For {
+            $resume = Find-Control $dashboard 'Resume protection' `
+                ([System.Windows.Automation.ControlType]::Button)
+            $paused = Find-Control $dashboard 'Paused' `
+                ([System.Windows.Automation.ControlType]::Text)
+            if ($null -ne $resume -and $null -ne $paused -and $resume.Current.IsEnabled) {
+                return $resume
+            }
+            return $null
+        } 'paused dashboard state' | Out-Null
+        $pausedCheckpoint = Wait-For {
+            $saved = Read-Configuration $sessionPath
+            if ($null -ne $saved -and $saved.checkpoint.paused -eq $true) { return $saved }
+            return $null
+        } 'durable pause checkpoint'
+        $duringPause = Wait-For { Read-Configuration $budgetPath } 'budget during pause'
+        $running = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+        if ($null -eq $running -or $running.HasExited) { throw 'Pausing protection stopped the target.' }
+        $running.Dispose()
+        Invoke-Button $dashboard 'Resume protection'
+        Wait-For {
+            $button = Find-Control $dashboard 'Pause protection' `
+                ([System.Windows.Automation.ControlType]::Button)
+            if ($null -ne $button -and $button.Current.IsEnabled) { return $button }
+            return $null
+        } 'resumed dashboard state' | Out-Null
+        $resumedCheckpoint = Wait-For {
+            $saved = Read-Configuration $sessionPath
+            if ($null -ne $saved -and $saved.checkpoint.paused -eq $false) { return $saved }
+            return $null
+        } 'durable resume checkpoint'
+        $afterResume = Wait-For { Read-Configuration $budgetPath } 'budget after resume'
+        $running = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+        if ($null -eq $running -or $running.HasExited) { throw 'Resuming protection stopped the target.' }
+        $running.Dispose()
+        if ($beforePause.budget.reservedAutomaticAttempts -ne
+                $duringPause.budget.reservedAutomaticAttempts -or
+            $beforePause.budget.reservedAutomaticAttempts -ne
+                $afterResume.budget.reservedAutomaticAttempts) {
+            throw 'Pause or resume changed the automatic attempt budget.'
+        }
+        Write-Output 'PASS: WPF pause and resume kept the disposable target alive and its automatic budget unchanged.'
     }
 
     if ($RegisterSelectedChatGpt) {
