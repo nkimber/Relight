@@ -231,7 +231,8 @@ public sealed class RecoveryWpfPreviewProcessTests
             "Relight.TestTarget.exe");
         string relightExecutable = FindBuiltExecutable("Relight.App", "Relight.exe");
         string label = $"wpf-cap-{Guid.NewGuid():N}";
-        Process? preview = null;
+        string externalReady = Path.Combine(directory, "external.ready");
+        Process? preview = null, external = null;
         try
         {
             Guid profileId = await ConfigureProfileAsync(directory, targetExecutable,
@@ -255,10 +256,44 @@ public sealed class RecoveryWpfPreviewProcessTests
                 ProfileId: profileId, Kind: OperationalEventKind.LaunchDispatched));
             Assert.Equal(3, reserved.TotalMatches);
             Assert.Equal(3, dispatched.TotalMatches);
+
+            int observationsBeforeRestart = (await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.TargetObserved)))
+                .TotalMatches;
+            StopStartedProcess(preview);
+            preview = null;
+            Assert.True(budgets.Load(profileId).LockedOut);
+            preview = StartPreview(relightExecutable, directory);
+            await Task.Delay(TimeSpan.FromSeconds(8));
+            Assert.False(preview.HasExited);
+            Assert.True(budgets.Load(profileId).LockedOut);
+            Assert.Equal(3, budgets.Load(profileId).ReservedAutomaticAttempts);
+            Assert.Equal(3, (await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.LaunchDispatched)))
+                .TotalMatches);
+
+            var start = new ProcessStartInfo(targetExecutable) { UseShellExecute = false };
+            start.ArgumentList.Add("--label");
+            start.ArgumentList.Add(label);
+            start.ArgumentList.Add("--ready-file");
+            start.ArgumentList.Add(externalReady);
+            external = Process.Start(start) ??
+                throw new InvalidOperationException("External test target did not start.");
+            await WaitUntilAsync(() => File.Exists(externalReady), TimeSpan.FromSeconds(5));
+            await WaitForTargetObservationsAsync(history, profileId,
+                observationsBeforeRestart + 1, TimeSpan.FromSeconds(15));
+            Assert.False(external.HasExited);
+            Assert.True(budgets.Load(profileId).LockedOut);
+            Assert.Equal(3, budgets.Load(profileId).ReservedAutomaticAttempts);
+            Assert.Equal(3, (await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.LaunchDispatched)))
+                .TotalMatches);
         }
         finally
         {
             StopStartedProcess(preview);
+            StopStartedProcess(external);
+            StopLabeledTestTargets(targetExecutable, label);
             DeleteTemporaryDirectory(directory);
         }
     }
