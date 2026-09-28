@@ -510,9 +510,88 @@ public sealed class RecoveryWpfPreviewProcessTests
         }
     }
 
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Initially_absent_wait_for_first_start_adopts_external_target_without_launch()
+    {
+        string directory = Path.Combine(Path.GetTempPath(),
+            $"relight-wpf-first-start-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        string targetExecutable = FindBuiltExecutable("Relight.TestTarget",
+            "Relight.TestTarget.exe");
+        string relightExecutable = FindBuiltExecutable("Relight.App", "Relight.exe");
+        string label = $"wpf-first-start-{Guid.NewGuid():N}";
+        string ready = Path.Combine(directory, "external.ready");
+        Process? preview = null, external = null;
+        try
+        {
+            Guid profileId = await ConfigureProfileAsync(directory, targetExecutable,
+                ["--label", label, "--ready-file", ready], maximumAttempts: 3,
+                initialAutomaticStart: false);
+            var budgets = new SharedRecoveryBudgetStore(directory);
+            var history = new OperationalEventHistoryReader(directory);
+            preview = StartPreview(relightExecutable, directory);
+            await WaitForEventCountAsync(history, null,
+                OperationalEventKind.Startup, 1, TimeSpan.FromSeconds(10));
+            await Task.Delay(TimeSpan.FromSeconds(8));
+            Assert.False(preview.HasExited);
+            Assert.False(File.Exists(ready));
+            Assert.Equal(0, budgets.Load(profileId).ReservedAutomaticAttempts);
+            Assert.Equal(0, (await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.LaunchDispatched)))
+                .TotalMatches);
+
+            var start = new ProcessStartInfo(targetExecutable) { UseShellExecute = false };
+            start.ArgumentList.Add("--label");
+            start.ArgumentList.Add(label);
+            start.ArgumentList.Add("--ready-file");
+            start.ArgumentList.Add(ready);
+            external = Process.Start(start) ??
+                throw new InvalidOperationException("External test target did not start.");
+            await WaitUntilAsync(() => File.Exists(ready), TimeSpan.FromSeconds(5));
+            int externalPid = external.Id;
+            long externalStartedTicks = external.StartTime.ToUniversalTime().Ticks;
+
+            await WaitForTargetObservationsAsync(history, profileId, 1,
+                TimeSpan.FromSeconds(75));
+            EventHistoryResult observed = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.TargetObserved));
+            Assert.Contains(observed.Events, entry =>
+            {
+                string[] fields = entry.ProcessIdentity?.Split('|') ?? [];
+                return fields.Length == 4 &&
+                    fields[2] == externalPid.ToString(CultureInfo.InvariantCulture) &&
+                    fields[3] == externalStartedTicks.ToString(CultureInfo.InvariantCulture);
+            });
+            await WaitForEventCountAsync(history, profileId,
+                OperationalEventKind.ObservationCompleted, 1,
+                TimeSpan.FromSeconds(75));
+            EventHistoryResult completed = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.ObservationCompleted));
+            Assert.Contains(completed.Events, entry =>
+                entry.Origin == ObservationOrigin.InitialAdoption);
+            Assert.True(IsSameTargetAlive(externalPid, externalStartedTicks,
+                targetExecutable));
+            Assert.False(preview.HasExited);
+            Assert.Equal(0, budgets.Load(profileId).ReservedAutomaticAttempts);
+            Assert.Equal(0, (await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.LaunchReserved)))
+                .TotalMatches);
+            Assert.Equal(0, (await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.LaunchDispatched)))
+                .TotalMatches);
+        }
+        finally
+        {
+            StopStartedProcess(preview);
+            StopStartedProcess(external);
+            DeleteTemporaryDirectory(directory);
+        }
+    }
+
     private static async Task<Guid> ConfigureProfileAsync(string directory,
         string targetExecutable, IReadOnlyList<string> arguments, int maximumAttempts,
-        TimeSpan? retryDelay = null)
+        TimeSpan? retryDelay = null, bool initialAutomaticStart = true)
     {
         await using var setup = await RecoveryApplicationHost
             .OpenSharedSessionPreviewAsync(directory);
@@ -520,7 +599,9 @@ public sealed class RecoveryWpfPreviewProcessTests
             targetExecutable, arguments, null);
         RecoveryPolicy policy = setup.GetProfileForEdit(profileId).Policy with
         {
-            StartAutomaticallyWhenInitiallyAbsent = true,
+            StartAutomaticallyWhenInitiallyAbsent = initialAutomaticStart,
+            NormalPollInterval = initialAutomaticStart
+                ? RecoveryPolicy.Default.NormalPollInterval : TimeSpan.FromSeconds(60),
             MaximumAutomaticAttempts = maximumAttempts,
             RetryDelay = retryDelay ?? TimeSpan.FromSeconds(5),
             AppearanceTimeout = TimeSpan.FromSeconds(5),
@@ -633,7 +714,7 @@ public sealed class RecoveryWpfPreviewProcessTests
     }
 
     private static async Task<int> WaitForEventCountAsync(
-        OperationalEventHistoryReader history, Guid profileId,
+        OperationalEventHistoryReader history, Guid? profileId,
         OperationalEventKind kind, int minimum, TimeSpan timeout)
     {
         using var cancellation = new CancellationTokenSource(timeout);
