@@ -38,6 +38,60 @@ public sealed class RecoverySchedulerTests
     }
 
     [Fact]
+    public async Task Fifty_profiles_keep_independent_deadlines_and_budgets_when_one_blocks()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var blocked = new BlockingDiscovery();
+        Guid blockedId = Guid.NewGuid();
+        var launchers = new Dictionary<Guid, CountingLauncher>();
+        await using var scheduler = new RecoveryScheduler(clock);
+        scheduler.Add(blockedId, ProfileCoordinator.CreateNew(blockedId, AutoPolicy,
+            store, blocked, new CountingLauncher(), clock), AutoPolicy);
+        for (int index = 0; index < 49; index++)
+        {
+            Guid id = Guid.NewGuid();
+            var launcher = new CountingLauncher();
+            launchers.Add(id, launcher);
+            scheduler.Add(id, ProfileCoordinator.CreateNew(id, AutoPolicy, store,
+                new ConstantDiscovery(Detection.Absent()), launcher, clock), AutoPolicy);
+        }
+
+        IReadOnlyDictionary<Guid, Task> first = scheduler.Pulse();
+        Assert.Equal(50, first.Count);
+        await blocked.Entered.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        try
+        {
+            await Task.WhenAll(first.Where(pair => pair.Key != blockedId)
+                .Select(pair => pair.Value)).WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.False(first[blockedId].IsCompleted);
+            Assert.All(launchers, pair => Assert.Equal(0, pair.Value.Dispatches));
+
+            clock.Elapsed = TimeSpan.FromSeconds(2);
+            IReadOnlyDictionary<Guid, Task> confirmed = scheduler.Pulse();
+            Assert.Equal(49, confirmed.Count);
+            await Task.WhenAll(confirmed.Values).WaitAsync(TimeSpan.FromSeconds(15));
+            clock.Elapsed = TimeSpan.FromSeconds(7);
+            IReadOnlyDictionary<Guid, Task> dispatched = scheduler.Pulse();
+            Assert.Equal(49, dispatched.Count);
+            await Task.WhenAll(dispatched.Values).WaitAsync(TimeSpan.FromSeconds(15));
+
+            Assert.All(launchers, pair =>
+            {
+                Assert.Equal(1, pair.Value.Dispatches);
+                Assert.Equal(1, store.Load(pair.Key).Checkpoint.ReservedAutomaticAttempts);
+            });
+            Assert.Equal(0, store.Load(blockedId).Checkpoint.ReservedAutomaticAttempts);
+        }
+        finally
+        {
+            blocked.Release.TrySetResult();
+            await first[blockedId].WaitAsync(TimeSpan.FromSeconds(15));
+        }
+    }
+
+    [Fact]
     public async Task Absence_and_retry_deadlines_wake_before_the_normal_poll_interval()
     {
         using var directory = new TestDirectory();
