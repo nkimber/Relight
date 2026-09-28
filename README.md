@@ -65,6 +65,8 @@ dotnet publish src/Relight.App -c Release -r win-x64 --self-contained true -o ar
 pwsh -File scripts/Test-Shell.ps1 -Executable artifacts/preview/Relight.exe
 ```
 
+To create a versioned portable preview ZIP with dependency notices, a manifest and SHA-256 checksum from a clean committed checkout, run `pwsh -File scripts/Build-PortablePreview.ps1`. It writes a new directory under ignored `artifacts/releases` and smoke-checks the published executable before archiving it. See [the release checkpoint](docs/release-checkpoint.md) for verified scope and remaining release gates.
+
 This is a development preview, not the production release or overnight pilot described in the PRD.
 
 ## Project layout
