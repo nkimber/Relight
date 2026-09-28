@@ -1,6 +1,6 @@
 # Session and recovery-budget coordination design
 
-**Status:** M0/M2 design with isolated shared-budget and session-state repositories; runtime integration and multi-session validation remain open.  
+**Status:** M0/M2 design with isolated shared-budget/session-state repositories and a fail-closed legacy migration transaction; runtime integration and multi-session validation remain open.  
 **Requirements:** [PRD Section 10](PRD.md#10-persistence-and-data-model), [AGENTS.md](../AGENTS.md), [development plan M2](development-plan.md#m2--make-configuration-and-recovery-state-durable).
 
 Relight currently stores one revision-checked recovery snapshot per profile under `State`. A file lock serializes each read/replace, and a stale revision stops a second writer. This prevents two simultaneous commits from both succeeding, but it does not give each signed-in Windows session its own observation state. A second session can restore a snapshot based on another session's process, then fail later with a stale revision. The current implementation is therefore a safety foundation, not fulfillment of the multi-session requirement.
@@ -29,9 +29,9 @@ Explicit Start now uses its own durable pending-operation marker and the same fr
 
 ## Migration and failure handling
 
-The existing `State/<profile>.json` is a schema-1 mixed snapshot. Migration must preserve that original file and its backup as evidence. The first upgraded host takes the exclusive profile lock, validates the old checksum/revision, creates the shared ledger with at least the old reserved count and lockout, then creates a fresh session checkpoint. It records a migration marker only after both new records are durable. If interrupted, subsequent hosts must detect partial migration and suspend automatic dispatch pending a documented repair path; they must never initialize a zero budget. A migration from a damaged old file is not automatic.
+The existing `State/<profile>.json` is a schema-1 mixed snapshot. The isolated `RecoveryStateStore.MigrateToSession` transaction now takes that profile's legacy lock, validates its checksum/revision, then durably writes an ownership marker in `State/<profile>.owner` **before** creating the shared ledger and fresh session checkpoint. It changes the marker from `migration-pending` to `session-owner` only after both records are durable. Upgraded legacy `Create`, `Load` and `Save` reject either marker, and the original state file and backup are preserved. If the transfer fails after the pending marker, it remains suspended for explicit repair; the transaction does not retry by inventing a zero budget. Damaged legacy state stops before marker creation. Focused tests cover a successful transfer, a failure after the marker and damaged source state. The host does **not** invoke this transaction yet.
 
-Cross-file updates cannot be one atomic filesystem replacement. The shared ledger is written first at every budget or dispatch boundary; a session file may lag and must be reconstructed from the ledger. During rollout, hosts that use the old schema and hosts that use the new schema must not write concurrently. A versioned ownership gate should reject the old writer once migration begins.
+Cross-file updates cannot be one atomic filesystem replacement. The shared ledger is written first at every budget or dispatch boundary; a session file may lag and must be reconstructed from the ledger. During rollout, hosts that use the old schema and hosts that use the new schema must not write concurrently. The ownership marker rejects upgraded legacy writers, including a same-version host that loaded the old file before migration. Older binaries do not read this marker, so deployment must ensure none are running or allowed to restart during migration; that rollout gate and a repair path for partial transfers are not implemented.
 
 ## Evidence required before enabling multi-session recovery
 

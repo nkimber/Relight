@@ -42,6 +42,7 @@ public sealed class RecoveryStateStore : IRecoveryStateStore
     {
         CheckId(profileId);
         using FileStream guard = Lock(profileId);
+        RejectMigratedProfile(profileId);
         string path = PathFor(profileId);
         if (File.Exists(path))
             throw new InvalidOperationException("Recovery state already exists for this profile.");
@@ -54,6 +55,7 @@ public sealed class RecoveryStateStore : IRecoveryStateStore
     {
         CheckId(profileId);
         using FileStream guard = Lock(profileId);
+        RejectMigratedProfile(profileId);
         return Read(PathFor(profileId), profileId);
     }
 
@@ -61,6 +63,7 @@ public sealed class RecoveryStateStore : IRecoveryStateStore
     {
         CheckId(profileId);
         using FileStream guard = Lock(profileId);
+        RejectMigratedProfile(profileId);
         string path = PathFor(profileId);
         StoredRecoveryState prior = Read(path, profileId);
         if (prior.Revision != expectedRevision)
@@ -71,6 +74,72 @@ public sealed class RecoveryStateStore : IRecoveryStateStore
         var next = new StoredRecoveryState(profileId, expectedRevision + 1, checkpoint);
         Write(path, next, initialCreate: false);
         return next;
+    }
+
+    /// <summary>
+    /// Starts ownership transfer before creating either new record. A failed or
+    /// interrupted transfer leaves the marker in place so upgraded legacy
+    /// writers cannot resume using the old snapshot as launch authority.
+    /// </summary>
+    public void MigrateToSession(Guid profileId, SharedRecoveryBudgetStore budgets,
+        RecoverySessionStateStore session)
+    {
+        ArgumentNullException.ThrowIfNull(budgets);
+        ArgumentNullException.ThrowIfNull(session);
+        CheckId(profileId);
+        using FileStream guard = Lock(profileId);
+        RejectMigratedProfile(profileId);
+        StoredRecoveryState legacy = Read(PathFor(profileId), profileId);
+        if (legacy.Checkpoint.SharedBudgetRevision is not null)
+            throw new RecoveryStateUnavailableException(
+                "The legacy snapshot already references a shared budget.");
+
+        WriteOwnershipMarker(profileId, "migration-pending");
+        SharedRecoveryBudget budget = budgets.ImportLegacy(legacy);
+        RecoveryCheckpoint old = legacy.Checkpoint;
+        RecoveryState initialState = !old.Enabled ? RecoveryState.Disabled :
+            budget.LockedOut ? RecoveryState.AwaitingIntervention :
+            RecoveryState.WaitingForFirstStart;
+        session.Create(profileId, new RecoveryCheckpoint(old.Enabled, old.Paused,
+            false, budget.LockedOut, budget.ReservedAutomaticAttempts,
+            budget.EpisodeId, initialState, null,
+            SharedBudgetRevision: budget.Revision));
+        WriteOwnershipMarker(profileId, "session-owner");
+    }
+
+    private void RejectMigratedProfile(Guid profileId)
+    {
+        if (File.Exists(OwnershipPathFor(profileId)))
+            throw new RecoveryStateUnavailableException(
+                $"Legacy recovery state for profile {profileId} has transferred ownership; it cannot authorize launches.");
+    }
+
+    private void WriteOwnershipMarker(Guid profileId, string phase)
+    {
+        string path = OwnershipPathFor(profileId);
+        string temporary = Path.Combine(_directory,
+            $"{profileId:N}.{Guid.NewGuid():N}.owner.tmp");
+        try
+        {
+            using (var stream = new FileStream(temporary, FileMode.CreateNew,
+                       FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            {
+                byte[] payload = Encoding.UTF8.GetBytes($"Relight recovery-state {phase} v1\n");
+                stream.Write(payload);
+                stream.Flush(flushToDisk: true);
+            }
+            if (phase == "migration-pending") File.Move(temporary, path);
+            else File.Replace(temporary, path, null, ignoreMetadataErrors: false);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            throw new RecoveryStateUnavailableException(
+                "Recovery-state ownership marker could not be committed; migration is suspended.", error);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
     }
 
     private FileStream Lock(Guid profileId)
@@ -157,6 +226,9 @@ public sealed class RecoveryStateStore : IRecoveryStateStore
     }
 
     private string PathFor(Guid profileId) => Path.Combine(_directory, profileId.ToString("N") + ".json");
+
+    private string OwnershipPathFor(Guid profileId) => Path.Combine(_directory,
+        profileId.ToString("N") + ".owner");
 
     private static string Checksum(Guid profileId, long revision, RecoveryCheckpoint checkpoint)
     {
