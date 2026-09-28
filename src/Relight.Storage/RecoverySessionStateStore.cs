@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
+using System.Text.Json;
 using Relight.Core;
 
 namespace Relight.Storage;
@@ -105,6 +106,29 @@ public sealed class RecoverySessionStateStore : IRecoveryStateStore
                 "The shared budget changed during checkpoint repair; automatic actions remain suspended.");
         _knownBudgetRevisions[profileId] = budget.Revision;
         return repaired;
+    }
+
+    public bool CanRepairUnavailableCheckpoint(Guid profileId)
+    {
+        try
+        {
+            SharedRecoveryBudget budget = _budgets.Load(profileId);
+            if (budget.PendingAutomaticOperationId is not null ||
+                budget.PendingExplicitOperationId is not null ||
+                !File.Exists(MarkerPath(profileId)))
+                return false;
+            EnsureMarker(profileId);
+            try { _session.Load(profileId); return false; }
+            catch (RecoveryStateUnavailableException error)
+            {
+                return error.InnerException is null or JsonException;
+            }
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or
+            ArgumentException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     public StoredRecoveryState Load(Guid profileId)

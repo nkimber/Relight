@@ -32,6 +32,7 @@ public sealed class RecoverySessionStateStoreTests
         byte[] damagedBackup = "untrusted backup bytes"u8.ToArray();
         File.WriteAllBytes(path, damaged);
         File.WriteAllBytes(path + ".bak", damagedBackup);
+        Assert.True(session.CanRepairUnavailableCheckpoint(profile));
 
         StoredRecoveryState repaired = session.RepairUnavailableCheckpointExplicitly(
             profile, enabled: true);
@@ -67,6 +68,7 @@ public sealed class RecoverySessionStateStoreTests
         string path = Path.Combine(directory.Path, "Sessions", FirstKey, "State",
             $"{profile:N}.json");
         File.Delete(path);
+        Assert.True(session.CanRepairUnavailableCheckpoint(profile));
 
         StoredRecoveryState repaired = session.RepairUnavailableCheckpointExplicitly(
             profile, true);
@@ -86,6 +88,7 @@ public sealed class RecoverySessionStateStoreTests
         SharedRecoveryBudget created = budgets.Create(profile);
         var session = new RecoverySessionStateStore(directory.Path, FirstKey, budgets);
         StoredRecoveryState initial = session.InitializeForNewSignIn(profile, true);
+        Assert.False(session.CanRepairUnavailableCheckpoint(profile));
         Assert.Throws<InvalidOperationException>(() =>
             session.RepairUnavailableCheckpointExplicitly(profile, true));
         Assert.Equal(initial, session.Load(profile));
@@ -95,6 +98,7 @@ public sealed class RecoverySessionStateStoreTests
         string path = Path.Combine(directory.Path, "Sessions", FirstKey, "State",
             $"{profile:N}.json");
         File.WriteAllText(path, "damaged");
+        Assert.False(session.CanRepairUnavailableCheckpoint(profile));
         Assert.Throws<RecoveryStateUnavailableException>(() =>
             session.RepairUnavailableCheckpointExplicitly(profile, true));
         Assert.Equal("damaged", File.ReadAllText(path));

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -235,17 +236,31 @@ public sealed class SharedRecoveryBudgetStore
 
     private FileStream Lock(Guid profileId)
     {
-        try
+        var elapsed = Stopwatch.StartNew();
+        while (true)
         {
-            return new FileStream(PathFor(profileId) + ".lock", FileMode.OpenOrCreate,
-                FileAccess.ReadWrite, FileShare.None);
-        }
-        catch (IOException error)
-        {
-            throw new RecoveryStateUnavailableException(
-                $"Shared budget for profile {profileId} is busy or inaccessible.", error);
+            try
+            {
+                return new FileStream(PathFor(profileId) + ".lock", FileMode.OpenOrCreate,
+                    FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (IOException error) when (IsSharingViolation(error) &&
+                elapsed.Elapsed < TimeSpan.FromSeconds(2))
+            {
+                // A second sign-in may be committing the same profile. Brief
+                // contention is expected and must not permanently degrade it.
+                Thread.Sleep(10);
+            }
+            catch (IOException error)
+            {
+                throw new RecoveryStateUnavailableException(
+                    $"Shared budget for profile {profileId} is busy or inaccessible.", error);
+            }
         }
     }
+
+    private static bool IsSharingViolation(IOException error) =>
+        (error.HResult & 0xFFFF) is 32 or 33;
 
     private SharedRecoveryBudget Read(string path, Guid profileId)
     {

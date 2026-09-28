@@ -15,6 +15,7 @@ public partial class MainWindow : Window
 {
     private readonly Func<Guid, bool, Task> _setPaused;
     private readonly Func<Guid, Task> _resetRecovery;
+    private readonly Func<Guid, Task> _repairRecoveryState;
     private readonly Func<Guid, Task> _startNow;
     private readonly Func<EventHistoryQuery, string, EventHistoryExportFormat,
         Task<EventHistoryExportResult>> _exportHistory;
@@ -31,6 +32,7 @@ public partial class MainWindow : Window
     private bool _changingStartAtSignIn;
 
     public MainWindow(Func<Guid, bool, Task> setPaused, Func<Guid, Task> resetRecovery,
+        Func<Guid, Task> repairRecoveryState,
         Func<Guid, Task> startNow,
         Func<EventHistoryQuery, string, EventHistoryExportFormat,
             Task<EventHistoryExportResult>> exportHistory,
@@ -47,6 +49,7 @@ public partial class MainWindow : Window
     {
         _setPaused = setPaused;
         _resetRecovery = resetRecovery;
+        _repairRecoveryState = repairRecoveryState;
         _startNow = startNow;
         _exportHistory = exportHistory;
         _setEnabled = setEnabled;
@@ -437,5 +440,24 @@ public partial class MainWindow : Window
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally { button.IsEnabled = row.CanReset; }
+    }
+
+    private async void RepairRecoveryStateClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: ApplicationStatusRow row } button) return;
+        if (MessageBox.Show(this,
+                "Relight will preserve the damaged session state, keep the shared attempt count and lockout, and restore this profile paused. Review the application and choose Resume protection when ready. Continue?",
+                "Repair recovery state?", MessageBoxButton.OKCancel,
+                MessageBoxImage.Warning, MessageBoxResult.Cancel) != MessageBoxResult.OK)
+            return;
+        button.IsEnabled = false;
+        try { await _repairRecoveryState(row.Id); }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Recovery state repair failed",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally { button.IsEnabled = row.CanRepairRecoveryState; }
     }
 }

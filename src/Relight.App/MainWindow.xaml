@@ -134,6 +134,10 @@
                                                                 Click="PauseResumeClick" Margin="0,0,10,8" />
                                                         <Button Content="Reset recovery" IsEnabled="{Binding CanReset}"
                                                                 Click="ResetRecoveryClick" Margin="0,0,10,8" />
+                                                        <Button Content="Repair recovery state"
+                                                                IsEnabled="{Binding CanRepairRecoveryState}"
+                                                                Click="RepairRecoveryStateClick" Margin="0,0,10,8"
+                                                                ToolTip="Preserve damaged session evidence and restore monitoring paused without clearing the shared attempt budget." />
                                                         <Button Content="{Binding EnableDisableLabel}"
                                                                 IsEnabled="{Binding CanToggleEnabled}"
                                                                 Click="EnableDisableClick" Margin="0,0,10,8"

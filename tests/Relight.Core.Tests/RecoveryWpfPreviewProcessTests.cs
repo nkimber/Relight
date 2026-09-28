@@ -100,15 +100,8 @@ public sealed class RecoveryWpfPreviewProcessTests
             var history = new OperationalEventHistoryReader(directory);
             preview = StartPreview(relightExecutable, directory);
 
-            await WaitUntilAsync(() =>
-            {
-                if (preview.HasExited)
-                    throw new InvalidOperationException(
-                        $"WPF preview exited before lockout: {preview.ExitCode}.");
-                SharedRecoveryBudget? budget = TryLoadBudget(budgets, profileId);
-                return budget?.LockedOut == true &&
-                    budget.ReservedAutomaticAttempts == 3;
-            }, TimeSpan.FromSeconds(75));
+            await WaitForLockoutAsync(preview, budgets, history, profileId,
+                3, TimeSpan.FromSeconds(75));
             await WaitForEventCountAsync(history, profileId,
                 OperationalEventKind.LaunchDispatched, 3, TimeSpan.FromSeconds(10));
             await Task.Delay(TimeSpan.FromSeconds(8));
@@ -150,15 +143,8 @@ public sealed class RecoveryWpfPreviewProcessTests
             var budgets = new SharedRecoveryBudgetStore(directory);
             var history = new OperationalEventHistoryReader(directory);
             preview = StartPreview(relightExecutable, directory);
-            await WaitUntilAsync(() =>
-            {
-                if (preview.HasExited)
-                    throw new InvalidOperationException(
-                        $"WPF preview exited before lockout: {preview.ExitCode}.");
-                SharedRecoveryBudget? budget = TryLoadBudget(budgets, profileId);
-                return budget?.LockedOut == true &&
-                    budget.ReservedAutomaticAttempts == 1;
-            }, TimeSpan.FromSeconds(40));
+            await WaitForLockoutAsync(preview, budgets, history, profileId,
+                1, TimeSpan.FromSeconds(40));
             await WaitForEventCountAsync(history, profileId,
                 OperationalEventKind.LaunchDispatched, 1, TimeSpan.FromSeconds(10));
             EventHistoryResult previouslyObserved = await history.ReadAsync(
@@ -275,6 +261,36 @@ public sealed class RecoveryWpfPreviewProcessTests
         {
             cancellation.Token.ThrowIfCancellationRequested();
             await Task.Delay(100, cancellation.Token);
+        }
+    }
+
+    private static async Task WaitForLockoutAsync(Process preview,
+        SharedRecoveryBudgetStore budgets, OperationalEventHistoryReader history,
+        Guid profileId, int attempts, TimeSpan timeout)
+    {
+        try
+        {
+            await WaitUntilAsync(() =>
+            {
+                if (preview.HasExited)
+                    throw new InvalidOperationException(
+                        $"WPF preview exited before lockout: {preview.ExitCode}.");
+                SharedRecoveryBudget? budget = TryLoadBudget(budgets, profileId);
+                return budget?.LockedOut == true &&
+                    budget.ReservedAutomaticAttempts == attempts;
+            }, timeout);
+        }
+        catch (OperationCanceledException error)
+        {
+            SharedRecoveryBudget? budget = TryLoadBudget(budgets, profileId);
+            EventHistoryResult events = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Limit: 20));
+            throw new TimeoutException(
+                $"WPF preview lockout did not reach {attempts} attempts in {timeout}. " +
+                $"Preview exited: {preview.HasExited}; budget revision: {budget?.Revision}; " +
+                $"reserved: {budget?.ReservedAutomaticAttempts}; locked out: {budget?.LockedOut}; " +
+                $"recent events: {string.Join(", ", events.Events.Select(item => item.Kind))}.",
+                error);
         }
     }
 

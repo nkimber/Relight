@@ -6,6 +6,30 @@ namespace Relight.Core.Tests;
 public sealed class SharedRecoveryBudgetStoreTests
 {
     [Fact]
+    public async Task Brief_ledger_lock_contention_does_not_degrade_a_reader()
+    {
+        using var directory = new TestDirectory();
+        Guid profile = Guid.NewGuid();
+        var store = new SharedRecoveryBudgetStore(directory.Path);
+        SharedRecoveryBudget initial = store.Create(profile);
+        string lockPath = Path.Combine(directory.Path, "Budgets", $"{profile:N}.json.lock");
+        using var held = new FileStream(lockPath, FileMode.OpenOrCreate,
+            FileAccess.ReadWrite, FileShare.None);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<SharedRecoveryBudget> read = Task.Run(() =>
+        {
+            started.SetResult();
+            return new SharedRecoveryBudgetStore(directory.Path).Load(profile);
+        });
+        await started.Task;
+        await Task.Delay(100);
+        Assert.False(read.IsCompleted);
+        held.Dispose();
+
+        Assert.Equal(initial, await read.WaitAsync(TimeSpan.FromSeconds(3)));
+    }
+
+    [Fact]
     public async Task Competing_final_reservations_commit_only_one_attempt()
     {
         using var directory = new TestDirectory();

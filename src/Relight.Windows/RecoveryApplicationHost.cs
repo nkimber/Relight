@@ -14,7 +14,8 @@ public sealed record HostedProfileStatus(
     string? Problem,
     bool ConfiguredEnabled = true,
     RecoveryPolicy? Policy = null,
-    TargetKind TargetKind = TargetKind.Executable);
+    TargetKind TargetKind = TargetKind.Executable,
+    bool CanRepairRecoveryState = false);
 
 public sealed record ProfileBatchResult(int Requested, int Completed,
     IReadOnlyList<string> Errors);
@@ -186,9 +187,11 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 {
                     problem = $"Recovery state is unavailable; re-enable is blocked. {error.Message}";
                 }
+                bool canRepair = problem is not null && CanOfferCheckpointRepair(profile);
                 lock (_statusSync)
                     _statuses[profile.Id] = new(profile.Id, profile.Name, false, false,
-                        null, disabledRecovery, problem, ConfiguredEnabled: false);
+                        null, disabledRecovery, problem, ConfiguredEnabled: false,
+                        CanRepairRecoveryState: canRepair);
                 continue;
             }
             if (profile.Target.Kind == TargetKind.PackagedApplication &&
@@ -230,7 +233,11 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                         packagedDiscovery,
                         $"Recovery state is unavailable; automatic actions are suspended. {error.Message}",
                         cancellationToken).ConfigureAwait(false);
-                    lock (_statusSync) _statuses[profile.Id] = passive;
+                    bool canRepair = CanOfferCheckpointRepair(profile);
+                    lock (_statusSync) _statuses[profile.Id] = passive with
+                    {
+                        CanRepairRecoveryState = canRepair
+                    };
                 }
                 continue;
             }
@@ -297,13 +304,17 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 HostedProfileStatus passive = await PassiveStatus(profile, discovery,
                     $"Recovery state is unavailable; automatic actions are suspended. {error.Message}",
                     cancellationToken).ConfigureAwait(false);
-                lock (_statusSync) _statuses[profile.Id] = passive;
+                bool canRepair = CanOfferCheckpointRepair(profile);
+                lock (_statusSync) _statuses[profile.Id] = passive with
+                {
+                    CanRepairRecoveryState = canRepair
+                };
             }
         }
     }
 
     internal async Task<bool> ReconcileSharedConfigurationAsync(
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, bool forceReload = false)
     {
         if (_sessionStateStore is null)
             throw new InvalidOperationException("Shared-session reconciliation is not enabled.");
@@ -316,7 +327,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 throw new ConfigurationUnavailableException(
                     "Repair the invalid shared configuration before reconciliation.");
             StoredConfiguration? active = Configuration;
-            if (!_sharedConfigurationSuspended && active is not null &&
+            if (!forceReload && !_sharedConfigurationSuspended && active is not null &&
                 current.Revision == active.Revision &&
                 string.Equals(current.ContentHash, active.ContentHash,
                     StringComparison.Ordinal))
@@ -445,6 +456,61 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 "Legacy recovery state requires a guarded migration before shared-session monitoring can start.");
         _stateStore.MigrateToSession(profile.Id, budgets, _sessionStateStore);
         return _sessionStateStore;
+    }
+
+    private bool CanOfferCheckpointRepair(ProfileConfiguration profile)
+    {
+        if (_sessionStateStore is null || _sharedBudgetStore is null ||
+            Configuration?.AutomaticActionsAllowed != true) return false;
+        try
+        {
+            LegacyStateOwnership ownership = _stateStore.GetOwnership(profile.Id);
+            if (ownership == LegacyStateOwnership.MigrationPending ||
+                ownership != LegacyStateOwnership.SessionOwner &&
+                _stateStore.HasStateEvidence(profile.Id)) return false;
+            return _sessionStateStore.CanRepairUnavailableCheckpoint(profile.Id);
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or
+            ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    public async Task RepairUnavailableRecoveryStateAsync(Guid profileId,
+        CancellationToken cancellationToken = default)
+    {
+        if (_sessionStateStore is null)
+            throw new InvalidOperationException(
+                "Checkpoint repair is available only in shared-session mode.");
+        await _changes.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(RecoveryApplicationHost));
+            EnsureSharedConfigurationCurrent();
+            ProfileConfiguration profile = Configuration!.Configuration.Profiles
+                .SingleOrDefault(item => item.Id == profileId) ??
+                throw new InvalidOperationException("Profile no longer exists.");
+            lock (_statusSync)
+            {
+                if (_coordinators.ContainsKey(profileId) ||
+                    _closingProfiles.Contains(profileId))
+                    throw new InvalidOperationException(
+                        "This profile is active or already changing.");
+            }
+            if (!CanOfferCheckpointRepair(profile))
+                throw new RecoveryStateUnavailableException(
+                    "This profile has no repairable session checkpoint; automatic actions remain suspended.");
+            await Task.Run(() => _sessionStateStore.RepairUnavailableCheckpointExplicitly(
+                profileId, profile.Enabled), cancellationToken).ConfigureAwait(false);
+            _recorder?.TryRecord(new(DateTimeOffset.UtcNow, Guid.NewGuid(),
+                EventSeverity.Warning, OperationalEventKind.RecoveryStateRepaired,
+                ProfileId: profileId, ProfileName: profile.Name));
+        }
+        finally { _changes.Release(); }
+        // Once committed, rebuild even if the initiating UI command was cancelled.
+        await ReconcileSharedConfigurationAsync(CancellationToken.None,
+            forceReload: true).ConfigureAwait(false);
     }
 
     private async Task<HostedProfileStatus> PassiveStatus(ProfileConfiguration profile,

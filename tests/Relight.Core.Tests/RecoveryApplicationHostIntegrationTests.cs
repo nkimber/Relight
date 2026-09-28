@@ -292,6 +292,51 @@ public sealed class RecoveryApplicationHostIntegrationTests
 
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Shared_host_explicitly_repairs_untrusted_session_state_without_resetting_budget()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-host-state-repair-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            Guid id;
+            await using (var created = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                             root, new FakeClock()))
+                id = await created.RegisterExecutableAsync("Disposable target", TestExecutable());
+            var budgets = new SharedRecoveryBudgetStore(root);
+            SharedRecoveryBudget before = budgets.Load(id);
+            string path = Path.Combine(root, "Sessions",
+                WindowsLogonSessionIdentity.Current().StorageKey, "State", $"{id:N}.json");
+            File.WriteAllText(path, "untrusted session bytes");
+
+            await using var host = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                root, new FakeClock());
+            HostedProfileStatus unavailable = Assert.Single(host.GetProfiles());
+            Assert.False(unavailable.AutomaticActionsAllowed);
+            Assert.True(unavailable.CanRepairRecoveryState);
+            Assert.Equal(0, budgets.Load(id).ReservedAutomaticAttempts);
+
+            await host.RepairUnavailableRecoveryStateAsync(id);
+
+            HostedProfileStatus repaired = Assert.Single(host.GetProfiles());
+            Assert.True(repaired.AutomaticActionsAllowed, repaired.Problem);
+            Assert.False(repaired.CanRepairRecoveryState);
+            Assert.True(repaired.Recovery?.Paused);
+            Assert.Equal(before, budgets.Load(id));
+            string evidence = Path.Combine(root, "Sessions",
+                WindowsLogonSessionIdentity.Current().StorageKey, "State",
+                "RepairEvidence", id.ToString("N"));
+            string saved = Assert.Single(Directory.GetFiles(evidence,
+                "state.json", SearchOption.AllDirectories));
+            Assert.Equal("untrusted session bytes", File.ReadAllText(saved));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Shared_host_suspends_discovery_after_external_configuration_change()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-config-drift-{Guid.NewGuid():N}");

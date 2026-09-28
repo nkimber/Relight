@@ -48,6 +48,7 @@ public enum OperationalEventKind
     ProfileRemoved,
     ProfileRenamed,
     RecoveryReset,
+    RecoveryStateRepaired,
     ExplicitStartRequested,
     ExplicitStartDispatched,
     ExplicitStartUncertain,

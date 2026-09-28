@@ -85,6 +85,7 @@ public partial class App : Application
                 RepairConfiguration, _sharedSessionPreviewDataDirectory);
             _viewModel.HistoryRefreshRequested += OnHistoryRefreshRequested;
             _dashboard = new MainWindow(SetProfilePausedAsync, ResetProfileRecoveryAsync,
+                RepairRecoveryStateAsync,
                 StartProfileNowAsync, ExportHistoryAsync, SetProfileEnabledAsync,
                 RemoveProfileAsync, DuplicateProfileAsync, ShowEditProfile,
                 SetStartAtSignInAsync,
@@ -502,6 +503,14 @@ public partial class App : Application
         RecoveryApplicationHost host = Volatile.Read(ref _host) ??
             throw new InvalidOperationException("Monitoring is unavailable.");
         return host.ResetProfileRecoveryAsync(profileId,
+            _monitoringCancellation?.Token ?? CancellationToken.None);
+    }
+
+    private Task RepairRecoveryStateAsync(Guid profileId)
+    {
+        RecoveryApplicationHost host = Volatile.Read(ref _host) ??
+            throw new InvalidOperationException("Monitoring is unavailable.");
+        return host.RepairUnavailableRecoveryStateAsync(profileId,
             _monitoringCancellation?.Token ?? CancellationToken.None);
     }
 
