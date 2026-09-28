@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Relight.Core;
 using Relight.Engine;
 using Relight.Storage;
+using Relight.ViewModels;
 using Relight.Windows;
 
 namespace Relight.Core.Tests;
@@ -899,6 +900,88 @@ public sealed class RecoveryApplicationHostIntegrationTests
         finally
         {
             if (Directory.Exists(migrationRoot)) Directory.Delete(migrationRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Corrupt_shared_budget_suspends_launch_but_keeps_external_discovery_live()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-passive-budget-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        string ready = Path.Combine(root, "external.ready");
+        Process? external = null;
+        try
+        {
+            string label = $"passive-{Guid.NewGuid():N}";
+            RecoveryPolicy policy = RecoveryPolicy.Default with
+            {
+                StartAutomaticallyWhenInitiallyAbsent = true
+            };
+            Guid id;
+            await using (var created = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                             root, new FakeClock()))
+                id = await created.RegisterExecutableAsync("Disposable target", TestExecutable(),
+                    ["--label", label, "--hidden", "--ready-file", ready,
+                        "--exit-after-ms", "30000"], Path.GetTempPath(), policy);
+            string budgetPath = Path.Combine(root, "Budgets", $"{id:N}.json");
+            const string untrusted = "corrupt budget bytes must be preserved";
+            File.WriteAllText(budgetPath, untrusted);
+
+            var clock = new FakeClock();
+            await using var host = await RecoveryApplicationHost.OpenSharedSessionAsync(root, clock);
+            HostedProfileStatus degraded = Assert.Single(host.GetProfiles());
+            Assert.True(degraded.Monitoring);
+            Assert.False(degraded.AutomaticActionsAllowed);
+            Assert.NotNull(degraded.Problem);
+            Assert.Equal(DetectionKind.Absent, degraded.Detection?.Kind);
+
+            var start = new ProcessStartInfo(TestExecutable())
+            {
+                UseShellExecute = false,
+                WorkingDirectory = Path.GetTempPath(),
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+            foreach (string argument in new[] { "--label", label, "--hidden",
+                "--ready-file", ready, "--exit-after-ms", "30000" })
+                start.ArgumentList.Add(argument);
+            external = Process.Start(start) ??
+                throw new InvalidOperationException("Disposable target did not start.");
+            await WaitForFile(ready);
+
+            clock.Elapsed = policy.LockoutDiscoveryInterval;
+            await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
+            HostedProfileStatus observed = Assert.Single(host.GetProfiles());
+            Assert.Equal(DetectionKind.Present, observed.Detection?.Kind);
+            Assert.False(observed.AutomaticActionsAllowed);
+            Assert.NotNull(observed.Problem);
+            var dashboard = new ShellViewModel(() => { }, () => { }, () => { }, () => { });
+            dashboard.UpdateMonitoring(null, false, [observed], null, clock.Elapsed);
+            ApplicationStatusRow row = Assert.Single(dashboard.ApplicationRows);
+            Assert.Equal(ApplicationStatusCategory.Attention, row.Category);
+            Assert.Equal("Detection only", row.State);
+            Assert.Contains("Recovery state is unavailable", row.Detail);
+            Assert.False(row.CanStartNow);
+            Assert.False(row.CanStopAndPause);
+            Assert.Equal(untrusted, File.ReadAllText(budgetPath));
+            Assert.False(external.HasExited);
+            EventHistoryResult dispatched = await new OperationalEventHistoryReader(root)
+                .ReadAsync(new EventHistoryQuery(ProfileId: id,
+                    Kind: OperationalEventKind.LaunchDispatched));
+            Assert.Equal(0, dispatched.TotalMatches);
+        }
+        finally
+        {
+            if (external is not null)
+            {
+                if (!external.HasExited)
+                {
+                    external.Kill(entireProcessTree: false);
+                    await external.WaitForExitAsync();
+                }
+                external.Dispose();
+            }
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
     }
 
