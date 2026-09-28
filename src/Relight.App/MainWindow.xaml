@@ -138,6 +138,10 @@
                                                                 IsEnabled="{Binding CanRepairRecoveryState}"
                                                                 Click="RepairRecoveryStateClick" Margin="0,0,10,8"
                                                                 ToolTip="Preserve damaged session evidence and restore monitoring paused without clearing the shared attempt budget." />
+                                                        <Button Content="Replace unavailable profile"
+                                                                IsEnabled="{Binding CanReplaceUnavailableProfile}"
+                                                                Click="ReplaceUnavailableProfileClick" Margin="0,0,10,8"
+                                                                ToolTip="Preserve the old profile and history, then create a new disabled profile with a distinct recovery budget." />
                                                         <Button Content="{Binding EnableDisableLabel}"
                                                                 IsEnabled="{Binding CanToggleEnabled}"
                                                                 Click="EnableDisableClick" Margin="0,0,10,8"

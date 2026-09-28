@@ -335,6 +335,60 @@ public sealed class RecoveryApplicationHostIntegrationTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Shared_host_replaces_untrusted_budget_with_distinct_disabled_profile(
+        bool corruptBudget)
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-budget-replace-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            Guid originalId;
+            await using (var created = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                             root, new FakeClock()))
+                originalId = await created.RegisterExecutableAsync("Disposable target", TestExecutable());
+            string originalBudget = Path.Combine(root, "Budgets", $"{originalId:N}.json");
+            string originalSession = Path.Combine(root, "Sessions",
+                WindowsLogonSessionIdentity.Current().StorageKey, "State",
+                $"{originalId:N}.json");
+            byte[] sessionBytes = File.ReadAllBytes(originalSession);
+            if (corruptBudget) File.WriteAllText(originalBudget, "untrusted budget bytes");
+            else File.Delete(originalBudget);
+
+            await using var host = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                root, new FakeClock());
+            HostedProfileStatus unavailable = Assert.Single(host.GetProfiles());
+            Assert.False(unavailable.AutomaticActionsAllowed);
+            Assert.False(unavailable.CanRepairRecoveryState);
+            Assert.True(unavailable.CanReplaceUnavailableProfile);
+
+            Guid replacementId = await host.ReplaceUnavailableProfileAsync(originalId);
+
+            Assert.NotEqual(originalId, replacementId);
+            HostedProfileStatus replacement = Assert.Single(host.GetProfiles());
+            Assert.Equal(replacementId, replacement.Id);
+            Assert.False(replacement.ConfiguredEnabled);
+            Assert.False(replacement.Recovery?.Enabled);
+            Assert.Equal(0, new SharedRecoveryBudgetStore(root).Load(replacementId)
+                .ReservedAutomaticAttempts);
+            Assert.Equal(sessionBytes, File.ReadAllBytes(originalSession));
+            Assert.Equal(corruptBudget, File.Exists(originalBudget));
+            if (corruptBudget)
+                Assert.Equal("untrusted budget bytes", File.ReadAllText(originalBudget));
+            Assert.Equal(replacementId,
+                Assert.Single(new ConfigurationStore(root).Load().Configuration.Profiles).Id);
+            Assert.False(Assert.Single(new ConfigurationStore(root).Load()
+                .Configuration.Profiles).Enabled);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact]
     [Trait("Category", "WindowsDesktop")]
     public async Task Shared_host_suspends_discovery_after_external_configuration_change()

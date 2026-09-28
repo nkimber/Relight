@@ -15,7 +15,8 @@ public sealed record HostedProfileStatus(
     bool ConfiguredEnabled = true,
     RecoveryPolicy? Policy = null,
     TargetKind TargetKind = TargetKind.Executable,
-    bool CanRepairRecoveryState = false);
+    bool CanRepairRecoveryState = false,
+    bool CanReplaceUnavailableProfile = false);
 
 public sealed record ProfileBatchResult(int Requested, int Completed,
     IReadOnlyList<string> Errors);
@@ -188,10 +189,12 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                     problem = $"Recovery state is unavailable; re-enable is blocked. {error.Message}";
                 }
                 bool canRepair = problem is not null && CanOfferCheckpointRepair(profile);
+                bool canReplace = problem is not null && CanOfferProfileReplacement(profile);
                 lock (_statusSync)
                     _statuses[profile.Id] = new(profile.Id, profile.Name, false, false,
                         null, disabledRecovery, problem, ConfiguredEnabled: false,
-                        CanRepairRecoveryState: canRepair);
+                        CanRepairRecoveryState: canRepair,
+                        CanReplaceUnavailableProfile: canReplace);
                 continue;
             }
             if (profile.Target.Kind == TargetKind.PackagedApplication &&
@@ -234,9 +237,11 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                         $"Recovery state is unavailable; automatic actions are suspended. {error.Message}",
                         cancellationToken).ConfigureAwait(false);
                     bool canRepair = CanOfferCheckpointRepair(profile);
+                    bool canReplace = CanOfferProfileReplacement(profile);
                     lock (_statusSync) _statuses[profile.Id] = passive with
                     {
-                        CanRepairRecoveryState = canRepair
+                        CanRepairRecoveryState = canRepair,
+                        CanReplaceUnavailableProfile = canReplace
                     };
                 }
                 continue;
@@ -305,9 +310,11 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                     $"Recovery state is unavailable; automatic actions are suspended. {error.Message}",
                     cancellationToken).ConfigureAwait(false);
                 bool canRepair = CanOfferCheckpointRepair(profile);
+                bool canReplace = CanOfferProfileReplacement(profile);
                 lock (_statusSync) _statuses[profile.Id] = passive with
                 {
-                    CanRepairRecoveryState = canRepair
+                    CanRepairRecoveryState = canRepair,
+                    CanReplaceUnavailableProfile = canReplace
                 };
             }
         }
@@ -475,6 +482,94 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         {
             return false;
         }
+    }
+
+    private bool CanOfferProfileReplacement(ProfileConfiguration profile)
+    {
+        if (_sessionStateStore is null || _sharedBudgetStore is null ||
+            Configuration?.AutomaticActionsAllowed != true) return false;
+        try
+        {
+            LegacyStateOwnership ownership = _stateStore.GetOwnership(profile.Id);
+            if (ownership == LegacyStateOwnership.MigrationPending ||
+                ownership != LegacyStateOwnership.SessionOwner &&
+                _stateStore.HasStateEvidence(profile.Id)) return false;
+            try { _sharedBudgetStore.Load(profile.Id); return false; }
+            catch (RecoveryStateUnavailableException error)
+            {
+                return error.InnerException is null or System.Text.Json.JsonException;
+            }
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or
+            ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    public async Task<Guid> ReplaceUnavailableProfileAsync(Guid profileId,
+        CancellationToken cancellationToken = default)
+    {
+        if (_sessionStateStore is null || _sharedBudgetStore is null)
+            throw new InvalidOperationException(
+                "Unavailable-budget replacement requires shared-session mode.");
+        Guid replacementId;
+        await _changes.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(RecoveryApplicationHost));
+            EnsureSharedConfigurationCurrent();
+            StoredConfiguration current = Configuration!;
+            ProfileConfiguration profile = current.Configuration.Profiles
+                .SingleOrDefault(item => item.Id == profileId) ??
+                throw new InvalidOperationException("Profile no longer exists.");
+            lock (_statusSync)
+            {
+                if (_coordinators.ContainsKey(profileId) ||
+                    _closingProfiles.Contains(profileId))
+                    throw new InvalidOperationException(
+                        "This profile is active or already changing.");
+            }
+            if (!CanOfferProfileReplacement(profile))
+                throw new RecoveryStateUnavailableException(
+                    "This profile does not have a missing or untrusted shared budget.");
+            replacementId = Guid.NewGuid();
+            ProfileConfiguration replacement = profile with
+            {
+                Id = replacementId,
+                Enabled = false
+            };
+            RelightConfiguration updated = current.Configuration with
+            {
+                Profiles = [.. current.Configuration.Profiles
+                    .Select(item => item.Id == profileId ? replacement : item)]
+            };
+            ConfigurationStore.ValidateConfiguration(updated);
+            await Task.Run(() =>
+            {
+                _sharedBudgetStore.Create(replacementId);
+                _sessionStateStore.Create(replacementId,
+                    new RecoveryMachine(replacement.Policy, enabled: false)
+                        .ExportCheckpoint());
+            }, cancellationToken).ConfigureAwait(false);
+            StoredConfiguration saved = await Task.Run(() =>
+                _configurationStore.Save(current, updated),
+                CancellationToken.None).ConfigureAwait(false);
+            Configuration = saved;
+            Guid operationId = Guid.NewGuid();
+            _recorder?.TryRecord(new(DateTimeOffset.UtcNow, Guid.NewGuid(),
+                EventSeverity.Warning, OperationalEventKind.RecoveryProfileReplaced,
+                ProfileId: profileId, ProfileName: profile.Name,
+                OperationId: operationId));
+            _recorder?.TryRecord(new(DateTimeOffset.UtcNow, Guid.NewGuid(),
+                EventSeverity.Warning, OperationalEventKind.RecoveryProfileReplaced,
+                ProfileId: replacementId, ProfileName: replacement.Name,
+                OperationId: operationId));
+        }
+        finally { _changes.Release(); }
+        await ReconcileSharedConfigurationAsync(CancellationToken.None,
+            forceReload: true).ConfigureAwait(false);
+        return replacementId;
     }
 
     public async Task RepairUnavailableRecoveryStateAsync(Guid profileId,

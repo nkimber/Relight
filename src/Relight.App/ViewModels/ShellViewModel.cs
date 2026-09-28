@@ -18,6 +18,7 @@ internal sealed record ApplicationSortOption(string Label, ApplicationSortMode M
 internal sealed class ApplicationStatusRow(
     Guid id, string name, string state, string detail,
     bool isPaused, bool canPauseResume, bool canReset, bool canRepairRecoveryState,
+    bool canReplaceUnavailableProfile,
     bool canStartNow,
     bool canStopAndPause, bool canRestartNow,
     bool configuredEnabled, bool canToggleEnabled, bool canRemove, bool canEdit,
@@ -33,6 +34,7 @@ internal sealed class ApplicationStatusRow(
     public bool CanPauseResume { get; private set; } = canPauseResume;
     public bool CanReset { get; private set; } = canReset;
     public bool CanRepairRecoveryState { get; private set; } = canRepairRecoveryState;
+    public bool CanReplaceUnavailableProfile { get; private set; } = canReplaceUnavailableProfile;
     public bool CanStartNow { get; private set; } = canStartNow;
     public bool CanStopAndPause { get; private set; } = canStopAndPause;
     public bool CanRestartNow { get; private set; } = canRestartNow;
@@ -59,6 +61,7 @@ internal sealed class ApplicationStatusRow(
             IsPaused != next.IsPaused || CanPauseResume != next.CanPauseResume ||
             CanReset != next.CanReset ||
             CanRepairRecoveryState != next.CanRepairRecoveryState ||
+            CanReplaceUnavailableProfile != next.CanReplaceUnavailableProfile ||
             CanStartNow != next.CanStartNow ||
             CanStopAndPause != next.CanStopAndPause ||
             CanRestartNow != next.CanRestartNow ||
@@ -77,6 +80,7 @@ internal sealed class ApplicationStatusRow(
         CanPauseResume = next.CanPauseResume;
         CanReset = next.CanReset;
         CanRepairRecoveryState = next.CanRepairRecoveryState;
+        CanReplaceUnavailableProfile = next.CanReplaceUnavailableProfile;
         CanStartNow = next.CanStartNow;
         CanStopAndPause = next.CanStopAndPause;
         CanRestartNow = next.CanRestartNow;
@@ -307,6 +311,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
                      recovery.HoldReason is not null) &&
                     profile.AutomaticActionsAllowed && profile.Problem is null,
                 profile.CanRepairRecoveryState && configurationProblem is null,
+                profile.CanReplaceUnavailableProfile && configurationProblem is null,
                 profile.Recovery is { Paused: false, DetectionUnavailable: false,
                     HoldReason: null, State: Relight.Core.RecoveryState.WaitingForFirstStart or
                         Relight.Core.RecoveryState.RetryWaiting or

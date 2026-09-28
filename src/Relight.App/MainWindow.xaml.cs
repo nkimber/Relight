@@ -16,6 +16,7 @@ public partial class MainWindow : Window
     private readonly Func<Guid, bool, Task> _setPaused;
     private readonly Func<Guid, Task> _resetRecovery;
     private readonly Func<Guid, Task> _repairRecoveryState;
+    private readonly Func<Guid, Task<Guid>> _replaceUnavailableProfile;
     private readonly Func<Guid, Task> _startNow;
     private readonly Func<EventHistoryQuery, string, EventHistoryExportFormat,
         Task<EventHistoryExportResult>> _exportHistory;
@@ -33,6 +34,7 @@ public partial class MainWindow : Window
 
     public MainWindow(Func<Guid, bool, Task> setPaused, Func<Guid, Task> resetRecovery,
         Func<Guid, Task> repairRecoveryState,
+        Func<Guid, Task<Guid>> replaceUnavailableProfile,
         Func<Guid, Task> startNow,
         Func<EventHistoryQuery, string, EventHistoryExportFormat,
             Task<EventHistoryExportResult>> exportHistory,
@@ -50,6 +52,7 @@ public partial class MainWindow : Window
         _setPaused = setPaused;
         _resetRecovery = resetRecovery;
         _repairRecoveryState = repairRecoveryState;
+        _replaceUnavailableProfile = replaceUnavailableProfile;
         _startNow = startNow;
         _exportHistory = exportHistory;
         _setEnabled = setEnabled;
@@ -459,5 +462,30 @@ public partial class MainWindow : Window
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally { button.IsEnabled = row.CanRepairRecoveryState; }
+    }
+
+    private async void ReplaceUnavailableProfileClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: ApplicationStatusRow row } button) return;
+        if (MessageBox.Show(this,
+                "The shared recovery budget cannot be trusted. Relight will preserve this profile's old files and history, replace it with a new disabled profile, and leave the application running. The new profile has a fresh budget; review its settings and enable it only when ready. Continue?",
+                "Replace unavailable profile?", MessageBoxButton.OKCancel,
+                MessageBoxImage.Warning, MessageBoxResult.Cancel) != MessageBoxResult.OK)
+            return;
+        button.IsEnabled = false;
+        try
+        {
+            await _replaceUnavailableProfile(row.Id);
+            MessageBox.Show(this,
+                "The replacement profile is disabled. Review it before enabling protection. The previous profile's history remains available.",
+                "Replacement created", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Profile replacement failed",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally { button.IsEnabled = row.CanReplaceUnavailableProfile; }
     }
 }
