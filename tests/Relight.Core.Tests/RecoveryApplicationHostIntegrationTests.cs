@@ -12,6 +12,118 @@ public sealed class RecoveryApplicationHostIntegrationTests
 {
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Verified_exit_callback_and_manual_start_share_one_launch_gate()
+    {
+        string root = Path.Combine(Path.GetTempPath(),
+            $"relight-exit-race-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        string ready = Path.Combine(root, "target.ready");
+        string label = $"exit-race-{Guid.NewGuid():N}";
+        Process? initial = null;
+        int? launchedPid = null;
+        try
+        {
+            string[] arguments = ["--label", label, "--ready-file", ready,
+                "--exit-after-ms", "30000"];
+            var start = new ProcessStartInfo(TestExecutable()) { UseShellExecute = false };
+            foreach (string argument in arguments) start.ArgumentList.Add(argument);
+            initial = Process.Start(start) ??
+                throw new InvalidOperationException("Disposable target did not start.");
+            await WaitForFile(ready);
+            Guid id = Guid.NewGuid();
+            RecoveryPolicy policy = RecoveryPolicy.Default with
+            {
+                NormalPollInterval = TimeSpan.FromSeconds(60),
+                ObservationPeriod = TimeSpan.FromSeconds(60),
+                RetryDelay = TimeSpan.FromSeconds(5)
+            };
+            new ConfigurationStore(root).Initialize(new(
+                [new(id, "Exit race target", true,
+                    new(TargetKind.Executable, TestExecutable(), [.. arguments],
+                        RequiredArgument: label), policy)], GlobalConfiguration.Default));
+            new RecoveryStateStore(root).Create(id,
+                new RecoveryMachine(policy).ExportCheckpoint());
+            var clock = new FakeClock();
+            await using var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root,
+                clock);
+            await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
+            for (int second = 5; second <= 65; second += 5)
+            {
+                clock.Elapsed = TimeSpan.FromSeconds(second);
+                await Task.WhenAll(host.Pulse().Values).WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            Assert.Equal(RecoveryState.Healthy,
+                Assert.Single(host.GetProfiles()).Recovery?.State);
+            Assert.NotNull(Assert.Single(host.GetProfiles()).Recovery?.TargetIdentity);
+
+            initial.Kill(entireProcessTree: false);
+            await initial.WaitForExitAsync();
+            File.Delete(ready);
+            // The 60-second normal poll is not due again. Only the real Exited
+            // subscription can make this pulse available at the current clock.
+            Task? callbackPoll = null;
+            using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+            {
+                while (callbackPoll is null)
+                {
+                    timeout.Token.ThrowIfCancellationRequested();
+                    host.Pulse().TryGetValue(id, out callbackPoll);
+                    if (callbackPoll is null)
+                        await Task.Delay(20, timeout.Token);
+                }
+            }
+            await callbackPoll.WaitAsync(TimeSpan.FromSeconds(5));
+            clock.Elapsed = TimeSpan.FromSeconds(67);
+            await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(RecoveryState.RetryWaiting,
+                Assert.Single(host.GetProfiles()).Recovery?.State);
+
+            clock.Elapsed = TimeSpan.FromSeconds(72);
+            Task<CoordinatorResult> explicitStart = host.StartProfileNowAsync(id);
+            Task duePoll = Assert.Single(host.Pulse()).Value;
+            await Task.WhenAll(explicitStart, duePoll).WaitAsync(TimeSpan.FromSeconds(10));
+            string[] identity = (await WaitForFile(ready)).Split('|');
+            launchedPid = int.Parse(identity[0]);
+            Assert.NotEqual(initial.Id, launchedPid);
+            Assert.Equal(1, new RecoveryStateStore(root).Load(id).Checkpoint
+                .ReservedAutomaticAttempts + ((await explicitStart).LaunchDispatched ? 1 : 0));
+            var history = new OperationalEventHistoryReader(root);
+            EventHistoryResult automatic = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: id, Kind: OperationalEventKind.LaunchDispatched));
+            EventHistoryResult manual = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: id, Kind: OperationalEventKind.ExplicitStartDispatched));
+            Assert.Equal(1, automatic.TotalMatches + manual.TotalMatches);
+            if (automatic.TotalMatches == 1)
+            {
+                OperationalEvent reserved = Assert.Single((await history.ReadAsync(
+                    new EventHistoryQuery(ProfileId: id,
+                        Kind: OperationalEventKind.LaunchReserved))).Events);
+                Assert.Equal(reserved.OperationId, Assert.Single(automatic.Events).OperationId);
+            }
+        }
+        finally
+        {
+            foreach (int? pid in new int?[] { launchedPid, initial?.Id })
+            {
+                if (pid is null) continue;
+                try
+                {
+                    using Process process = Process.GetProcessById(pid.Value);
+                    if (!process.HasExited)
+                    {
+                        process.Kill(entireProcessTree: false);
+                        await process.WaitForExitAsync();
+                    }
+                }
+                catch (ArgumentException) { }
+            }
+            initial?.Dispose();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Windows_interruption_marks_profiles_unknown_then_reconciles_immediately()
     {
         string root = Path.Combine(Path.GetTempPath(),
