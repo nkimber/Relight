@@ -5,7 +5,7 @@
 
 ## Platform and toolchain
 
-Relight uses C# and WPF on Windows 11 x64. .NET 10 is the selected LTS family ([Microsoft support policy](https://dotnet.microsoft.com/en-us/platform/support/policy)). The initial SDK baseline is the installed 10.0.102, pinned in `global.json` with patch roll-forward. This is a reproducible development baseline, not a claim to use the newest servicing release. Refresh the SDK/runtime servicing baseline before production distribution.
+Relight uses C# and WPF on Windows 11 x64. .NET 10 is the selected LTS family ([Microsoft support policy](https://dotnet.microsoft.com/en-us/platform/support/policy)). The initial SDK baseline was 10.0.102; a Visual Studio toolchain update on 28 September 2026 removed that feature band and installed 10.0.401, so `global.json` now pins 10.0.401 with patch roll-forward. The target framework remains .NET 10. This is a reproducible development baseline, not a claim to use the newest servicing release. Refresh the SDK/runtime servicing baseline before production distribution.
 
 The solution uses the SDK's `.slnx` format, nullable analysis, deterministic builds and warnings as errors. The Windows adapter uses Microsoft's `System.Management` package for process metadata; no third-party runtime package has been added. CI builds on Windows; running the shell requires a Windows interactive session.
 

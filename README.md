@@ -8,7 +8,7 @@ A Windows tray application that will watch selected desktop apps and bring them 
 
 ## Build and run
 
-Requirements: Windows 11 x64 and the .NET 10 SDK selected by [global.json](global.json). The initial build uses SDK 10.0.102, with patch roll-forward within that SDK feature band. The WPF preview has no third-party runtime NuGet packages. The Windows executable adapter uses Microsoft's `System.Management` package; the test project uses xUnit and the Microsoft test SDK.
+Requirements: Windows 11 x64 and the .NET 10 SDK selected by [global.json](global.json). The current development baseline is SDK 10.0.401, with patch roll-forward within that SDK feature band. The WPF preview has no third-party runtime NuGet packages. The Windows executable adapter uses Microsoft's `System.Management` package; the test project uses xUnit and the Microsoft test SDK.
 
 ```powershell
 dotnet restore Relight.slnx
