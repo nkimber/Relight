@@ -44,9 +44,10 @@ Exit an already-running preview, then run:
 ```powershell
 pwsh -File scripts/Test-Shell.ps1
 dotnet test tests/Relight.Core.Tests/Relight.Core.Tests.csproj -c Release
+pwsh -File scripts/Test-LegacyMigration.ps1
 ```
 
-The shell smoke check uses `--shell-test` to disable monitoring while it starts and interrupts its own preview processes. It verifies hidden tray startup, second-instance activation, and restart after interruption. The test suite runs deterministic recovery/storage checks and controlled Windows process tests. Interactive checks and outstanding coverage are recorded in [the shell checkpoint](docs/shell-checkpoint.md) and [engine checkpoint](docs/engine-checkpoint.md).
+The shell smoke check uses `--shell-test` to disable monitoring while it starts and interrupts its own preview processes. It verifies hidden tray startup, second-instance activation, and restart after interruption. The test suite runs deterministic recovery/storage checks and controlled Windows process tests. The legacy migration probe requires the local Git history containing `bbd5879`; it builds that pre-marker storage version in an ignored `artifacts` directory and verifies that its separate process cannot write after migration. Interactive checks and outstanding coverage are recorded in [the shell checkpoint](docs/shell-checkpoint.md) and [engine checkpoint](docs/engine-checkpoint.md).
 
 A self-contained preview can be produced locally with:
 

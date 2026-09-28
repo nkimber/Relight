@@ -12,6 +12,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0 # the legacy migration probe compiles pre-marker commit bbd5879
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           global-json-file: global.json
@@ -21,3 +23,5 @@ jobs:
         run: dotnet build Relight.slnx --configuration Release --no-restore
       - name: Deterministic recovery and storage tests
         run: dotnet test tests/Relight.Core.Tests/Relight.Core.Tests.csproj --configuration Release --no-build --filter "Category!=WindowsDesktop"
+      - name: Legacy migration cross-process probe
+        run: pwsh -File scripts/Test-LegacyMigration.ps1
