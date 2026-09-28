@@ -60,8 +60,13 @@
                             HorizontalAlignment="Left" Margin="0,0,0,12" />
                     <TextBlock x:Name="DetectionText" Text="Select a file, then choose Detect now."
                                TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
-                    <TextBlock Margin="0,16,0,0" Style="{StaticResource Muted}" TextWrapping="Wrap"
-                               Text="Protection waits for your first launch if the app is not running. Automatic recovery uses the documented defaults. Adding it will not close or start the app." />
+                    <CheckBox x:Name="InitialStartInput" Margin="0,16,0,8"
+                              Content="Start automatically if initially absent"
+                              Checked="InitialStartChanged" Unchecked="InitialStartChanged" />
+                    <TextBlock x:Name="PolicyPreviewText" Style="{StaticResource Muted}"
+                               TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock Margin="0,8,0,0" Style="{StaticResource Muted}" TextWrapping="Wrap"
+                               Text="Adding protection never closes an existing application. Other recovery settings can be changed later in Edit profile." />
                 </StackPanel>
             </StackPanel>
         </ScrollViewer>

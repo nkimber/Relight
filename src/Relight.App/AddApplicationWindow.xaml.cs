@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
 using Relight.Core;
+using Relight.ViewModels;
 using Relight.Windows;
 
 namespace Relight;
@@ -22,7 +23,22 @@ public partial class AddApplicationWindow : Window
     {
         _host = host;
         InitializeComponent();
+        UpdatePolicyPreview();
         NameInput.Focus();
+    }
+
+    private RecoveryPolicy SelectedPolicy => RecoveryPolicy.Default with
+    {
+        StartAutomaticallyWhenInitiallyAbsent = InitialStartInput.IsChecked == true
+    };
+
+    private void InitialStartChanged(object sender, RoutedEventArgs e) =>
+        UpdatePolicyPreview();
+
+    private void UpdatePolicyPreview()
+    {
+        if (PolicyPreviewText is not null && InitialStartInput is not null)
+            PolicyPreviewText.Text = RecoveryPolicyPreview.Describe(SelectedPolicy);
     }
 
     private void BrowseClick(object sender, RoutedEventArgs e)
@@ -162,18 +178,25 @@ public partial class AddApplicationWindow : Window
     private async void AddClick(object sender, RoutedEventArgs e)
     {
         if (_busy || !CanAdd()) return;
+        RecoveryPolicy policy = SelectedPolicy;
+        if (policy.StartAutomaticallyWhenInitiallyAbsent &&
+            MessageBox.Show(this,
+                "If the selected application is absent, adding protection may start it automatically after Relight confirms absence and waits the retry delay. Continue?",
+                "Enable automatic start?", MessageBoxButton.YesNo,
+                MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
+            return;
         _saving = true;
         SetBusy(true);
         try
         {
             if (ChatGptOption.IsChecked == true)
-                await _host.RegisterSelectedChatGptAsync(NameInput.Text);
+                await _host.RegisterSelectedChatGptAsync(NameInput.Text, policy);
             else
                 await _host.RegisterExecutableAsync(NameInput.Text, _inspectedPath!,
                     ArgumentsInput.Text.Split(['\r', '\n'],
                         StringSplitOptions.RemoveEmptyEntries |
                         StringSplitOptions.TrimEntries),
-                    WorkingDirectoryInput.Text);
+                    WorkingDirectoryInput.Text, policy);
             _saving = false;
             DialogResult = true;
         }
@@ -204,6 +227,7 @@ public partial class AddApplicationWindow : Window
         ChooseRunningButton.IsEnabled = !busy;
         ExecutableOption.IsEnabled = !busy;
         ChatGptOption.IsEnabled = !busy;
+        InitialStartInput.IsEnabled = !busy;
         CancelButton.IsEnabled = !busy;
         DetectButton.IsEnabled = !busy;
         UpdateAddState();

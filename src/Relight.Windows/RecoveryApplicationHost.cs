@@ -694,8 +694,16 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
 
     public async Task<Guid> RegisterExecutableAsync(string name, string executablePath,
         IReadOnlyList<string> arguments, string? workingDirectory,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        await RegisterExecutableAsync(name, executablePath, arguments,
+            workingDirectory, RecoveryPolicy.Default, cancellationToken).ConfigureAwait(false);
+
+    public async Task<Guid> RegisterExecutableAsync(string name, string executablePath,
+        IReadOnlyList<string> arguments, string? workingDirectory,
+        RecoveryPolicy policy, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(policy);
+        policy.Validate();
         if (string.IsNullOrWhiteSpace(name) || name.Length > 100)
             throw new ArgumentException("Choose a name of 1–100 characters.", nameof(name));
         ArgumentNullException.ThrowIfNull(arguments);
@@ -716,7 +724,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             new(TargetKind.Executable, target.CanonicalPath, target.Arguments.ToList(),
                 target.WorkingDirectory), discovery,
             _executableLauncherFactory(target), new ExecutableStopper(target), detected,
-            cancellationToken).ConfigureAwait(false);
+            policy, cancellationToken).ConfigureAwait(false);
     }
 
     public static Task<Detection> InspectSelectedChatGptAsync(
@@ -724,8 +732,15 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         new ChatGptPackagedDiscovery().DetectAsync(cancellationToken);
 
     public async Task<Guid> RegisterSelectedChatGptAsync(string name,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        await RegisterSelectedChatGptAsync(name, RecoveryPolicy.Default,
+            cancellationToken).ConfigureAwait(false);
+
+    public async Task<Guid> RegisterSelectedChatGptAsync(string name,
+        RecoveryPolicy policy, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(policy);
+        policy.Validate();
         if (string.IsNullOrWhiteSpace(name) || name.Length > 100)
             throw new ArgumentException("Choose a name of 1–100 characters.", nameof(name));
         var discovery = new ChatGptPackagedDiscovery();
@@ -740,13 +755,13 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             new PackagedApplicationLauncher(
                 ChatGptPackagedDiscovery.ApplicationUserModelId),
             new ChatGptPackagedStopper(), detected,
-            cancellationToken).ConfigureAwait(false);
+            policy, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<Guid> RegisterNewProfileAsync(string name,
         TargetConfiguration targetConfiguration, IProcessDiscovery discovery,
         IProcessLauncher launcher, IProcessStopper? stopper, Detection detected,
-        CancellationToken cancellationToken)
+        RecoveryPolicy policy, CancellationToken cancellationToken)
     {
         await _changes.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -758,7 +773,6 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 throw new ConfigurationUnavailableException("Repair configuration before adding a profile.");
 
             Guid id = Guid.NewGuid();
-            RecoveryPolicy policy = RecoveryPolicy.Default;
             var profile = new ProfileConfiguration(id, name.Trim(), true,
                 targetConfiguration, policy);
             var updated = current.Configuration with

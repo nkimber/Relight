@@ -252,6 +252,36 @@ public sealed class RecoveryApplicationHostIntegrationTests
 
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Registration_preserves_selected_initial_start_policy()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-initial-start-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            RecoveryPolicy selected = RecoveryPolicy.Default with
+            {
+                StartAutomaticallyWhenInitiallyAbsent = true
+            };
+            await using var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(
+                root, new FakeClock());
+            Guid id = await host.RegisterExecutableAsync("Initial-start target",
+                TestExecutable(), [], root, selected);
+
+            ProfileConfiguration saved = Assert.Single(
+                new ConfigurationStore(root).Load().Configuration.Profiles);
+            Assert.Equal(id, saved.Id);
+            Assert.Equal(selected, saved.Policy);
+            Assert.Equal(0, new RecoveryStateStore(root).Load(id)
+                .Checkpoint.ReservedAutomaticAttempts);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Shared_host_registers_and_reopens_fresh_profile_without_legacy_state()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-shared-host-{Guid.NewGuid():N}");
