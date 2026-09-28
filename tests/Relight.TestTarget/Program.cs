@@ -13,7 +13,9 @@ internal sealed record TargetOptions(
     bool BlockClose,
     int? ExitAfterMs,
     int HelperMs,
-    string? ReadyFile)
+    string? ReadyFile,
+    string? AttemptFile,
+    int FailFirstCount)
 {
     public static TargetOptions Parse(string[] args)
     {
@@ -22,7 +24,8 @@ internal sealed record TargetOptions(
             blockClose = false;
         int? exitAfterMs = null;
         int helperMs = 30_000;
-        string? readyFile = null;
+        string? readyFile = null, attemptFile = null;
+        int failFirstCount = 0;
         for (int i = 0; i < args.Length; i++)
         {
             string Next() => i + 1 < args.Length
@@ -39,6 +42,12 @@ internal sealed record TargetOptions(
                 case "--exit-after-ms": exitAfterMs = ParseDuration(Next()); break;
                 case "--helper-ms": helperMs = ParseDuration(Next()); break;
                 case "--ready-file": readyFile = Next(); break;
+                case "--attempt-file": attemptFile = Next(); break;
+                case "--fail-first":
+                    if (!int.TryParse(Next(), out failFirstCount) ||
+                        failFirstCount is < 0 or > 20)
+                        throw new ArgumentException("Fail-first count must be 0–20.");
+                    break;
                 default: throw new ArgumentException($"Unknown option: {args[i]}");
             }
         }
@@ -47,8 +56,12 @@ internal sealed record TargetOptions(
             throw new ArgumentException("Label must be 1–60 characters.");
         if (helper && (handoff || spawnHelper))
             throw new ArgumentException("A helper cannot hand off or spawn another helper.");
+        if (attemptFile is not null && !Path.IsPathFullyQualified(attemptFile))
+            throw new ArgumentException("Attempt-file path must be absolute.");
+        if (failFirstCount > 0 && (attemptFile is null || exitAfterMs is null))
+            throw new ArgumentException("Fail-first mode requires an attempt file and exit delay.");
         return new(label, helper, handoff, spawnHelper, hidden, blockClose,
-            exitAfterMs, helperMs, readyFile);
+            exitAfterMs, helperMs, readyFile, attemptFile, failFirstCount);
     }
 
     private static int ParseDuration(string text) =>
@@ -76,9 +89,37 @@ internal static class Program
         if (options.SpawnHelper)
             StartChild(options, helper: true);
 
+        if (!options.Helper && options.AttemptFile is { } attemptFile &&
+            RecordAttempt(attemptFile) > options.FailFirstCount)
+            options = options with { ExitAfterMs = null };
+
         ApplicationConfiguration.Initialize();
         Application.Run(new TargetForm(options));
         return 0;
+    }
+
+    private static int RecordAttempt(string path)
+    {
+        using var stream = new FileStream(path, FileMode.OpenOrCreate,
+            FileAccess.ReadWrite, FileShare.None);
+        Span<byte> bytes = stackalloc byte[sizeof(int)];
+        int previous = 0;
+        if (stream.Length == bytes.Length)
+        {
+            stream.ReadExactly(bytes);
+            previous = BitConverter.ToInt32(bytes);
+        }
+        else if (stream.Length != 0)
+            throw new InvalidDataException("Attempt counter has an invalid length.");
+        if (previous is < 0 or >= 20)
+            throw new InvalidDataException("Attempt counter is out of range.");
+        int next = previous + 1;
+        BitConverter.TryWriteBytes(bytes, next);
+        stream.Position = 0;
+        stream.Write(bytes);
+        stream.SetLength(bytes.Length);
+        stream.Flush(flushToDisk: true);
+        return next;
     }
 
     private static void StartChild(TargetOptions options, bool helper)
@@ -115,6 +156,13 @@ internal static class Program
             {
                 start.ArgumentList.Add("--ready-file");
                 start.ArgumentList.Add(path);
+            }
+            if (options.AttemptFile is { } attemptFile)
+            {
+                start.ArgumentList.Add("--attempt-file");
+                start.ArgumentList.Add(attemptFile);
+                start.ArgumentList.Add("--fail-first");
+                start.ArgumentList.Add(options.FailFirstCount.ToString());
             }
         }
 

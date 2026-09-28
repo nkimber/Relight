@@ -345,6 +345,104 @@ public sealed class RecoveryWpfPreviewProcessTests
         }
     }
 
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Third_automatic_attempt_can_complete_observation_and_reset_budget()
+    {
+        string directory = Path.Combine(Path.GetTempPath(),
+            $"relight-wpf-third-stable-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        string targetExecutable = FindBuiltExecutable("Relight.TestTarget",
+            "Relight.TestTarget.exe");
+        string relightExecutable = FindBuiltExecutable("Relight.App", "Relight.exe");
+        string attemptsFile = Path.Combine(directory, "attempts.bin");
+        string ready = Path.Combine(directory, "target.ready");
+        string label = $"wpf-third-stable-{Guid.NewGuid():N}";
+        Process? preview = null;
+        int? stablePid = null;
+        long? stableStartedTicks = null;
+        try
+        {
+            Guid profileId = await ConfigureProfileAsync(directory, targetExecutable,
+                ["--label", label, "--attempt-file", attemptsFile,
+                    "--fail-first", "2", "--exit-after-ms", "100",
+                    "--ready-file", ready], maximumAttempts: 3);
+            var budgets = new SharedRecoveryBudgetStore(directory);
+            var history = new OperationalEventHistoryReader(directory);
+            preview = StartPreview(relightExecutable, directory);
+            await WaitForEventCountAsync(history, profileId,
+                OperationalEventKind.LaunchDispatched, 3, TimeSpan.FromSeconds(75));
+            await WaitUntilAsync(() =>
+            {
+                SharedRecoveryBudget? budget = TryLoadBudget(budgets, profileId);
+                if (budget?.ReservedAutomaticAttempts != 3 ||
+                    !File.Exists(ready) || !File.Exists(attemptsFile)) return false;
+                try
+                {
+                    byte[] count = File.ReadAllBytes(attemptsFile);
+                    string[] identity = File.ReadAllText(ready).Split('|');
+                    return count.Length == sizeof(int) &&
+                        BitConverter.ToInt32(count) == 3 &&
+                        IsSameTargetAlive(int.Parse(identity[0], CultureInfo.InvariantCulture),
+                            DateTimeOffset.Parse(identity[1],
+                                CultureInfo.InvariantCulture).UtcTicks, targetExecutable);
+                }
+                catch (Exception error) when (error is IOException or FormatException or
+                    IndexOutOfRangeException) { return false; }
+            }, TimeSpan.FromSeconds(15));
+            string[] identity = (await File.ReadAllTextAsync(ready)).Split('|');
+            stablePid = int.Parse(identity[0], CultureInfo.InvariantCulture);
+            stableStartedTicks = DateTimeOffset.Parse(identity[1],
+                CultureInfo.InvariantCulture).UtcTicks;
+            Assert.True(IsSameTargetAlive(stablePid.Value, stableStartedTicks.Value,
+                targetExecutable));
+
+            await Task.Delay(TimeSpan.FromSeconds(10));
+            SharedRecoveryBudget? observing = TryLoadBudget(budgets, profileId);
+            Assert.NotNull(observing);
+            Assert.Equal(3, observing.ReservedAutomaticAttempts);
+            Assert.False(observing.LockedOut);
+            await WaitUntilAsync(() =>
+            {
+                if (preview.HasExited || !IsSameTargetAlive(stablePid.Value,
+                        stableStartedTicks.Value, targetExecutable))
+                    throw new InvalidOperationException(
+                        "The third attempt exited before completing observation.");
+                SharedRecoveryBudget? budget = TryLoadBudget(budgets, profileId);
+                return budget?.ReservedAutomaticAttempts == 0 &&
+                    budget.LockedOut == false;
+            }, TimeSpan.FromSeconds(80));
+
+            await WaitForEventCountAsync(history, profileId,
+                OperationalEventKind.ObservationCompleted, 1,
+                TimeSpan.FromSeconds(10));
+
+            EventHistoryResult dispatched = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.LaunchDispatched));
+            EventHistoryResult stable = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.ObservationCompleted));
+            EventHistoryResult lockouts = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.LockoutEntered));
+            Assert.Equal(3, dispatched.TotalMatches);
+            Assert.Contains(stable.Events, entry =>
+                entry.Origin == ObservationOrigin.AutomaticLaunch);
+            Assert.Empty(lockouts.Events);
+            Assert.Equal(3, BitConverter.ToInt32(File.ReadAllBytes(attemptsFile)));
+        }
+        finally
+        {
+            StopStartedProcess(preview);
+            if (stablePid is { } pid && stableStartedTicks is { } started &&
+                IsSameTargetAlive(pid, started, targetExecutable))
+            {
+                using Process target = Process.GetProcessById(pid);
+                target.Kill(entireProcessTree: false);
+                target.WaitForExit(5000);
+            }
+            DeleteTemporaryDirectory(directory);
+        }
+    }
+
     private static async Task<Guid> ConfigureProfileAsync(string directory,
         string targetExecutable, IReadOnlyList<string> arguments, int maximumAttempts)
     {
