@@ -6,6 +6,25 @@ namespace Relight.Core.Tests;
 public sealed class ConfigurationStoreTests
 {
     [Fact]
+    public void Launch_lease_rejects_stale_revision_and_blocks_concurrent_save()
+    {
+        using var directory = new TestDirectory();
+        var store = new ConfigurationStore(directory.Path);
+        StoredConfiguration first = store.Initialize(RelightConfiguration.Empty);
+        StoredConfiguration second = store.Save(first, WithProfile());
+
+        Assert.Throws<StaleConfigurationException>(() => store.AcquireLaunchLease(first));
+        using (store.AcquireLaunchLease(second))
+        {
+            Assert.Throws<ConfigurationUnavailableException>(() =>
+                new ConfigurationStore(directory.Path).Save(second, WithProfile()));
+        }
+
+        StoredConfiguration third = store.Save(second, WithProfile());
+        Assert.Equal(second.Revision + 1, third.Revision);
+    }
+
+    [Fact]
     public void Invalid_external_edit_shows_last_good_and_suspends_automatic_actions()
     {
         using var directory = new TestDirectory();

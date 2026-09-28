@@ -131,6 +131,51 @@ public sealed class ConfigurationStore
     }
 
     /// <summary>
+    /// Holds the configuration revision stable while a launch is dispatched.
+    /// Saves using this store's lock cannot commit until the lease is released.
+    /// </summary>
+    public IDisposable AcquireLaunchLease(StoredConfiguration expected)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        if (!expected.AutomaticActionsAllowed)
+            throw new ConfigurationUnavailableException("Configuration is degraded; launch is suspended.");
+        FileStream guard = Lock();
+        try
+        {
+            // Deny uncoordinated writes or replacement as well as coordinated
+            // Save calls while the launch adapter is entering dispatch.
+            var pinned = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            try
+            {
+                StoredConfiguration current = Read(_path, fromBackup: false);
+                if (current.Revision != expected.Revision ||
+                    !string.Equals(current.ContentHash, expected.ContentHash,
+                        StringComparison.Ordinal))
+                    throw new StaleConfigurationException("Configuration changed before launch dispatch.");
+                return new LaunchLease(guard, pinned);
+            }
+            catch { pinned.Dispose(); throw; }
+        }
+        catch (Exception error)
+        {
+            guard.Dispose();
+            if (error is IOException or UnauthorizedAccessException)
+                throw new ConfigurationUnavailableException(
+                    "Configuration cannot be pinned for launch dispatch.", error);
+            throw;
+        }
+    }
+
+    private sealed class LaunchLease(FileStream guard, FileStream pinned) : IDisposable
+    {
+        public void Dispose()
+        {
+            pinned.Dispose();
+            guard.Dispose();
+        }
+    }
+
+    /// <summary>
     /// Explicit repair using the last-good configuration that was displayed to
     /// the user. Archives the invalid current file before atomically restoring
     /// the backup; callers must reopen/reconcile profiles before dispatching.

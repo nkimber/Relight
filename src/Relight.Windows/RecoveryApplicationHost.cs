@@ -183,7 +183,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                     ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(
                         profile.Id, profile.Policy, StateStoreForExisting(profile),
                         GuardDiscovery(packagedDiscovery),
-                        new PackagedApplicationLauncher(profile.Target.Identity),
+                        GuardLauncher(new PackagedApplicationLauncher(profile.Target.Identity)),
                         _clock, _launchGate, _notificationTap,
                         sharedBudget: _sharedBudgetStore);
                     _scheduler.Add(profile.Id, coordinator, profile.Policy);
@@ -253,7 +253,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             {
                 ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(profile.Id,
                     profile.Policy, StateStoreForExisting(profile), GuardDiscovery(discovery),
-                    new ExecutableLauncher(target), _clock, _launchGate,
+                    GuardLauncher(new ExecutableLauncher(target)), _clock, _launchGate,
                     _notificationTap, new ExecutableStopper(target), _sharedBudgetStore);
                 _scheduler.Add(profile.Id, coordinator, profile.Policy);
                 lock (_statusSync)
@@ -352,6 +352,11 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     private IProcessDiscovery GuardDiscovery(IProcessDiscovery discovery) =>
         _sessionStateStore is null ? discovery :
             new ConfigurationGuardedDiscovery(discovery, _configurationStore,
+                () => _sharedConfigurationSuspended ? null : Configuration);
+
+    private IProcessLauncher GuardLauncher(IProcessLauncher launcher) =>
+        _sessionStateStore is null ? launcher :
+            new ConfigurationGuardedLauncher(launcher, _configurationStore,
                 () => _sharedConfigurationSuspended ? null : Configuration);
 
     private void EnsureSharedConfigurationCurrent()
@@ -562,7 +567,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             ProfileCoordinator coordinator = await Task.Run(() =>
                 ProfileCoordinator.CreateNew(id, policy, _activeStateStore,
                     GuardDiscovery(discovery),
-                    launcher, _clock, _launchGate, _notificationTap, stopper,
+                    GuardLauncher(launcher), _clock, _launchGate, _notificationTap, stopper,
                     _sharedBudgetStore),
                 CancellationToken.None).ConfigureAwait(false);
             try
@@ -973,7 +978,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             if (_coordinators.ContainsKey(profile.Id))
                 throw new InvalidOperationException("This profile is already scheduled.");
         ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(profile.Id,
-            profile.Policy, StateStoreForExisting(profile), GuardDiscovery(discovery), launcher,
+            profile.Policy, StateStoreForExisting(profile), GuardDiscovery(discovery), GuardLauncher(launcher),
             _clock, _launchGate, _notificationTap, stopper, _sharedBudgetStore);
         RecoveryState previousState = coordinator.Snapshot.State;
         bool schedulerOwnsCoordinator = false;
