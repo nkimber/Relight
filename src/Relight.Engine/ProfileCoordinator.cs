@@ -414,9 +414,22 @@ public sealed class ProfileCoordinator : IDisposable
         }
     }
 
+    public void CancelPendingLaunchForMonitoringInterruption()
+    {
+        CancellationTokenSource? pending;
+        lock (_launchSync)
+        {
+            _commandGeneration++;
+            pending = _launchCancellation;
+        }
+        try { pending?.Cancel(); }
+        catch (ObjectDisposedException) { /* Dispatch finished as the interruption arrived. */ }
+    }
+
     public async Task<CoordinatorResult> MarkMonitoringInterruptedAsync(
         CancellationToken cancellationToken = default)
     {
+        CancelPendingLaunchForMonitoringInterruption();
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {

@@ -704,21 +704,24 @@ public partial class App : Application
             Interlocked.Exchange(ref _reconcilingWindows, 1) != 0) return;
         CancellationToken cancellationToken = _monitoringCancellation?.Token ??
             CancellationToken.None;
-        _ = Task.Run(async () =>
+        Task reconciliation = host.ReconcileAfterWindowsInterruptionAsync(cancellationToken);
+        _ = ObserveWindowsReconciliationAsync(reconciliation, cancellationToken);
+    }
+
+    private async Task ObserveWindowsReconciliationAsync(Task reconciliation,
+        CancellationToken cancellationToken)
+    {
+        try
         {
-            try
-            {
-                await host.ReconcileAfterWindowsInterruptionAsync(cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
-            catch (Exception error)
-            {
-                if (!_exiting)
-                    await Dispatcher.InvokeAsync(() => SetMonitoringProblem(error.Message));
-            }
-            finally { Interlocked.Exchange(ref _reconcilingWindows, 0); }
-        });
+            await reconciliation.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (Exception error)
+        {
+            if (!_exiting)
+                await Dispatcher.InvokeAsync(() => SetMonitoringProblem(error.Message));
+        }
+        finally { Interlocked.Exchange(ref _reconcilingWindows, 0); }
     }
 
     private void ApplyAccessibilityColors()

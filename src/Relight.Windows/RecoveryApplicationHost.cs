@@ -1556,8 +1556,10 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     {
         KeyValuePair<Guid, ProfileCoordinator>[] coordinators;
         lock (_statusSync) coordinators = _coordinators.ToArray();
+        foreach (KeyValuePair<Guid, ProfileCoordinator> entry in coordinators)
+            entry.Value.CancelPendingLaunchForMonitoringInterruption();
         _scheduler.RequestImmediatePassive();
-        await Task.WhenAll(coordinators.Select(async entry =>
+        await Task.WhenAll(coordinators.Select(entry => Task.Run(async () =>
         {
             try
             {
@@ -1568,7 +1570,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             {
                 if (!_disposed) _scheduler.RequestImmediate(entry.Key);
             }
-        })).ConfigureAwait(false);
+        }, cancellationToken))).ConfigureAwait(false);
     }
 
     public Task<EventRecorderStatus?> GetLoggingStatusAsync(

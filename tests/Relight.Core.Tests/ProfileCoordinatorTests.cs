@@ -782,6 +782,33 @@ public sealed class ProfileCoordinatorTests
     }
 
     [Fact]
+    public async Task Windows_interruption_cancels_a_queued_launch_before_reservation()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var queue = new BlockingLaunchGate();
+        var launcher = new CountingLauncher();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id, AutoPolicy, store,
+            new ConstantDiscovery(Detection.Absent()), launcher, clock, queue);
+        await TickAt(coordinator, clock, 0);
+        await TickAt(coordinator, clock, 2);
+        clock.Elapsed = TimeSpan.FromSeconds(32);
+        Task<CoordinatorResult> waiting = coordinator.TickAsync();
+        await queue.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Task<CoordinatorResult> interruption =
+            coordinator.MarkMonitoringInterruptedAsync();
+        await Task.WhenAll(waiting, interruption).WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(0, launcher.Dispatches);
+        Assert.Equal(0, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+        Assert.True(coordinator.Snapshot.DetectionUnavailable);
+        Assert.False((await TickAt(coordinator, clock, 32)).LaunchDispatched);
+    }
+
+    [Fact]
     public async Task Identity_change_cancels_queued_launch_and_retires_old_coordinator()
     {
         using var directory = new TestDirectory();
