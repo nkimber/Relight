@@ -49,6 +49,7 @@ dotnet test tests/Relight.Core.Tests/Relight.Core.Tests.csproj -c Release
 pwsh -File scripts/Test-LegacyMigration.ps1
 pwsh -File scripts/Test-ConfigurationLease.ps1
 pwsh -File scripts/Test-HostConfigurationRace.ps1
+pwsh -File scripts/Test-MigrationInterruption.ps1
 pwsh -File scripts/Test-LogRetentionLease.ps1
 ```
 

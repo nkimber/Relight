@@ -25,6 +25,8 @@ jobs:
         run: dotnet test tests/Relight.Core.Tests/Relight.Core.Tests.csproj --configuration Release --no-build --filter "Category!=WindowsDesktop"
       - name: Legacy migration cross-process probe
         run: pwsh -File scripts/Test-LegacyMigration.ps1
+      - name: Interrupted migration cross-process probe
+        run: pwsh -File scripts/Test-MigrationInterruption.ps1
       - name: Configuration lease cross-process probe
         run: pwsh -File scripts/Test-ConfigurationLease.ps1
       - name: Host configuration dispatch race probe

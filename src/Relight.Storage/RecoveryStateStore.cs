@@ -15,6 +15,15 @@ public sealed record StoredRecoveryState(Guid ProfileId, long Revision, Recovery
 
 public enum LegacyStateOwnership { Unclaimed, MigrationPending, SessionOwner }
 
+internal enum MigrationBoundary
+{
+    OwnershipMarked,
+    LegacyArchived,
+    TombstoneWritten,
+    BudgetImported,
+    SessionCreated
+}
+
 public interface IRecoveryStateStore
 {
     StoredRecoveryState Create(Guid profileId, RecoveryCheckpoint initial);
@@ -103,6 +112,10 @@ public sealed class RecoveryStateStore : IRecoveryStateStore
     /// </summary>
     public void MigrateToSession(Guid profileId, SharedRecoveryBudgetStore budgets,
         RecoverySessionStateStore session)
+        => MigrateToSession(profileId, budgets, session, null);
+
+    internal void MigrateToSession(Guid profileId, SharedRecoveryBudgetStore budgets,
+        RecoverySessionStateStore session, Action<MigrationBoundary>? afterBoundary)
     {
         ArgumentNullException.ThrowIfNull(budgets);
         ArgumentNullException.ThrowIfNull(session);
@@ -118,9 +131,13 @@ public sealed class RecoveryStateStore : IRecoveryStateStore
                 "Legacy recovery evidence already has an archive; migration is suspended.");
 
         WriteOwnershipMarker(profileId, "migration-pending");
+        afterBoundary?.Invoke(MigrationBoundary.OwnershipMarked);
         ArchiveLegacyState(profileId);
+        afterBoundary?.Invoke(MigrationBoundary.LegacyArchived);
         EnsureLegacyTombstone(profileId);
+        afterBoundary?.Invoke(MigrationBoundary.TombstoneWritten);
         SharedRecoveryBudget budget = budgets.ImportLegacy(legacy);
+        afterBoundary?.Invoke(MigrationBoundary.BudgetImported);
         RecoveryCheckpoint old = legacy.Checkpoint;
         RecoveryState initialState = !old.Enabled ? RecoveryState.Disabled :
             budget.LockedOut ? RecoveryState.AwaitingIntervention :
@@ -129,6 +146,7 @@ public sealed class RecoveryStateStore : IRecoveryStateStore
             false, budget.LockedOut, budget.ReservedAutomaticAttempts,
             budget.EpisodeId, initialState, null,
             SharedBudgetRevision: budget.Revision));
+        afterBoundary?.Invoke(MigrationBoundary.SessionCreated);
         WriteOwnershipMarker(profileId, "session-owner");
     }
 
