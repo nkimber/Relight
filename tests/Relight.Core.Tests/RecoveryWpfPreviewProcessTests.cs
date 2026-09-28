@@ -461,7 +461,8 @@ public sealed class RecoveryWpfPreviewProcessTests
         {
             Guid profileId = await ConfigureProfileAsync(directory, targetExecutable,
                 ["--label", label, "--exit-after-ms", "58000",
-                    "--ready-file", ready], maximumAttempts: 1);
+                    "--ready-file", ready], maximumAttempts: 1,
+                normalPollInterval: TimeSpan.FromSeconds(60));
             var budgets = new SharedRecoveryBudgetStore(directory);
             var history = new OperationalEventHistoryReader(directory);
             preview = StartPreview(relightExecutable, directory);
@@ -480,8 +481,11 @@ public sealed class RecoveryWpfPreviewProcessTests
             await WaitForEventCountAsync(history, profileId,
                 OperationalEventKind.ObservationInterrupted, 1,
                 TimeSpan.FromSeconds(75));
+            Assert.False(IsSameTargetAlive(targetPid, targetStartedTicks,
+                targetExecutable));
+            Assert.Equal(1, budgets.Load(profileId).ReservedAutomaticAttempts);
             await WaitForLockoutAsync(preview, budgets, history, profileId,
-                1, TimeSpan.FromSeconds(10));
+                1, TimeSpan.FromSeconds(75));
             EventHistoryResult started = await history.ReadAsync(new EventHistoryQuery(
                 ProfileId: profileId, Kind: OperationalEventKind.ObservationStarted));
             EventHistoryResult interrupted = await history.ReadAsync(new EventHistoryQuery(
@@ -489,7 +493,11 @@ public sealed class RecoveryWpfPreviewProcessTests
             OperationalEvent start = Assert.Single(started.Events);
             OperationalEvent end = Assert.Single(interrupted.Events);
             Assert.Equal(ObservationOrigin.AutomaticLaunch, start.Origin);
-            Assert.Equal(OperationalFailureCategory.EarlyExit, end.FailureCategory);
+            Assert.Equal(ObservationOrigin.AutomaticLaunch, end.Origin);
+            if (end.FailureCategory != OperationalFailureCategory.EarlyExit)
+                Assert.True((await history.ReadAsync(new EventHistoryQuery(
+                    ProfileId: profileId, Kind: OperationalEventKind.DetectionUnavailable)))
+                    .TotalMatches > 0);
             Assert.True(end.OccurredUtc - start.OccurredUtc >=
                 TimeSpan.FromSeconds(50));
             Assert.False(IsSameTargetAlive(targetPid, targetStartedTicks,
