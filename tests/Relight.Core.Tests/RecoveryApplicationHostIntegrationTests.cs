@@ -714,7 +714,24 @@ public sealed class RecoveryApplicationHostIntegrationTests
             Task running = host.RunAsync(stop.Token);
             try
             {
-                File.WriteAllText(Path.Combine(root, "configuration.json"), "invalid configuration");
+                string configurationPath = Path.Combine(root, "configuration.json");
+                using (var writeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
+                {
+                    while (true)
+                    {
+                        writeTimeout.Token.ThrowIfCancellationRequested();
+                        try
+                        {
+                            File.WriteAllText(configurationPath, "invalid configuration");
+                            break;
+                        }
+                        catch (IOException)
+                        {
+                            // The watcher may briefly hold its read lock while an editor writes.
+                            await Task.Delay(50, writeTimeout.Token);
+                        }
+                    }
+                }
                 using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(7)))
                     while (host.ConfigurationProblem is null)
                         await Task.Delay(50, timeout.Token);

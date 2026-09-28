@@ -139,12 +139,34 @@ public sealed class RecoveryWpfPreviewProcessTests
             var history = new OperationalEventHistoryReader(directory);
             int observationsBeforeRestart = await WaitForTargetObservationsAsync(history,
                 profileId, 1, TimeSpan.FromSeconds(10));
+            ProfileConfiguration policyBefore = Assert.Single(
+                new ConfigurationStore(directory).Load().Configuration.Profiles);
+            Assert.Equal(profileId, policyBefore.Id);
+            Assert.Equal(1, policyBefore.Policy.MaximumAutomaticAttempts);
+            Assert.True(policyBefore.Policy.StartAutomaticallyWhenInitiallyAbsent);
+            SharedRecoveryBudget budgetBefore = budgets.Load(profileId);
+            Assert.NotNull(budgetBefore.EpisodeId);
+            Assert.Equal(1, budgetBefore.ReservedAutomaticAttempts);
+            string sessionDirectory = Assert.Single(Directory.GetDirectories(
+                Path.Combine(directory, "Sessions")));
+            var sessionStates = new RecoveryStateStore(sessionDirectory);
+            RecoveryCheckpoint checkpointBefore = sessionStates.Load(profileId).Checkpoint;
+            Assert.True(checkpointBefore.Enabled);
+            Assert.False(checkpointBefore.Paused);
+            Assert.Equal(1, checkpointBefore.ReservedAutomaticAttempts);
+            Assert.Equal(budgetBefore.EpisodeId, checkpointBefore.EpisodeId);
 
             first.Kill(entireProcessTree: false);
             await first.WaitForExitAsync();
             Assert.True(IsSameTargetAlive(targetPid.Value, targetStartedTicks.Value,
                 targetExecutable));
             Assert.Equal(1, budgets.Load(profileId).ReservedAutomaticAttempts);
+            ProfileConfiguration afterCrash = Assert.Single(
+                new ConfigurationStore(directory).Load().Configuration.Profiles);
+            Assert.Equal(policyBefore.Id, afterCrash.Id);
+            Assert.Equal(policyBefore.Policy, afterCrash.Policy);
+            Assert.Equal(policyBefore.Target.Identity, afterCrash.Target.Identity);
+            Assert.Equal(policyBefore.Target.Arguments, afterCrash.Target.Arguments);
 
             restarted = StartPreview(relightExecutable, directory);
             await WaitForTargetObservationsAsync(history, profileId,
@@ -152,7 +174,32 @@ public sealed class RecoveryWpfPreviewProcessTests
             Assert.False(restarted.HasExited);
             Assert.True(IsSameTargetAlive(targetPid.Value, targetStartedTicks.Value,
                 targetExecutable));
-            Assert.Equal(1, budgets.Load(profileId).ReservedAutomaticAttempts);
+            SharedRecoveryBudget budgetAfter = budgets.Load(profileId);
+            Assert.Equal(1, budgetAfter.ReservedAutomaticAttempts);
+            Assert.Equal(budgetBefore.EpisodeId, budgetAfter.EpisodeId);
+            RecoveryCheckpoint checkpointAfter = sessionStates.Load(profileId).Checkpoint;
+            Assert.True(checkpointAfter.Enabled);
+            Assert.False(checkpointAfter.Paused);
+            Assert.Equal(1, checkpointAfter.ReservedAutomaticAttempts);
+            Assert.Equal(checkpointBefore.EpisodeId, checkpointAfter.EpisodeId);
+            ProfileConfiguration afterRestart = Assert.Single(
+                new ConfigurationStore(directory).Load().Configuration.Profiles);
+            Assert.Equal(policyBefore.Id, afterRestart.Id);
+            Assert.Equal(policyBefore.Policy, afterRestart.Policy);
+            Assert.Equal(policyBefore.Target.Identity, afterRestart.Target.Identity);
+            Assert.Equal(policyBefore.Target.Arguments, afterRestart.Target.Arguments);
+            EventHistoryResult observations = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.TargetObserved));
+            Assert.Contains(observations.Events, entry =>
+            {
+                string[] fields = entry.ProcessIdentity?.Split('|') ?? [];
+                return fields.Length == 4 &&
+                    fields[2] == targetPid.Value.ToString(CultureInfo.InvariantCulture) &&
+                    fields[3] == targetStartedTicks.Value.ToString(CultureInfo.InvariantCulture);
+            });
+            Assert.Equal(1, (await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.LaunchDispatched)))
+                .TotalMatches);
             Detection found = await new ExecutableDiscovery(new ExecutableTarget(
                 targetExecutable, ["--label", label], RequiredArgument: label))
                 .DetectAsync(CancellationToken.None);
