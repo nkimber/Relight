@@ -4,9 +4,11 @@ using System.Globalization;
 using System.IO;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
 using Microsoft.Win32;
 using Relight.Core;
 using Relight.Storage;
+using Relight.ViewModels;
 
 namespace Relight;
 
@@ -42,7 +44,44 @@ public partial class EditProfileWindow : Window
         RearmInput.IsChecked = policy.RearmAfterStableExternalStart;
         NotifyRecoveryInput.IsChecked = profile.NotifyOnRecovery;
         NotifyLockoutInput.IsChecked = profile.NotifyOnLockout;
+        UpdatePolicyPreview();
         NameInput.Focus();
+    }
+
+    private void PolicyInputChanged(object sender, TextChangedEventArgs e) =>
+        UpdatePolicyPreview();
+
+    private void PolicyToggleChanged(object sender, RoutedEventArgs e) =>
+        UpdatePolicyPreview();
+
+    private void UpdatePolicyPreview()
+    {
+        if (PolicyPreviewText is null || _profile is null) return;
+        try { PolicyPreviewText.Text = RecoveryPolicyPreview.Describe(ReadPolicy()); }
+        catch (Exception error) when (error is ArgumentException or OverflowException)
+        {
+            PolicyPreviewText.Text = "Enter valid monitoring and recovery values to preview this policy.";
+        }
+    }
+
+    private RecoveryPolicy ReadPolicy()
+    {
+        RecoveryPolicy policy = _profile.Policy with
+        {
+            NormalPollInterval = Seconds(NormalInput.Text, "Normal check interval"),
+            ObservationPollInterval = Seconds(ObservationPollInput.Text, "Observation check interval"),
+            LockoutDiscoveryInterval = Seconds(LockoutInput.Text, "Lockout discovery interval"),
+            ObservationPeriod = TimeSpan.FromMinutes(Number(ObservationInput.Text,
+                "Stable observation period")),
+            MaximumAutomaticAttempts = Number(AttemptsInput.Text, "Automatic attempt limit"),
+            RetryDelay = Seconds(RetryInput.Text, "Retry delay"),
+            AppearanceTimeout = Seconds(AppearanceInput.Text, "Appearance timeout"),
+            AbsenceConfirmationDelay = Seconds(AbsenceInput.Text, "Absence confirmation"),
+            StartAutomaticallyWhenInitiallyAbsent = InitialStartInput.IsChecked == true,
+            RearmAfterStableExternalStart = RearmInput.IsChecked == true
+        };
+        policy.Validate();
+        return policy;
     }
 
     private async void SaveClick(object sender, RoutedEventArgs e)
@@ -54,21 +93,7 @@ public partial class EditProfileWindow : Window
         {
             if (name.Length is < 1 or > 100)
                 throw new ArgumentException("Choose a name of 1–100 characters.");
-            policy = _profile.Policy with
-            {
-                NormalPollInterval = Seconds(NormalInput.Text, "Normal check interval"),
-                ObservationPollInterval = Seconds(ObservationPollInput.Text, "Observation check interval"),
-                LockoutDiscoveryInterval = Seconds(LockoutInput.Text, "Lockout discovery interval"),
-                ObservationPeriod = TimeSpan.FromMinutes(Number(ObservationInput.Text,
-                    "Stable observation period")),
-                MaximumAutomaticAttempts = Number(AttemptsInput.Text, "Automatic attempt limit"),
-                RetryDelay = Seconds(RetryInput.Text, "Retry delay"),
-                AppearanceTimeout = Seconds(AppearanceInput.Text, "Appearance timeout"),
-                AbsenceConfirmationDelay = Seconds(AbsenceInput.Text, "Absence confirmation"),
-                StartAutomaticallyWhenInitiallyAbsent = InitialStartInput.IsChecked == true,
-                RearmAfterStableExternalStart = RearmInput.IsChecked == true
-            };
-            policy.Validate();
+            policy = ReadPolicy();
             target = _profile.Target.Kind == TargetKind.Executable
                 ? _profile.Target with
                 {
@@ -86,6 +111,20 @@ public partial class EditProfileWindow : Window
             MessageBox.Show(this, error.Message, "Check recovery settings",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
+        }
+
+        if (_profile.Enabled && policy.MaximumAutomaticAttempts > 0 &&
+            policy.StartAutomaticallyWhenInitiallyAbsent &&
+            (!_profile.Policy.StartAutomaticallyWhenInitiallyAbsent ||
+             _profile.Policy.MaximumAutomaticAttempts == 0 ||
+             !string.Equals(target.Identity, _profile.Target.Identity,
+                 StringComparison.OrdinalIgnoreCase)))
+        {
+            MessageBoxResult choice = MessageBox.Show(this,
+                "If the selected application is absent, saving this enabled profile may start it automatically after Relight confirms absence and waits the retry delay. Continue?",
+                "Automatic start after Save", MessageBoxButton.YesNo,
+                MessageBoxImage.Warning, MessageBoxResult.No);
+            if (choice != MessageBoxResult.Yes) return;
         }
 
         _saving = true;

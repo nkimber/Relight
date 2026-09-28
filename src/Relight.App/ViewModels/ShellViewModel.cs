@@ -21,7 +21,8 @@ internal sealed class ApplicationStatusRow(
     bool canReplaceUnavailableProfile,
     bool canStartNow,
     bool canStopAndPause, bool canRestartNow,
-    bool configuredEnabled, bool canToggleEnabled, bool canRemove, bool canEdit,
+    bool configuredEnabled, bool mayStartWhenEnabled, bool canToggleEnabled,
+    bool canRemove, bool canEdit,
     ApplicationStatusCategory category, int reservedAttempts,
     ProfileTimingPresentation timing, string lastOutage,
     string lastAutomaticRecovery) : INotifyPropertyChanged
@@ -39,6 +40,7 @@ internal sealed class ApplicationStatusRow(
     public bool CanStopAndPause { get; private set; } = canStopAndPause;
     public bool CanRestartNow { get; private set; } = canRestartNow;
     public bool ConfiguredEnabled { get; private set; } = configuredEnabled;
+    public bool MayStartWhenEnabled { get; private set; } = mayStartWhenEnabled;
     public bool CanToggleEnabled { get; private set; } = canToggleEnabled;
     public bool CanRemove { get; private set; } = canRemove;
     public bool CanEdit { get; private set; } = canEdit;
@@ -66,6 +68,7 @@ internal sealed class ApplicationStatusRow(
             CanStopAndPause != next.CanStopAndPause ||
             CanRestartNow != next.CanRestartNow ||
             ConfiguredEnabled != next.ConfiguredEnabled ||
+            MayStartWhenEnabled != next.MayStartWhenEnabled ||
             CanToggleEnabled != next.CanToggleEnabled || CanRemove != next.CanRemove ||
             CanEdit != next.CanEdit || Category != next.Category ||
             ReservedAttempts != next.ReservedAttempts || NextAction != next.NextAction ||
@@ -85,6 +88,7 @@ internal sealed class ApplicationStatusRow(
         CanStopAndPause = next.CanStopAndPause;
         CanRestartNow = next.CanRestartNow;
         ConfiguredEnabled = next.ConfiguredEnabled;
+        MayStartWhenEnabled = next.MayStartWhenEnabled;
         CanToggleEnabled = next.CanToggleEnabled;
         CanRemove = next.CanRemove;
         CanEdit = next.CanEdit;
@@ -327,6 +331,11 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
                         State: not Relight.Core.RecoveryState.Starting } &&
                     profile.AutomaticActionsAllowed && profile.Problem is null,
                 profile.ConfiguredEnabled,
+                profile.Policy is
+                {
+                    StartAutomaticallyWhenInitiallyAbsent: true,
+                    MaximumAutomaticAttempts: > 0
+                },
                 configurationProblem is null &&
                     (profile.ConfiguredEnabled || profile.Problem is null),
                 configurationProblem is null,

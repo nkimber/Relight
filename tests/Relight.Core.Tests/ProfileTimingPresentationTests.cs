@@ -158,6 +158,29 @@ public sealed class ProfileTimingPresentationTests
         Assert.False(Assert.Single(viewModel.ApplicationRows).CanRestartNow);
     }
 
+    [Fact]
+    public void Enable_warning_flag_requires_initial_start_and_a_nonzero_budget()
+    {
+        var viewModel = new ShellViewModel(() => { }, () => { }, () => { }, () => { });
+        HostedProfileStatus profile = Profile(new RecoveryMachine(
+            RecoveryPolicy.Default).Snapshot) with
+        {
+            ConfiguredEnabled = false,
+            Policy = RecoveryPolicy.Default with
+            {
+                StartAutomaticallyWhenInitiallyAbsent = true
+            }
+        };
+        viewModel.UpdateMonitoring(null, false, [profile], null, TimeSpan.Zero);
+        Assert.True(Assert.Single(viewModel.ApplicationRows).MayStartWhenEnabled);
+
+        viewModel.UpdateMonitoring(null, false, [profile with
+        {
+            Policy = profile.Policy! with { MaximumAutomaticAttempts = 0 }
+        }], null, TimeSpan.Zero);
+        Assert.False(Assert.Single(viewModel.ApplicationRows).MayStartWhenEnabled);
+    }
+
     private static HostedProfileStatus Profile(RecoverySnapshot recovery) =>
         new(Guid.NewGuid(), "Disposable target", true, true, null, recovery, null,
             Policy: RecoveryPolicy.Default);

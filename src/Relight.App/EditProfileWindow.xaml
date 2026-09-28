@@ -41,27 +41,30 @@
 
                 <TextBlock Text="Monitoring" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12" />
                 <TextBlock Text="Normal check interval · seconds (60–300)" Margin="0,0,0,4" />
-                <TextBox x:Name="NormalInput" AutomationProperties.Name="Normal check interval in seconds" Margin="0,0,0,12" />
+                <TextBox x:Name="NormalInput" AutomationProperties.Name="Normal check interval in seconds" Margin="0,0,0,12" TextChanged="PolicyInputChanged" />
                 <TextBlock Text="Observation check interval · seconds (1–30)" Margin="0,0,0,4" />
-                <TextBox x:Name="ObservationPollInput" AutomationProperties.Name="Observation check interval in seconds" Margin="0,0,0,12" />
+                <TextBox x:Name="ObservationPollInput" AutomationProperties.Name="Observation check interval in seconds" Margin="0,0,0,12" TextChanged="PolicyInputChanged" />
                 <TextBlock Text="Lockout discovery interval · seconds (5–300)" Margin="0,0,0,4" />
-                <TextBox x:Name="LockoutInput" AutomationProperties.Name="Lockout discovery interval in seconds" Margin="0,0,0,20" />
+                <TextBox x:Name="LockoutInput" AutomationProperties.Name="Lockout discovery interval in seconds" Margin="0,0,0,20" TextChanged="PolicyInputChanged" />
 
                 <TextBlock Text="Recovery" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12" />
                 <TextBlock Text="Stable observation period · minutes (1–60)" Margin="0,0,0,4" />
-                <TextBox x:Name="ObservationInput" AutomationProperties.Name="Stable observation period in minutes" Margin="0,0,0,12" />
+                <TextBox x:Name="ObservationInput" AutomationProperties.Name="Stable observation period in minutes" Margin="0,0,0,12" TextChanged="PolicyInputChanged" />
                 <TextBlock Text="Automatic attempt limit (0–20)" Margin="0,0,0,4" />
-                <TextBox x:Name="AttemptsInput" AutomationProperties.Name="Automatic attempt limit" Margin="0,0,0,12" />
+                <TextBox x:Name="AttemptsInput" AutomationProperties.Name="Automatic attempt limit" Margin="0,0,0,12" TextChanged="PolicyInputChanged" />
                 <TextBlock Text="Retry delay · seconds (5–3600)" Margin="0,0,0,4" />
-                <TextBox x:Name="RetryInput" AutomationProperties.Name="Retry delay in seconds" Margin="0,0,0,12" />
+                <TextBox x:Name="RetryInput" AutomationProperties.Name="Retry delay in seconds" Margin="0,0,0,12" TextChanged="PolicyInputChanged" />
                 <TextBlock Text="Launch appearance timeout · seconds (5–300)" Margin="0,0,0,4" />
-                <TextBox x:Name="AppearanceInput" AutomationProperties.Name="Launch appearance timeout in seconds" Margin="0,0,0,12" />
+                <TextBox x:Name="AppearanceInput" AutomationProperties.Name="Launch appearance timeout in seconds" Margin="0,0,0,12" TextChanged="PolicyInputChanged" />
                 <TextBlock Text="Absence confirmation · seconds (1–10)" Margin="0,0,0,4" />
-                <TextBox x:Name="AbsenceInput" AutomationProperties.Name="Absence confirmation in seconds" Margin="0,0,0,16" />
+                <TextBox x:Name="AbsenceInput" AutomationProperties.Name="Absence confirmation in seconds" Margin="0,0,0,16" TextChanged="PolicyInputChanged" />
                 <CheckBox x:Name="InitialStartInput" Content="Start automatically when initially absent"
-                          Margin="0,0,0,12" />
+                          Margin="0,0,0,12" Checked="PolicyToggleChanged" Unchecked="PolicyToggleChanged" />
                 <CheckBox x:Name="RearmInput" Content="Rearm after a stable external start"
-                          Margin="0,0,0,18" />
+                          Margin="0,0,0,18" Checked="PolicyToggleChanged" Unchecked="PolicyToggleChanged" />
+                <TextBlock Text="Policy preview" FontWeight="SemiBold" Margin="0,0,0,6" />
+                <TextBlock x:Name="PolicyPreviewText" TextWrapping="Wrap" Margin="0,0,0,18"
+                           AutomationProperties.LiveSetting="Polite" />
                 <TextBlock Text="Changing observation duration restarts the current stability timer. Changing retry delay sets a new deadline from Save. A launch already in progress keeps its original timeout and attempt policy. Raising the attempt limit alone does not unlock a profile."
                            Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,16" />
 

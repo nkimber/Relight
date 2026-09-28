@@ -343,6 +343,12 @@ public partial class MainWindow : Window
     private async void EnableDisableClick(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { DataContext: ApplicationStatusRow row } button) return;
+        if (!row.ConfiguredEnabled && row.MayStartWhenEnabled &&
+            MessageBox.Show(this,
+                $"Enabling '{row.Name}' may automatically start it if it is absent, after Relight confirms absence and waits the retry delay. Continue?",
+                "Enable automatic start?", MessageBoxButton.YesNo,
+                MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
+            return;
         button.IsEnabled = false;
         try { await _setEnabled(row.Id, !row.ConfiguredEnabled); }
         catch (OperationCanceledException) { }
