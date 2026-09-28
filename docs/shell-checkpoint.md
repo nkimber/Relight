@@ -1,5 +1,7 @@
 # Initial shell checkpoint
 
+A controlled Windows process test now repeats five dashboard cycles in an isolated shared-session preview. Each second launch exits after activating the same primary dashboard; closing the window hides it while the tray process remains alive. This covers repeated window lifetime and same-directory singleton behavior on the local Windows 11 x64 session. It does not inspect tray resource counts, Explorer restart, keyboard accessibility or a configured recovery profile during the cycles.
+
 **Date:** 27 September 2026  
 **Scope:** First runnable WPF/tray shell and initial public repository.  
 **Product stage:** Development preview; no monitoring or automatic recovery.

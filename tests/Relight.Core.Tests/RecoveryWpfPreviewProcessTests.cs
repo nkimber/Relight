@@ -11,6 +11,54 @@ public sealed class RecoveryWpfPreviewProcessTests
 {
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Repeated_dashboard_close_and_second_launch_keep_one_tray_process()
+    {
+        string directory = Path.Combine(Path.GetTempPath(),
+            $"relight-window-cycles-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        string executable = FindBuiltExecutable("Relight.App", "Relight.exe");
+        Process? primary = null;
+        try
+        {
+            primary = StartPreview(executable, directory);
+            await WaitUntilAsync(() => File.Exists(Path.Combine(directory,
+                "configuration.json")), TimeSpan.FromSeconds(10));
+            for (int cycle = 0; cycle < 5; cycle++)
+            {
+                using Process secondary = StartPreview(executable, directory);
+                await secondary.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+                Assert.Equal(0, secondary.ExitCode);
+                await WaitUntilAsync(() =>
+                {
+                    primary.Refresh();
+                    return primary.MainWindowHandle != nint.Zero;
+                }, TimeSpan.FromSeconds(10));
+                Assert.True(primary.CloseMainWindow());
+                await WaitUntilAsync(() =>
+                {
+                    primary.Refresh();
+                    return primary.MainWindowHandle == nint.Zero;
+                }, TimeSpan.FromSeconds(10));
+                Assert.False(primary.HasExited);
+            }
+        }
+        finally
+        {
+            if (primary is not null)
+            {
+                if (!primary.HasExited)
+                {
+                    primary.Kill(entireProcessTree: false);
+                    await primary.WaitForExitAsync();
+                }
+                primary.Dispose();
+            }
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Distinct_preview_directories_keep_separate_closed_tray_instances()
     {
         string root = Path.Combine(Path.GetTempPath(),
