@@ -9,6 +9,7 @@ param(
     [switch]$ExercisePauseResume,
     [switch]$ExerciseDisableRemove,
     [switch]$ExerciseExit,
+    [switch]$ExerciseResetDuplicate,
     [ValidateSet('Pause', 'Disable', 'Remove', 'Exit')]
     [string]$CancelPendingAction = '',
     [ValidateSet('StopGraceful', 'StopForceDecline', 'StopForceAccept',
@@ -55,6 +56,21 @@ function Invoke-Button($Parent, [string]$Name) {
     $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
 }
 
+function Find-EnabledButton($Parent, [string]$Name) {
+    $nameCondition = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::NameProperty, $Name)
+    $typeCondition = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Button)
+    $condition = [System.Windows.Automation.AndCondition]::new($nameCondition,
+        $typeCondition)
+    foreach ($button in $Parent.FindAll(
+        [System.Windows.Automation.TreeScope]::Descendants, $condition)) {
+        if ($button.Current.IsEnabled) { return $button }
+    }
+    return $null
+}
+
 function Read-Configuration([string]$Path) {
     try { return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json }
     catch [IO.IOException] { return $null }
@@ -97,12 +113,14 @@ function Complete-InitialStartWarning($Dashboard, [string]$Choice) {
 if ($VerifyInitialStartConfirmation -and $AcceptInitialStart) {
     throw 'Choose either declining or accepting the initial-start warning for one run.'
 }
-if (($ExercisePauseResume -or $ExerciseDisableRemove -or $ExerciseExit) -and
+if (($ExercisePauseResume -or $ExerciseDisableRemove -or $ExerciseExit -or
+    $ExerciseResetDuplicate) -and
     -not $AcceptInitialStart) {
     throw 'Lifecycle acceptance requires an automatically started disposable target.'
 }
 if ($ExplicitAction -and (-not $AcceptInitialStart -or $ExercisePauseResume -or
-    $ExerciseDisableRemove -or $ExerciseExit -or $CancelPendingAction -or
+    $ExerciseDisableRemove -or $ExerciseExit -or $ExerciseResetDuplicate -or
+    $CancelPendingAction -or
     $EditSavedExecutable -or $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
     throw 'Explicit-control acceptance uses only accepted initial start and one control action.'
 }
@@ -380,6 +398,84 @@ try {
             throw 'Explicit control changed the automatic recovery budget.'
         }
         Write-Output "PASS: $ExplicitAction honored WPF confirmations, selected-target control, and the unchanged automatic budget."
+    }
+
+    if ($ExerciseResetDuplicate) {
+        $sourceBudgetPath = Join-Path $root ('Budgets\' + $profile.id.Replace('-', '') + '.json')
+        $beforeBudget = Wait-For { Read-Configuration $sourceBudgetPath } 'source budget before duplication'
+        if ($beforeBudget.budget.reservedAutomaticAttempts -ne 1) {
+            throw 'Reset/duplicate acceptance requires one charged automatic attempt.'
+        }
+        Wait-For {
+            $button = Find-Control $dashboard 'Duplicate disabled' `
+                ([System.Windows.Automation.ControlType]::Button)
+            if ($null -ne $button -and $button.Current.IsEnabled) { return $button }
+            return $null
+        } 'Duplicate disabled action' | Out-Null
+        Invoke-Button $dashboard 'Duplicate disabled'
+        $duplicated = Find-MessageBox $dashboard 'Profile duplicated'
+        Click-NativeMessageChoice $duplicated 'OK'
+        $copy = Wait-For {
+            $config = Read-Configuration (Join-Path $root 'configuration.json')
+            if ($null -eq $config) { return $null }
+            @($config.configuration.profiles | Where-Object id -ne $profile.id) |
+                Select-Object -First 1
+        } 'disabled duplicated profile'
+        if ($copy.id -eq $profile.id -or $copy.enabled -ne $false -or
+            ($copy.target | ConvertTo-Json -Depth 10 -Compress) -ne
+                ($profile.target | ConvertTo-Json -Depth 10 -Compress) -or
+            ($copy.policy | ConvertTo-Json -Depth 10 -Compress) -ne
+                ($profile.policy | ConvertTo-Json -Depth 10 -Compress)) {
+            throw 'Duplicated profile did not preserve policy/target with a new disabled ID.'
+        }
+        $copyBudgetPath = Join-Path $root ('Budgets\' + $copy.id.Replace('-', '') + '.json')
+        $copyBudget = Wait-For { Read-Configuration $copyBudgetPath } 'new copy budget'
+        if ($copyBudget.budget.reservedAutomaticAttempts -ne 0 -or
+            (Read-Configuration $sourceBudgetPath).budget.reservedAutomaticAttempts -ne 1) {
+            throw 'Disabled copy inherited the source budget or changed its charge.'
+        }
+        Wait-For {
+            Find-EnabledButton $dashboard 'Reset recovery'
+        } 'Reset recovery action' | Out-Null
+        (Find-EnabledButton $dashboard 'Reset recovery').GetCurrentPattern(
+            [System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+        Click-NativeMessageChoice (Find-MessageBox $dashboard 'Reset recovery?') 'Cancel'
+        if ((Read-Configuration $sourceBudgetPath).budget.reservedAutomaticAttempts -ne 1) {
+            throw 'Canceling recovery reset changed the source budget.'
+        }
+        Wait-For {
+            Find-EnabledButton $dashboard 'Reset recovery'
+        } 'Reset recovery after cancel' | Out-Null
+        (Find-EnabledButton $dashboard 'Reset recovery').GetCurrentPattern(
+            [System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+        Click-NativeMessageChoice (Find-MessageBox $dashboard 'Reset recovery?') 'OK'
+        Wait-For {
+            $budget = Read-Configuration $sourceBudgetPath
+            if ($null -ne $budget -and $budget.budget.reservedAutomaticAttempts -eq 0) {
+                return $budget
+            }
+            return $null
+        } 'explicitly reset source budget' | Out-Null
+        $copyBudget = Read-Configuration $copyBudgetPath
+        if ($null -eq $copyBudget -or $copyBudget.budget.reservedAutomaticAttempts -ne 0) {
+            throw 'Resetting the source changed the disabled copy budget.'
+        }
+        Wait-For {
+            foreach ($log in @(Get-ChildItem -LiteralPath (Join-Path $root 'Logs') -File `
+                -Filter 'events-*.jsonl')) {
+                foreach ($line in @(Get-Content -LiteralPath $log.FullName)) {
+                    if ($line.Contains('"kind":"RecoveryReset"') -and
+                        $line.Contains($profile.id)) { return $true }
+                }
+            }
+            return $false
+        } 'durable explicit-reset history' | Out-Null
+        $running = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+        if ($null -eq $running -or $running.HasExited) {
+            throw 'Duplicating or resetting recovery stopped the source target.'
+        }
+        $running.Dispose()
+        Write-Output 'PASS: WPF duplication created a disabled profile with a new zero-attempt budget; Reset recovery canceled cleanly, then explicitly cleared only the source budget while its target survived.'
     }
 
     if ($EditSavedExecutable) {
