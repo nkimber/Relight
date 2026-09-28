@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Management;
 using Relight.Core;
 using Relight.Storage;
 using Relight.Windows;
@@ -445,6 +446,75 @@ public sealed class RecoveryWpfPreviewProcessTests
 
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Late_observation_exit_keeps_attempt_charged_without_recovery_reset()
+    {
+        string directory = Path.Combine(Path.GetTempPath(),
+            $"relight-wpf-late-exit-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        string targetExecutable = FindBuiltExecutable("Relight.TestTarget",
+            "Relight.TestTarget.exe");
+        string relightExecutable = FindBuiltExecutable("Relight.App", "Relight.exe");
+        string ready = Path.Combine(directory, "target.ready");
+        string label = $"wpf-late-exit-{Guid.NewGuid():N}";
+        Process? preview = null;
+        try
+        {
+            Guid profileId = await ConfigureProfileAsync(directory, targetExecutable,
+                ["--label", label, "--exit-after-ms", "58000",
+                    "--ready-file", ready], maximumAttempts: 1);
+            var budgets = new SharedRecoveryBudgetStore(directory);
+            var history = new OperationalEventHistoryReader(directory);
+            preview = StartPreview(relightExecutable, directory);
+            await WaitForEventCountAsync(history, profileId,
+                OperationalEventKind.ObservationStarted, 1,
+                TimeSpan.FromSeconds(25));
+            await WaitUntilAsync(() => File.Exists(ready), TimeSpan.FromSeconds(5));
+            string[] identity = (await File.ReadAllTextAsync(ready)).Split('|');
+            int targetPid = int.Parse(identity[0], CultureInfo.InvariantCulture);
+            long targetStartedTicks = DateTimeOffset.Parse(identity[1],
+                CultureInfo.InvariantCulture).UtcTicks;
+            Assert.True(IsSameTargetAlive(targetPid, targetStartedTicks,
+                targetExecutable));
+            Assert.Equal(1, budgets.Load(profileId).ReservedAutomaticAttempts);
+
+            await WaitForEventCountAsync(history, profileId,
+                OperationalEventKind.ObservationInterrupted, 1,
+                TimeSpan.FromSeconds(75));
+            await WaitForLockoutAsync(preview, budgets, history, profileId,
+                1, TimeSpan.FromSeconds(10));
+            EventHistoryResult started = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.ObservationStarted));
+            EventHistoryResult interrupted = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.ObservationInterrupted));
+            OperationalEvent start = Assert.Single(started.Events);
+            OperationalEvent end = Assert.Single(interrupted.Events);
+            Assert.Equal(ObservationOrigin.AutomaticLaunch, start.Origin);
+            Assert.Equal(OperationalFailureCategory.EarlyExit, end.FailureCategory);
+            Assert.True(end.OccurredUtc - start.OccurredUtc >=
+                TimeSpan.FromSeconds(50));
+            Assert.False(IsSameTargetAlive(targetPid, targetStartedTicks,
+                targetExecutable));
+            Assert.Equal(0, (await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.ObservationCompleted)))
+                .TotalMatches);
+            Assert.Equal(1, (await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.LaunchDispatched)))
+                .TotalMatches);
+            SharedRecoveryBudget budget = budgets.Load(profileId);
+            Assert.True(budget.LockedOut);
+            Assert.Equal(1, budget.ReservedAutomaticAttempts);
+            Assert.False(preview.HasExited);
+        }
+        finally
+        {
+            StopStartedProcess(preview);
+            StopLabeledTestTargets(targetExecutable, label);
+            DeleteTemporaryDirectory(directory);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task External_start_during_retry_countdown_averts_automatic_launch()
     {
         string directory = Path.Combine(Path.GetTempPath(),
@@ -772,13 +842,7 @@ public sealed class RecoveryWpfPreviewProcessTests
         {
             StopStartedProcess(preview);
             StopStartedProcess(existing);
-            if (recoveredPid is { } pid && recoveredStartedTicks is { } started &&
-                IsSameTargetAlive(pid, started, targetExecutable))
-            {
-                using Process target = Process.GetProcessById(pid);
-                target.Kill(entireProcessTree: false);
-                target.WaitForExit(5000);
-            }
+            StopLabeledTestTargets(targetExecutable, label);
             DeleteTemporaryDirectory(directory);
         }
     }
@@ -961,5 +1025,37 @@ public sealed class RecoveryWpfPreviewProcessTests
             }
         }
         finally { process.Dispose(); }
+    }
+
+    private static void StopLabeledTestTargets(string executable, string label)
+    {
+        // A dispatched target may not reach its ready-file callback before a
+        // failed assertion. Query the unique test label so cleanup can still
+        // stop only this test's disposable processes.
+        using var search = new ManagementObjectSearcher(
+            "SELECT ProcessId, ExecutablePath, CommandLine FROM Win32_Process " +
+            "WHERE Name = 'Relight.TestTarget.exe'");
+        foreach (ManagementObject candidate in search.Get())
+        {
+            using (candidate)
+            {
+                string? path = candidate["ExecutablePath"] as string;
+                string? commandLine = candidate["CommandLine"] as string;
+                if (!string.Equals(path, executable, StringComparison.OrdinalIgnoreCase) ||
+                    commandLine is null ||
+                    !commandLine.Contains(label, StringComparison.Ordinal)) continue;
+                int pid = Convert.ToInt32(candidate["ProcessId"], CultureInfo.InvariantCulture);
+                try
+                {
+                    using Process target = Process.GetProcessById(pid);
+                    if (!target.HasExited)
+                    {
+                        target.Kill(entireProcessTree: false);
+                        target.WaitForExit(5000);
+                    }
+                }
+                catch (ArgumentException) { } // The candidate exited after enumeration.
+            }
+        }
     }
 }
