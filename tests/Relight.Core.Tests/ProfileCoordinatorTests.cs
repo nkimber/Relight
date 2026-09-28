@@ -164,7 +164,7 @@ public sealed class ProfileCoordinatorTests
     }
 
     [Fact]
-    public async Task Restart_with_unresolved_shared_reservation_cannot_dispatch_again()
+    public async Task Restart_waits_full_appearance_timeout_before_resolving_charged_attempt()
     {
         using var directory = new TestDirectory();
         var budgets = new SharedRecoveryBudgetStore(directory.Path);
@@ -194,12 +194,284 @@ public sealed class ProfileCoordinatorTests
             new ConstantDiscovery(Detection.Absent()), secondLauncher,
             restartedClock, sharedBudget: budgets);
         await TickAt(restarted, restartedClock, 0);
-        await TickAt(restarted, restartedClock, 2);
-        CoordinatorResult due = await TickAt(restarted, restartedClock, 32);
-        Assert.True(due.StorageDegraded);
-        Assert.False(due.LaunchDispatched);
+        for (int second = 5; second <= 55; second += 5)
+            await TickAt(restarted, restartedClock, second);
+        await TickAt(restarted, restartedClock, 59);
+        Assert.Equal(pending, budgets.Load(id));
+        CoordinatorResult reconciled = await TickAt(restarted, restartedClock, 60);
+        Assert.False(reconciled.StorageDegraded, reconciled.Error);
+        Assert.False(reconciled.LaunchDispatched);
+        Assert.Equal(0, secondLauncher.Dispatches);
+        SharedRecoveryBudget charged = budgets.Load(id);
+        Assert.Equal(1, charged.ReservedAutomaticAttempts);
+        Assert.Null(charged.PendingAutomaticOperationId);
+
+        await TickAt(restarted, restartedClock, 62);
+        CoordinatorResult next = await TickAt(restarted, restartedClock, 92);
+        Assert.True(next.LaunchDispatched);
+        Assert.Equal(1, secondLauncher.Dispatches);
+        Assert.Equal(2, budgets.Load(id).ReservedAutomaticAttempts);
+    }
+
+    [Fact]
+    public async Task Restart_adopts_present_target_without_refunding_interrupted_attempt()
+    {
+        using var directory = new TestDirectory();
+        var budgets = new SharedRecoveryBudgetStore(directory.Path);
+        const string key = "77777777777777777777777777777777";
+        var session = new RecoverySessionStateStore(directory.Path, key, budgets);
+        var clock = new FakeClock();
+        Guid id = Guid.NewGuid();
+        using (var first = ProfileCoordinator.CreateNew(id, AutoPolicy, session,
+                   new ConstantDiscovery(Detection.Absent()), new CountingLauncher(),
+                   clock, sharedBudget: budgets))
+        {
+            await TickAt(first, clock, 0);
+            await TickAt(first, clock, 2);
+            Assert.True((await TickAt(first, clock, 32)).LaunchDispatched);
+        }
+        var restartedClock = new FakeClock();
+        var launcher = new CountingLauncher();
+        using var restarted = ProfileCoordinator.OpenExisting(id, AutoPolicy,
+            new RecoverySessionStateStore(directory.Path, key, budgets),
+            new ConstantDiscovery(Detection.Present("current-session-target")),
+            launcher, restartedClock, sharedBudget: budgets);
+
+        CoordinatorResult observed = await TickAt(restarted, restartedClock, 0);
+
+        Assert.False(observed.StorageDegraded, observed.Error);
+        Assert.False(observed.LaunchDispatched);
+        Assert.Equal(RecoveryState.Observing, observed.Snapshot.State);
+        Assert.Equal(0, launcher.Dispatches);
+        SharedRecoveryBudget charged = budgets.Load(id);
+        Assert.Equal(1, charged.ReservedAutomaticAttempts);
+        Assert.Null(charged.PendingAutomaticOperationId);
+    }
+
+    [Fact]
+    public async Task New_sign_in_never_resolves_another_sessions_pending_launch()
+    {
+        using var directory = new TestDirectory();
+        var budgets = new SharedRecoveryBudgetStore(directory.Path);
+        const string firstKey = "66666666666666666666666666666666";
+        var firstSession = new RecoverySessionStateStore(directory.Path, firstKey, budgets);
+        var clock = new FakeClock();
+        Guid id = Guid.NewGuid();
+        using (var first = ProfileCoordinator.CreateNew(id, AutoPolicy, firstSession,
+                   new ConstantDiscovery(Detection.Absent()), new CountingLauncher(),
+                   clock, sharedBudget: budgets))
+        {
+            await TickAt(first, clock, 0);
+            await TickAt(first, clock, 2);
+            Assert.True((await TickAt(first, clock, 32)).LaunchDispatched);
+        }
+        SharedRecoveryBudget pending = budgets.Load(id);
+        const string secondKey = "55555555555555555555555555555555";
+        var secondSession = new RecoverySessionStateStore(directory.Path, secondKey, budgets);
+        secondSession.InitializeForNewSignIn(id, true);
+        var secondClock = new FakeClock();
+        var secondLauncher = new CountingLauncher();
+        using var second = ProfileCoordinator.OpenExisting(id, AutoPolicy,
+            secondSession, new ConstantDiscovery(Detection.Absent()),
+            secondLauncher, secondClock, sharedBudget: budgets);
+
+        CoordinatorResult result = await TickAt(second, secondClock, 120);
+
+        Assert.True(result.StorageDegraded);
         Assert.Equal(0, secondLauncher.Dispatches);
         Assert.Equal(pending, budgets.Load(id));
+    }
+
+    [Fact]
+    public async Task Pause_and_second_restart_preserve_interrupted_operation_ownership()
+    {
+        using var directory = new TestDirectory();
+        var budgets = new SharedRecoveryBudgetStore(directory.Path);
+        const string key = "44444444444444444444444444444444";
+        Guid id = Guid.NewGuid();
+        var firstClock = new FakeClock();
+        using (var first = ProfileCoordinator.CreateNew(id, AutoPolicy,
+                   new RecoverySessionStateStore(directory.Path, key, budgets),
+                   new ConstantDiscovery(Detection.Absent()), new CountingLauncher(),
+                   firstClock, sharedBudget: budgets))
+        {
+            await TickAt(first, firstClock, 0);
+            await TickAt(first, firstClock, 2);
+            Assert.True((await TickAt(first, firstClock, 32)).LaunchDispatched);
+        }
+        using (var paused = ProfileCoordinator.OpenExisting(id, AutoPolicy,
+                   new RecoverySessionStateStore(directory.Path, key, budgets),
+                   new ConstantDiscovery(Detection.Absent()), new CountingLauncher(),
+                   new FakeClock(), sharedBudget: budgets))
+            await paused.SetPausedAsync(true);
+
+        var resumedClock = new FakeClock();
+        var launcher = new CountingLauncher();
+        using var resumed = ProfileCoordinator.OpenExisting(id, AutoPolicy,
+            new RecoverySessionStateStore(directory.Path, key, budgets),
+            new ConstantDiscovery(Detection.Absent()), launcher, resumedClock,
+            sharedBudget: budgets);
+        Assert.False(resumed.StorageDegraded, resumed.StorageError);
+        await TickAt(resumed, resumedClock, 120);
+        Assert.NotNull(budgets.Load(id).PendingAutomaticOperationId);
+        await resumed.SetPausedAsync(false);
+        await TickAt(resumed, resumedClock, 120);
+        for (int second = 125; second <= 175; second += 5)
+            await TickAt(resumed, resumedClock, second);
+        await TickAt(resumed, resumedClock, 179);
+        Assert.NotNull(budgets.Load(id).PendingAutomaticOperationId);
+        await TickAt(resumed, resumedClock, 180);
+        Assert.Null(budgets.Load(id).PendingAutomaticOperationId);
+        Assert.Equal(1, budgets.Load(id).ReservedAutomaticAttempts);
+        Assert.Equal(0, launcher.Dispatches);
+    }
+
+    [Fact]
+    public async Task Disabling_after_dispatch_preserves_pending_operation_across_restart()
+    {
+        using var directory = new TestDirectory();
+        var budgets = new SharedRecoveryBudgetStore(directory.Path);
+        const string key = "33333333333333333333333333333333";
+        Guid id = Guid.NewGuid();
+        var clock = new FakeClock();
+        using (var first = ProfileCoordinator.CreateNew(id, AutoPolicy,
+                   new RecoverySessionStateStore(directory.Path, key, budgets),
+                   new ConstantDiscovery(Detection.Absent()), new CountingLauncher(),
+                   clock, sharedBudget: budgets))
+        {
+            await TickAt(first, clock, 0);
+            await TickAt(first, clock, 2);
+            Assert.True((await TickAt(first, clock, 32)).LaunchDispatched);
+            await first.SetEnabledAsync(false);
+        }
+        var session = new RecoverySessionStateStore(directory.Path, key, budgets);
+        RecoveryCheckpoint saved = session.Load(id).Checkpoint;
+        Assert.False(saved.Enabled);
+        Assert.Equal(RecoveryState.Starting, saved.LastState);
+        Assert.NotNull(saved.PendingOperationId);
+
+        var reopenedClock = new FakeClock();
+        var launcher = new CountingLauncher();
+        using var reopened = ProfileCoordinator.OpenExisting(id, AutoPolicy,
+            session, new ConstantDiscovery(Detection.Absent()), launcher,
+            reopenedClock, sharedBudget: budgets);
+        Assert.False(reopened.StorageDegraded, reopened.StorageError);
+        await TickAt(reopened, reopenedClock, 100);
+        Assert.NotNull(budgets.Load(id).PendingAutomaticOperationId);
+        await reopened.SetEnabledAsync(true);
+        await TickAt(reopened, reopenedClock, 100);
+        for (int second = 105; second <= 155; second += 5)
+            await TickAt(reopened, reopenedClock, second);
+        await TickAt(reopened, reopenedClock, 160);
+        Assert.Null(budgets.Load(id).PendingAutomaticOperationId);
+        Assert.Equal(1, budgets.Load(id).ReservedAutomaticAttempts);
+        Assert.Equal(0, launcher.Dispatches);
+    }
+
+    [Fact]
+    public async Task Unavailable_detection_restarts_interrupted_appearance_wait()
+    {
+        using var directory = new TestDirectory();
+        var budgets = new SharedRecoveryBudgetStore(directory.Path);
+        const string key = "22222222222222222222222222222222";
+        Guid id = Guid.NewGuid();
+        var firstClock = new FakeClock();
+        using (var first = ProfileCoordinator.CreateNew(id, AutoPolicy,
+                   new RecoverySessionStateStore(directory.Path, key, budgets),
+                   new ConstantDiscovery(Detection.Absent()), new CountingLauncher(),
+                   firstClock, sharedBudget: budgets))
+        {
+            await TickAt(first, firstClock, 0);
+            await TickAt(first, firstClock, 2);
+            Assert.True((await TickAt(first, firstClock, 32)).LaunchDispatched);
+        }
+
+        var clock = new FakeClock();
+        var discovery = new MutableDiscovery(Detection.Absent());
+        var launcher = new CountingLauncher();
+        using var restarted = ProfileCoordinator.OpenExisting(id, AutoPolicy,
+            new RecoverySessionStateStore(directory.Path, key, budgets),
+            discovery, launcher, clock, sharedBudget: budgets);
+        await TickAt(restarted, clock, 0);
+        discovery.Result = Detection.Unavailable("Inspection interrupted.");
+        await TickAt(restarted, clock, 30);
+        discovery.Result = Detection.Absent();
+        await TickAt(restarted, clock, 59);
+        for (int second = 64; second <= 114; second += 5)
+            await TickAt(restarted, clock, second);
+        await TickAt(restarted, clock, 118);
+        Assert.NotNull(budgets.Load(id).PendingAutomaticOperationId);
+        CoordinatorResult reconciled = await TickAt(restarted, clock, 119);
+        Assert.False(reconciled.StorageDegraded, reconciled.Error);
+        Assert.Null(budgets.Load(id).PendingAutomaticOperationId);
+        Assert.Equal(1, budgets.Load(id).ReservedAutomaticAttempts);
+        Assert.Equal(0, launcher.Dispatches);
+    }
+
+    [Fact]
+    public async Task Missed_interrupted_poll_does_not_count_as_continuous_absence()
+    {
+        using var directory = new TestDirectory();
+        var budgets = new SharedRecoveryBudgetStore(directory.Path);
+        const string key = "12121212121212121212121212121212";
+        Guid id = Guid.NewGuid();
+        var firstClock = new FakeClock();
+        using (var first = ProfileCoordinator.CreateNew(id, AutoPolicy,
+                   new RecoverySessionStateStore(directory.Path, key, budgets),
+                   new ConstantDiscovery(Detection.Absent()), new CountingLauncher(),
+                   firstClock, sharedBudget: budgets))
+        {
+            await TickAt(first, firstClock, 0);
+            await TickAt(first, firstClock, 2);
+            Assert.True((await TickAt(first, firstClock, 32)).LaunchDispatched);
+        }
+        var clock = new FakeClock();
+        using var restarted = ProfileCoordinator.OpenExisting(id, AutoPolicy,
+            new RecoverySessionStateStore(directory.Path, key, budgets),
+            new ConstantDiscovery(Detection.Absent()), new CountingLauncher(),
+            clock, sharedBudget: budgets);
+
+        await TickAt(restarted, clock, 0);
+        await TickAt(restarted, clock, 60);
+        Assert.NotNull(budgets.Load(id).PendingAutomaticOperationId);
+        for (int second = 65; second <= 120; second += 5)
+            await TickAt(restarted, clock, second);
+        Assert.Null(budgets.Load(id).PendingAutomaticOperationId);
+        Assert.Equal(1, budgets.Load(id).ReservedAutomaticAttempts);
+    }
+
+    [Fact]
+    public async Task Interrupted_explicit_start_can_be_reset_after_full_reconciliation()
+    {
+        using var directory = new TestDirectory();
+        var budgets = new SharedRecoveryBudgetStore(directory.Path);
+        const string key = "11111111111111111111111111111111";
+        Guid id = Guid.NewGuid();
+        using (var first = ProfileCoordinator.CreateNew(id,
+                   RecoveryPolicy.Default,
+                   new RecoverySessionStateStore(directory.Path, key, budgets),
+                   new ConstantDiscovery(Detection.Absent()), new CountingLauncher(),
+                   new FakeClock(), sharedBudget: budgets))
+            Assert.True((await first.StartNowAsync()).LaunchDispatched);
+        Assert.NotNull(budgets.Load(id).PendingExplicitOperationId);
+
+        var clock = new FakeClock();
+        using var restarted = ProfileCoordinator.OpenExisting(id,
+            RecoveryPolicy.Default,
+            new RecoverySessionStateStore(directory.Path, key, budgets),
+            new ConstantDiscovery(Detection.Absent()), new CountingLauncher(),
+            clock, sharedBudget: budgets);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            restarted.ResetRecoveryAsync());
+        await TickAt(restarted, clock, 0);
+        for (int second = 5; second <= 55; second += 5)
+            await TickAt(restarted, clock, second);
+        await TickAt(restarted, clock, 60);
+        Assert.Null(budgets.Load(id).PendingExplicitOperationId);
+        Assert.Equal(0, budgets.Load(id).ReservedAutomaticAttempts);
+        await restarted.ResetRecoveryAsync();
+        Assert.False(restarted.StorageDegraded, restarted.StorageError);
+        Assert.False(restarted.Snapshot.LockedOut);
     }
 
     [Fact]

@@ -48,7 +48,8 @@ public enum OperationalEventKind
     ExplicitRestartRequested,
     NotificationPreferencesChanged,
     LaunchAverted,
-    ExplicitStartAverted
+    ExplicitStartAverted,
+    InterruptedLaunchReconciled
 }
 
 /// <summary>

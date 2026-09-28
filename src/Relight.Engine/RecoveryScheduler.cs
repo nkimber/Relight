@@ -200,6 +200,15 @@ public sealed class RecoveryScheduler : IAsyncDisposable
                     profile.NextDue = profile.ImmediateRequested
                         ? _clock.Elapsed
                         : NextDue(_clock.Elapsed, result?.Snapshot, profile.Policy);
+                    if (profile.Coordinator.ReconciliationPending &&
+                        (result?.Snapshot ?? profile.Coordinator.Snapshot) is
+                            { Enabled: true, Paused: false })
+                    {
+                        TimeSpan reconciliationDue = _clock.Elapsed +
+                            profile.Policy.ObservationPollInterval;
+                        if (reconciliationDue < profile.NextDue)
+                            profile.NextDue = reconciliationDue;
+                    }
                     profile.ImmediateRequested = false;
                     profile.InFlight = null;
                 }

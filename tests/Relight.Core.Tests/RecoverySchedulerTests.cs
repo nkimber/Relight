@@ -140,6 +140,43 @@ public sealed class RecoverySchedulerTests
         await Assert.Single(scheduler.Pulse()).Value;
     }
 
+    [Fact]
+    public async Task Interrupted_shared_launch_polls_at_observation_interval()
+    {
+        using var directory = new TestDirectory();
+        var budgets = new SharedRecoveryBudgetStore(directory.Path);
+        const string key = "34343434343434343434343434343434";
+        Guid id = Guid.NewGuid();
+        var originalClock = new FakeClock();
+        var originalSession = new RecoverySessionStateStore(directory.Path, key, budgets);
+        using (var original = ProfileCoordinator.CreateNew(id, AutoPolicy,
+                   originalSession, new ConstantDiscovery(Detection.Absent()),
+                   new CountingLauncher(), originalClock, sharedBudget: budgets))
+        {
+            originalClock.Elapsed = TimeSpan.Zero;
+            await original.TickAsync();
+            originalClock.Elapsed = TimeSpan.FromSeconds(2);
+            await original.TickAsync();
+            originalClock.Elapsed = TimeSpan.FromSeconds(7);
+            Assert.True((await original.TickAsync()).LaunchDispatched);
+        }
+
+        var clock = new FakeClock();
+        var reopened = ProfileCoordinator.OpenExisting(id, AutoPolicy,
+            new RecoverySessionStateStore(directory.Path, key, budgets),
+            new ConstantDiscovery(Detection.Absent()), new CountingLauncher(),
+            clock, sharedBudget: budgets);
+        Assert.True(reopened.ReconciliationPending);
+        await using var scheduler = new RecoveryScheduler(clock);
+        scheduler.Add(id, reopened, AutoPolicy);
+        await Assert.Single(scheduler.Pulse()).Value;
+        clock.Elapsed = TimeSpan.FromSeconds(4);
+        Assert.Empty(scheduler.Pulse());
+        clock.Elapsed = TimeSpan.FromSeconds(5);
+        await Assert.Single(scheduler.Pulse()).Value;
+        Assert.NotNull(budgets.Load(id).PendingAutomaticOperationId);
+    }
+
     private sealed class FakeClock : IMonotonicClock
     {
         public TimeSpan Elapsed { get; set; }

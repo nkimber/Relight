@@ -82,6 +82,11 @@ public sealed class ProfileCoordinator : IDisposable
     private long _budgetRevision;
     private RecoveryCheckpoint _lastPersistedCheckpoint;
     private readonly HashSet<Guid> _activeLedgerOperations = [];
+    private Guid? _interruptedLedgerOperation;
+    private bool _interruptedLedgerOperationExplicit;
+    private TimeSpan? _interruptedAbsentSince;
+    private TimeSpan? _interruptedLastVerifiedAt;
+    private volatile bool _reconciliationPending;
     private bool _storageDegraded;
     private string? _storageError;
     private bool _loggingDegraded;
@@ -144,10 +149,15 @@ public sealed class ProfileCoordinator : IDisposable
             throw new ArgumentException("Shared budgets require a session state store.", nameof(store));
         StoredRecoveryState saved = store.Load(profileId);
         var machine = RecoveryMachine.Restore(policy, saved.Checkpoint);
-        return new(profileId, store, discovery, launcher, clock, machine, saved.Revision,
+        var coordinator = new ProfileCoordinator(profileId, store, discovery, launcher,
+            clock, machine, saved.Revision,
             saved.Checkpoint,
             launchGate ?? UnboundedLaunchGate.Instance,
             recorder ?? NullEventRecorder.Instance, stopper, sharedBudget);
+        if (sharedBudget is not null)
+            coordinator.IdentifyInterruptedLedgerOperation(saved.Checkpoint,
+                sharedBudget.Load(profileId));
+        return coordinator;
     }
 
     public RecoverySnapshot Snapshot => _machine.Snapshot;
@@ -156,12 +166,121 @@ public sealed class ProfileCoordinator : IDisposable
     public string? StorageError => _storageError;
     public bool LoggingDegraded => _loggingDegraded;
     public string? LoggingError => _loggingError;
+    public bool ReconciliationPending => _reconciliationPending;
+
+    private void IdentifyInterruptedLedgerOperation(RecoveryCheckpoint saved,
+        SharedRecoveryBudget budget)
+    {
+        if (budget.Revision != _budgetRevision)
+            throw new StaleRecoveryRevisionException(
+                "The shared budget changed while session state was opened.");
+        Guid? pending = budget.PendingAutomaticOperationId ??
+            budget.PendingExplicitOperationId;
+        if (pending is null) return;
+        if (saved.LastState == RecoveryState.Starting &&
+            saved.PendingOperationId == pending &&
+            saved.PendingExplicitStart ==
+                (budget.PendingExplicitOperationId is not null ? true : null))
+        {
+            _interruptedLedgerOperation = pending;
+            _interruptedLedgerOperationExplicit =
+                budget.PendingExplicitOperationId is not null;
+            _reconciliationPending = true;
+            return;
+        }
+        MarkStorageDegraded(new RecoveryStateUnavailableException(
+            "A shared launch is pending in another session or lacks a matching local checkpoint; automatic actions remain suspended."));
+    }
+
+    private async Task<CoordinatorResult> ReconcileInterruptedLaunchAsync(
+        CancellationToken cancellationToken)
+    {
+        if (_storageDegraded)
+        {
+            Detection passive = await Discover(cancellationToken).ConfigureAwait(false);
+            RecoverySnapshot prior = _machine.Snapshot;
+            RecoveryTransition observed = _machine.Advance(passive, _clock.Elapsed);
+            RecordTransition(prior, _machine.Snapshot);
+            return Result(new(observed.Before, observed.After, RecoverySignal.None,
+                "Shared recovery state is degraded; launch reconciliation is suspended"));
+        }
+        if (!_machine.Snapshot.Enabled || _machine.Snapshot.Paused)
+        {
+            _interruptedAbsentSince = null;
+            _interruptedLastVerifiedAt = null;
+            return Result(new(_machine.Snapshot.State, _machine.Snapshot.State,
+                RecoverySignal.None, "Interrupted launch reconciliation waits while protection is inactive"));
+        }
+
+        Detection found = await Discover(cancellationToken).ConfigureAwait(false);
+        TimeSpan now = _clock.Elapsed;
+        if (found.Kind == DetectionKind.Unavailable)
+        {
+            _interruptedAbsentSince = null;
+            _interruptedLastVerifiedAt = null;
+            RecoverySnapshot previous = _machine.Snapshot;
+            RecoveryTransition unavailable = _machine.Advance(found, now);
+            RecordTransition(previous, _machine.Snapshot);
+            return Result(unavailable);
+        }
+        if (found.Kind == DetectionKind.Absent)
+        {
+            if (_interruptedLastVerifiedAt is { } lastVerified &&
+                now - lastVerified >
+                    _machine.Policy.ObservationPollInterval + TimeSpan.FromSeconds(5))
+                _interruptedAbsentSince = null;
+            _interruptedAbsentSince ??= now;
+            _interruptedLastVerifiedAt = now;
+            if (now - _interruptedAbsentSince < _machine.Policy.AppearanceTimeout)
+                return Result(new(_machine.Snapshot.State, _machine.Snapshot.State,
+                    RecoverySignal.None,
+                    "Waiting a full fresh appearance timeout for the interrupted launch"));
+        }
+
+        try
+        {
+            Guid operation = _interruptedLedgerOperation!.Value;
+            SharedRecoveryBudget current = _sharedBudget!.Load(_profileId);
+            if (current.Revision != _budgetRevision)
+                throw new StaleRecoveryRevisionException(
+                    "The shared budget changed during interrupted-launch reconciliation.");
+            SharedRecoveryBudget resolved = _interruptedLedgerOperationExplicit
+                ? _sharedBudget.ResolveExplicitStart(_profileId, current.Revision, operation)
+                : _sharedBudget.ResolveAutomatic(_profileId, current.Revision, operation);
+            _sessionStore!.AdoptCommittedBudget(resolved);
+            _budgetRevision = resolved.Revision;
+            _interruptedLedgerOperation = null;
+            _interruptedAbsentSince = null;
+            _interruptedLastVerifiedAt = null;
+            _reconciliationPending = false;
+
+            RecoverySnapshot before = _machine.Snapshot;
+            RecoveryTransition transition = _machine.Advance(found, now);
+            if (!Persist())
+                return Result(new(before.State, _machine.Snapshot.State,
+                    RecoverySignal.None, "Interrupted launch could not be saved"));
+            RecordTransition(before, _machine.Snapshot);
+            Record(OperationalEventKind.InterruptedLaunchReconciled,
+                EventSeverity.Information, before, _machine.Snapshot, operation);
+            return Result(transition);
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or
+            UnauthorizedAccessException)
+        {
+            MarkStorageDegraded(error);
+            return Result(new(_machine.Snapshot.State, _machine.Snapshot.State,
+                RecoverySignal.None, "Interrupted launch could not be reconciled"));
+        }
+    }
 
     public async Task<CoordinatorResult> TickAsync(CancellationToken cancellationToken = default)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (_interruptedLedgerOperation is not null)
+                return await ReconcileInterruptedLaunchAsync(cancellationToken)
+                    .ConfigureAwait(false);
             int commandGeneration = Volatile.Read(ref _commandGeneration);
             RecoveryCheckpoint before = _machine.ExportCheckpoint();
             RecoverySnapshot previous = _machine.Snapshot;
@@ -558,6 +677,9 @@ public sealed class ProfileCoordinator : IDisposable
         {
             if (_storageDegraded)
                 throw new RecoveryStateUnavailableException("Recovery state is degraded; reset cannot be trusted.");
+            if (_interruptedLedgerOperation is not null)
+                throw new InvalidOperationException(
+                    "Wait for interrupted launch reconciliation before resetting recovery.");
             if (!_machine.Snapshot.Enabled)
                 throw new InvalidOperationException("Enable protection before resetting recovery.");
             if (_machine.Snapshot.State == RecoveryState.Starting)
@@ -591,6 +713,9 @@ public sealed class ProfileCoordinator : IDisposable
     {
         if (_storageDegraded)
             throw new RecoveryStateUnavailableException("Recovery state is degraded; explicit launch is suspended.");
+        if (_interruptedLedgerOperation is not null)
+            throw new InvalidOperationException(
+                "Wait for interrupted launch reconciliation before starting this application.");
         if (!_machine.Snapshot.Enabled || _machine.Snapshot.Paused)
             throw new InvalidOperationException("Resume protection before starting this application.");
         if (_machine.Snapshot.HoldReason == RecoveryHoldReason.InterruptedExplicitLaunch)
@@ -713,23 +838,35 @@ public sealed class ProfileCoordinator : IDisposable
         {
             RecoveryCheckpoint next = _machine.ExportCheckpoint();
             if (_sharedBudget is not null) CommitSharedBudget(next);
-            StoredRecoveryState saved = _store.Save(_profileId, _revision, next);
+            RecoveryCheckpoint durable = _interruptedLedgerOperation is { } interrupted
+                ? next with
+                {
+                    LastState = RecoveryState.Starting,
+                    PendingOperationId = interrupted,
+                    PendingExplicitStart = _interruptedLedgerOperationExplicit ? true : null
+                }
+                : next;
+            StoredRecoveryState saved = _store.Save(_profileId, _revision, durable);
             _revision = saved.Revision;
             _lastPersistedCheckpoint = saved.Checkpoint;
             return true;
         }
         catch (Exception error) when (error is IOException or InvalidOperationException or UnauthorizedAccessException)
         {
-            _storageDegraded = true;
-            _storageError = error.Message;
-            if (!_storageEventEmitted)
-            {
-                _storageEventEmitted = true;
-                Record(OperationalEventKind.StorageDegraded, EventSeverity.Error,
-                    _machine.Snapshot, _machine.Snapshot);
-            }
+            MarkStorageDegraded(error);
             return false;
         }
+    }
+
+    private void MarkStorageDegraded(Exception error)
+    {
+        _storageDegraded = true;
+        _reconciliationPending = false;
+        _storageError = error.Message;
+        if (_storageEventEmitted) return;
+        _storageEventEmitted = true;
+        Record(OperationalEventKind.StorageDegraded, EventSeverity.Error,
+            _machine.Snapshot, _machine.Snapshot);
     }
 
     private void CommitSharedBudget(RecoveryCheckpoint next)
@@ -740,6 +877,27 @@ public sealed class ProfileCoordinator : IDisposable
         if (current.Revision != _budgetRevision)
             throw new StaleRecoveryRevisionException(
                 "The shared recovery budget changed in another session.");
+
+        if (next.LastState == RecoveryState.Disabled &&
+            current.PendingAutomaticOperationId is { } disabledAutomatic &&
+            _activeLedgerOperations.Remove(disabledAutomatic))
+        {
+            _interruptedLedgerOperation = disabledAutomatic;
+            _interruptedLedgerOperationExplicit = false;
+            _interruptedAbsentSince = null;
+            _interruptedLastVerifiedAt = null;
+            _reconciliationPending = true;
+        }
+        if (next.LastState == RecoveryState.Disabled &&
+            current.PendingExplicitOperationId is { } disabledExplicit &&
+            _activeLedgerOperations.Remove(disabledExplicit))
+        {
+            _interruptedLedgerOperation = disabledExplicit;
+            _interruptedLedgerOperationExplicit = true;
+            _interruptedAbsentSince = null;
+            _interruptedLastVerifiedAt = null;
+            _reconciliationPending = true;
+        }
 
         void Adopt(SharedRecoveryBudget committed)
         {
