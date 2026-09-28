@@ -987,6 +987,66 @@ public sealed class RecoveryApplicationHostIntegrationTests
 
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Unwritable_log_path_is_visible_without_blocking_automatic_recovery()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-log-fault-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(Path.Combine(root, "Logs"), "blocked log directory");
+        string ready = Path.Combine(root, "target.ready");
+        int? pid = null;
+        try
+        {
+            var clock = new FakeClock();
+            await using var host = await RecoveryApplicationHost.OpenSharedSessionAsync(root, clock);
+            Guid id = await host.RegisterExecutableAsync("Disposable target", TestExecutable(),
+                ["--ready-file", ready, "--exit-after-ms", "30000"], Path.GetTempPath(),
+                RecoveryPolicy.Default with { StartAutomaticallyWhenInitiallyAbsent = true });
+            foreach (int second in new[] { 0, 2, 32 })
+            {
+                clock.Elapsed = TimeSpan.FromSeconds(second);
+                await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+
+            pid = int.Parse((await WaitForFile(ready)).Split('|')[0]);
+            Assert.Equal(1, new SharedRecoveryBudgetStore(root).Load(id)
+                .ReservedAutomaticAttempts);
+            EventRecorderStatus? logging = null;
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            while (logging?.Degraded != true)
+            {
+                timeout.Token.ThrowIfCancellationRequested();
+                logging = await host.GetLoggingStatusAsync(timeout.Token);
+                if (logging?.Degraded != true) await Task.Delay(20, timeout.Token);
+            }
+            Assert.True(logging.Journal.BufferedCount > 0);
+            var dashboard = new ShellViewModel(() => { }, () => { }, () => { }, () => { });
+            dashboard.UpdateMonitoring(null, false, host.GetProfiles(), logging, clock.Elapsed);
+            Assert.Contains("Event logging is degraded", dashboard.MonitoringBanner);
+            using (Process target = Process.GetProcessById(pid.Value))
+                Assert.False(target.HasExited);
+            Assert.Equal("blocked log directory", File.ReadAllText(Path.Combine(root, "Logs")));
+        }
+        finally
+        {
+            if (pid is { } running)
+            {
+                try
+                {
+                    using Process target = Process.GetProcessById(running);
+                    if (!target.HasExited)
+                    {
+                        target.Kill(entireProcessTree: false);
+                        await target.WaitForExitAsync();
+                    }
+                }
+                catch (ArgumentException) { }
+            }
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Stale_configuration_does_not_publish_new_profile_or_refund_its_ledger()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-register-stale-{Guid.NewGuid():N}");
