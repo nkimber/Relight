@@ -263,6 +263,116 @@ public sealed class RecoveryApplicationHostIntegrationTests
 
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Shared_host_reconciles_external_edit_and_removal_without_resetting_budget()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-config-reconcile-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            await using var host = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                root, new FakeClock());
+            Guid id = await host.RegisterExecutableAsync("Original", TestExecutable());
+            var store = new ConfigurationStore(root);
+            StoredConfiguration current = store.Load();
+            ProfileConfiguration original = Assert.Single(current.Configuration.Profiles);
+            RecoveryPolicy revisedPolicy = original.Policy with
+            {
+                MaximumAutomaticAttempts = 1
+            };
+            store.Save(current, current.Configuration with
+            {
+                Profiles = [original with { Name = "Revised", Policy = revisedPolicy }]
+            });
+
+            Assert.True(await host.ReconcileSharedConfigurationAsync());
+            HostedProfileStatus revised = Assert.Single(host.GetProfiles());
+            Assert.Equal("Revised", revised.Name);
+            Assert.Equal(revisedPolicy, revised.Policy);
+            Assert.True(revised.AutomaticActionsAllowed, revised.Problem);
+            Assert.Equal(0, new SharedRecoveryBudgetStore(root).Load(id)
+                .ReservedAutomaticAttempts);
+
+            StoredConfiguration updated = store.Load();
+            store.Save(updated, updated.Configuration with { Profiles = [] });
+            Assert.True(await host.ReconcileSharedConfigurationAsync());
+            Assert.Empty(host.GetProfiles());
+            Assert.Equal(0, new SharedRecoveryBudgetStore(root).Load(id)
+                .ReservedAutomaticAttempts);
+            Assert.False(await host.ReconcileSharedConfigurationAsync());
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Shared_host_keeps_externally_added_profile_passive_without_budget()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-config-new-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            await using var host = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                root, new FakeClock());
+            var store = new ConfigurationStore(root);
+            StoredConfiguration current = store.Load();
+            Guid id = Guid.NewGuid();
+            var profile = new ProfileConfiguration(id, "External", true,
+                new TargetConfiguration(TargetKind.Executable, TestExecutable(), []),
+                RecoveryPolicy.Default);
+            store.Save(current, current.Configuration with { Profiles = [profile] });
+
+            Assert.True(await host.ReconcileSharedConfigurationAsync());
+            HostedProfileStatus added = Assert.Single(host.GetProfiles());
+            Assert.Equal(id, added.Id);
+            Assert.False(added.AutomaticActionsAllowed);
+            Assert.Contains("budget", added.Problem, StringComparison.OrdinalIgnoreCase);
+            Assert.False(new SharedRecoveryBudgetStore(root).HasBudgetEvidence(id));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Shared_host_adopts_externally_added_profile_with_trusted_budget()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-config-adopt-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            await using var host = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                root, new FakeClock());
+            Guid id = Guid.NewGuid();
+            var budgets = new SharedRecoveryBudgetStore(root);
+            budgets.Create(id);
+            var store = new ConfigurationStore(root);
+            StoredConfiguration current = store.Load();
+            var profile = new ProfileConfiguration(id, "External", true,
+                new TargetConfiguration(TargetKind.Executable, TestExecutable(), []),
+                RecoveryPolicy.Default);
+            store.Save(current, current.Configuration with { Profiles = [profile] });
+
+            Assert.True(await host.ReconcileSharedConfigurationAsync());
+            HostedProfileStatus added = Assert.Single(host.GetProfiles());
+            Assert.True(added.AutomaticActionsAllowed, added.Problem);
+            Assert.Equal(id, added.Id);
+            var session = new RecoverySessionStateStore(root,
+                WindowsLogonSessionIdentity.Current().StorageKey, budgets);
+            Assert.True(session.Load(id).Checkpoint.Enabled);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Shared_host_duplicate_and_enable_keep_separate_budgets()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-shared-copy-{Guid.NewGuid():N}");

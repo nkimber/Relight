@@ -134,7 +134,14 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         _recorder!.TryRecord(new(DateTimeOffset.UtcNow, Guid.NewGuid(),
             EventSeverity.Information, OperationalEventKind.Startup));
 
-        foreach (ProfileConfiguration profile in Configuration.Configuration.Profiles)
+        await LoadProfilesAsync(Configuration, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task LoadProfilesAsync(StoredConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        foreach (ProfileConfiguration profile in configuration.Configuration.Profiles)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!profile.Enabled)
@@ -150,8 +157,9 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 {
                     problem = $"Recovery state is unavailable; re-enable is blocked. {error.Message}";
                 }
-                _statuses[profile.Id] = new(profile.Id, profile.Name, false, false,
-                    null, disabledRecovery, problem, ConfiguredEnabled: false);
+                lock (_statusSync)
+                    _statuses[profile.Id] = new(profile.Id, profile.Name, false, false,
+                        null, disabledRecovery, problem, ConfiguredEnabled: false);
                 continue;
             }
             if (profile.Target.Kind == TargetKind.PackagedApplication &&
@@ -160,12 +168,13 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                     StringComparison.OrdinalIgnoreCase))
             {
                 var packagedDiscovery = new ChatGptPackagedDiscovery();
-                if (!Configuration.AutomaticActionsAllowed)
+                if (!configuration.AutomaticActionsAllowed)
                 {
-                    _statuses[profile.Id] = await PassiveStatus(profile,
+                    HostedProfileStatus passive = await PassiveStatus(profile,
                         packagedDiscovery,
                         "Configuration is degraded; automatic actions are suspended.",
                         cancellationToken).ConfigureAwait(false);
+                    lock (_statusSync) _statuses[profile.Id] = passive;
                     continue;
                 }
                 try
@@ -177,24 +186,29 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                         _clock, _launchGate, _notificationTap,
                         sharedBudget: _sharedBudgetStore);
                     _scheduler.Add(profile.Id, coordinator, profile.Policy);
-                    _coordinators.Add(profile.Id, coordinator);
-                    _statuses[profile.Id] = new(profile.Id, profile.Name, true, true,
-                        null, coordinator.Snapshot, null);
+                    lock (_statusSync)
+                    {
+                        _coordinators.Add(profile.Id, coordinator);
+                        _statuses[profile.Id] = new(profile.Id, profile.Name, true, true,
+                            null, coordinator.Snapshot, null);
+                    }
                 }
                 catch (Exception error) when (error is IOException or
                     InvalidOperationException or ArgumentException)
                 {
-                    _statuses[profile.Id] = await PassiveStatus(profile,
+                    HostedProfileStatus passive = await PassiveStatus(profile,
                         packagedDiscovery,
                         $"Recovery state is unavailable; automatic actions are suspended. {error.Message}",
                         cancellationToken).ConfigureAwait(false);
+                    lock (_statusSync) _statuses[profile.Id] = passive;
                 }
                 continue;
             }
             if (profile.Target.Kind != TargetKind.Executable)
             {
-                _statuses[profile.Id] = new(profile.Id, profile.Name, false, false, null, null,
-                    "Installed-application activation is not available yet.");
+                lock (_statusSync)
+                    _statuses[profile.Id] = new(profile.Id, profile.Name, false, false,
+                        null, null, "Installed-application activation is not available yet.");
                 continue;
             }
 
@@ -208,8 +222,9 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             }
             catch (ArgumentException error)
             {
-                _statuses[profile.Id] = new(profile.Id, profile.Name, false, false, null, null,
-                    $"Executable identity is invalid: {error.Message}");
+                lock (_statusSync)
+                    _statuses[profile.Id] = new(profile.Id, profile.Name, false, false,
+                        null, null, $"Executable identity is invalid: {error.Message}");
                 continue;
             }
 
@@ -217,17 +232,19 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             try { discovery = new(target); }
             catch (Exception error) when (error is InvalidOperationException or ArgumentException)
             {
-                _statuses[profile.Id] = new(profile.Id, profile.Name, false, false,
-                    null, null, $"Process discovery is unavailable: {error.Message}");
+                lock (_statusSync)
+                    _statuses[profile.Id] = new(profile.Id, profile.Name, false, false,
+                        null, null, $"Process discovery is unavailable: {error.Message}");
                 continue;
             }
-            if (!Configuration.AutomaticActionsAllowed || !File.Exists(target.CanonicalPath))
+            if (!configuration.AutomaticActionsAllowed || !File.Exists(target.CanonicalPath))
             {
-                string problem = !Configuration.AutomaticActionsAllowed
+                string problem = !configuration.AutomaticActionsAllowed
                     ? "Configuration is degraded; automatic actions are suspended."
                     : "Target executable is missing; automatic actions are suspended.";
-                _statuses[profile.Id] = await PassiveStatus(profile, discovery, problem,
-                    cancellationToken).ConfigureAwait(false);
+                HostedProfileStatus passive = await PassiveStatus(profile, discovery,
+                    problem, cancellationToken).ConfigureAwait(false);
+                lock (_statusSync) _statuses[profile.Id] = passive;
                 continue;
             }
 
@@ -238,17 +255,77 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                     new ExecutableLauncher(target), _clock, _launchGate,
                     _notificationTap, new ExecutableStopper(target), _sharedBudgetStore);
                 _scheduler.Add(profile.Id, coordinator, profile.Policy);
-                _coordinators.Add(profile.Id, coordinator);
-                _statuses[profile.Id] = new(profile.Id, profile.Name, true, true,
-                    null, coordinator.Snapshot, null);
+                lock (_statusSync)
+                {
+                    _coordinators.Add(profile.Id, coordinator);
+                    _statuses[profile.Id] = new(profile.Id, profile.Name, true, true,
+                        null, coordinator.Snapshot, null);
+                }
             }
             catch (Exception error) when (error is IOException or InvalidOperationException or ArgumentException)
             {
-                _statuses[profile.Id] = await PassiveStatus(profile, discovery,
+                HostedProfileStatus passive = await PassiveStatus(profile, discovery,
                     $"Recovery state is unavailable; automatic actions are suspended. {error.Message}",
                     cancellationToken).ConfigureAwait(false);
+                lock (_statusSync) _statuses[profile.Id] = passive;
             }
         }
+    }
+
+    internal async Task<bool> ReconcileSharedConfigurationAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (_sessionStateStore is null)
+            throw new InvalidOperationException("Shared-session reconciliation is not enabled.");
+        await _changes.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(RecoveryApplicationHost));
+            StoredConfiguration current = _configurationStore.Load();
+            if (!current.AutomaticActionsAllowed)
+                throw new ConfigurationUnavailableException(
+                    "Repair the invalid shared configuration before reconciliation.");
+            StoredConfiguration? active = Configuration;
+            if (active is not null && current.Revision == active.Revision &&
+                string.Equals(current.ContentHash, active.ContentHash,
+                    StringComparison.Ordinal))
+                return false;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Guid[] previous;
+            Task[] commands;
+            lock (_statusSync)
+            {
+                previous = _statuses.Keys.ToArray();
+                foreach (Guid id in previous) _closingProfiles.Add(id);
+                commands = _activeCommands.Keys.ToArray();
+            }
+            try
+            {
+                try { await Task.WhenAll(commands).ConfigureAwait(false); }
+                catch { /* Command callers observe their own failures. */ }
+                foreach (Guid id in previous)
+                    await _scheduler.RemoveAsync(id).ConfigureAwait(false);
+                lock (_statusSync)
+                {
+                    _coordinators.Clear();
+                    _statuses.Clear();
+                }
+                Configuration = current;
+                ConfigurationProblem = current.Diagnostic;
+                // Once old coordinators are removed, finish rebuilding even if
+                // the caller closes its dialog or cancels its request.
+                await LoadProfilesAsync(current, CancellationToken.None)
+                    .ConfigureAwait(false);
+                return true;
+            }
+            finally
+            {
+                lock (_statusSync)
+                    foreach (Guid id in previous) _closingProfiles.Remove(id);
+            }
+        }
+        finally { _changes.Release(); }
     }
 
     private void InitializeLogging(string dataDirectory, GlobalConfiguration settings)
