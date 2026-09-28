@@ -69,6 +69,14 @@ public sealed class SharedRecoveryBudgetStore
         return Read(PathFor(profileId), profileId);
     }
 
+    public bool HasBudgetEvidence(Guid profileId)
+    {
+        CheckId(profileId);
+        using FileStream guard = Lock(profileId);
+        string path = PathFor(profileId);
+        return File.Exists(path) || File.Exists(path + ".bak");
+    }
+
     public SharedRecoveryBudget BeginEpisode(Guid profileId, long expectedRevision,
         Guid episodeId)
     {

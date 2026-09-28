@@ -187,6 +187,202 @@ public sealed class RecoveryApplicationHostIntegrationTests
 
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Shared_host_registers_and_reopens_fresh_profile_without_legacy_state()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-shared-host-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            Guid id;
+            await using (var host = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                             root, new FakeClock()))
+            {
+                id = await host.RegisterExecutableAsync("Disposable target", TestExecutable());
+                Assert.True(Assert.Single(host.GetProfiles()).AutomaticActionsAllowed);
+                await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
+                await host.SetProfilePausedAsync(id, true);
+            }
+
+            SharedRecoveryBudget budget = new SharedRecoveryBudgetStore(root).Load(id);
+            Assert.Equal(0, budget.ReservedAutomaticAttempts);
+            Assert.False(File.Exists(Path.Combine(root, "State", $"{id:N}.json")));
+            var session = new RecoverySessionStateStore(root,
+                WindowsLogonSessionIdentity.Current().StorageKey,
+                new SharedRecoveryBudgetStore(root));
+            Assert.True(session.Load(id).Checkpoint.Paused);
+
+            await using var reopened = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                root, new FakeClock());
+            HostedProfileStatus status = Assert.Single(reopened.GetProfiles());
+            Assert.True(status.AutomaticActionsAllowed, status.Problem);
+            Assert.True(status.Recovery?.Paused);
+            Assert.Equal(0, new SharedRecoveryBudgetStore(root).Load(id)
+                .ReservedAutomaticAttempts);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Shared_host_duplicate_and_enable_keep_separate_budgets()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-shared-copy-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            await using var host = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                root, new FakeClock());
+            Guid source = await host.RegisterExecutableAsync("Source", TestExecutable());
+            Guid copy = await host.DuplicateProfileAsync(source);
+            var budgets = new SharedRecoveryBudgetStore(root);
+            Assert.Equal(0, budgets.Load(source).ReservedAutomaticAttempts);
+            Assert.Equal(0, budgets.Load(copy).ReservedAutomaticAttempts);
+            var session = new RecoverySessionStateStore(root,
+                WindowsLogonSessionIdentity.Current().StorageKey, budgets);
+            Assert.False(session.Load(copy).Checkpoint.Enabled);
+            Assert.False(File.Exists(Path.Combine(root, "State", $"{copy:N}.json")));
+
+            await host.SetProfileEnabledAsync(source, false);
+            await host.SetProfileEnabledAsync(copy, true);
+            HostedProfileStatus enabledCopy = host.GetProfiles().Single(profile =>
+                profile.Id == copy);
+            Assert.True(enabledCopy.AutomaticActionsAllowed, enabledCopy.Problem);
+            Assert.True(session.Load(copy).Checkpoint.Enabled);
+            Assert.Equal(0, budgets.Load(copy).ReservedAutomaticAttempts);
+            Assert.Equal(0, budgets.Load(source).ReservedAutomaticAttempts);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Shared_host_requires_guarded_legacy_migration_and_preserves_original()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-host-migrate-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            Guid id;
+            await using (var legacy = await RecoveryApplicationHost.OpenAsync(root,
+                             new FakeClock()))
+            {
+                id = await legacy.RegisterExecutableAsync("Disposable target", TestExecutable());
+                await legacy.SetProfilePausedAsync(id, true);
+            }
+            string oldPath = Path.Combine(root, "State", $"{id:N}.json");
+            byte[] original = File.ReadAllBytes(oldPath);
+            await using (var guarded = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                             root, new FakeClock()))
+            {
+                HostedProfileStatus blocked = Assert.Single(guarded.GetProfiles());
+                Assert.False(blocked.AutomaticActionsAllowed);
+                Assert.Contains("guarded migration", blocked.Problem);
+                Assert.False(new SharedRecoveryBudgetStore(root).HasBudgetEvidence(id));
+            }
+
+            await using (var migrated = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                             root, new FakeClock(), allowLegacyMigration: true))
+            {
+                HostedProfileStatus ready = Assert.Single(migrated.GetProfiles());
+                Assert.True(ready.AutomaticActionsAllowed, ready.Problem);
+                Assert.True(ready.Recovery?.Paused);
+                Assert.Equal(0, new SharedRecoveryBudgetStore(root).Load(id)
+                    .ReservedAutomaticAttempts);
+            }
+            Assert.Equal(original, File.ReadAllBytes(oldPath));
+            Assert.Equal(LegacyStateOwnership.SessionOwner,
+                new RecoveryStateStore(root).GetOwnership(id));
+
+            await using var reopened = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                root, new FakeClock());
+            Assert.True(Assert.Single(reopened.GetProfiles()).AutomaticActionsAllowed);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Shared_host_does_not_recreate_missing_budget_or_finish_partial_migration()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-host-state-gap-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            Guid id;
+            await using (var shared = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                             root, new FakeClock()))
+                id = await shared.RegisterExecutableAsync("Disposable target", TestExecutable());
+            string sessionDirectory = Path.Combine(root, "Sessions",
+                WindowsLogonSessionIdentity.Current().StorageKey, "State");
+            string sessionPath = Path.Combine(sessionDirectory, $"{id:N}.json");
+            string markerPath = Path.Combine(sessionDirectory, $"{id:N}.session");
+            Assert.True(File.Exists(markerPath));
+            File.Delete(sessionPath);
+            await using (var missingSession = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                             root, new FakeClock()))
+            {
+                HostedProfileStatus missingState = Assert.Single(missingSession.GetProfiles());
+                Assert.False(missingState.AutomaticActionsAllowed);
+                Assert.False(File.Exists(sessionPath));
+                Assert.True(File.Exists(markerPath));
+            }
+            string budgetPath = Path.Combine(root, "Budgets", $"{id:N}.json");
+            File.Delete(budgetPath);
+
+            await using var reopened = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                root, new FakeClock());
+            HostedProfileStatus blocked = Assert.Single(reopened.GetProfiles());
+            Assert.False(blocked.AutomaticActionsAllowed);
+            Assert.Contains("budget", blocked.Problem, StringComparison.OrdinalIgnoreCase);
+            Assert.False(File.Exists(budgetPath));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+
+        string migrationRoot = Path.Combine(Path.GetTempPath(),
+            $"relight-host-pending-migration-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(migrationRoot);
+        try
+        {
+            Guid id;
+            await using (var legacy = await RecoveryApplicationHost.OpenAsync(migrationRoot,
+                             new FakeClock()))
+                id = await legacy.RegisterExecutableAsync("Disposable target", TestExecutable());
+            var old = new RecoveryStateStore(migrationRoot);
+            var budgets = new SharedRecoveryBudgetStore(migrationRoot);
+            budgets.Create(id);
+            var session = new RecoverySessionStateStore(migrationRoot,
+                WindowsLogonSessionIdentity.Current().StorageKey, budgets);
+            Assert.Throws<InvalidOperationException>(() =>
+                old.MigrateToSession(id, budgets, session));
+
+            await using var reopened = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                migrationRoot, new FakeClock(), allowLegacyMigration: true);
+            HostedProfileStatus blocked = Assert.Single(reopened.GetProfiles());
+            Assert.False(blocked.AutomaticActionsAllowed);
+            Assert.Contains("interrupted", blocked.Problem, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(LegacyStateOwnership.MigrationPending, old.GetOwnership(id));
+            Assert.False(session.HasStateEvidence(id));
+        }
+        finally
+        {
+            if (Directory.Exists(migrationRoot)) Directory.Delete(migrationRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Stale_configuration_does_not_publish_new_profile_or_refund_its_ledger()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-register-stale-{Guid.NewGuid():N}");

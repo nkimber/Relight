@@ -11,9 +11,11 @@ namespace Relight.Storage;
 /// </summary>
 public sealed class RecoverySessionStateStore : IRecoveryStateStore
 {
+    private const string MarkerContents = "Relight session checkpoint v1\n";
     private static readonly Regex StorageKeyPattern = new("^[0-9A-F]{32}$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private readonly RecoveryStateStore _session;
+    private readonly string _markerDirectory;
     private readonly SharedRecoveryBudgetStore _budgets;
     private readonly ConcurrentDictionary<Guid, long> _knownBudgetRevisions = new();
 
@@ -26,8 +28,10 @@ public sealed class RecoverySessionStateStore : IRecoveryStateStore
             throw new ArgumentException("An opaque logon-session key is required.",
                 nameof(storageKey));
         _budgets = budgets ?? throw new ArgumentNullException(nameof(budgets));
-        _session = new RecoveryStateStore(Path.Combine(Path.GetFullPath(dataDirectory),
-            "Sessions", storageKey));
+        string sessionDirectory = Path.Combine(Path.GetFullPath(dataDirectory),
+            "Sessions", storageKey);
+        _session = new RecoveryStateStore(sessionDirectory);
+        _markerDirectory = Path.Combine(sessionDirectory, "State");
     }
 
     public StoredRecoveryState InitializeForNewSignIn(Guid profileId, bool enabled)
@@ -40,15 +44,20 @@ public sealed class RecoverySessionStateStore : IRecoveryStateStore
             budget.LockedOut, budget.ReservedAutomaticAttempts, budget.EpisodeId,
             state, null,
             SharedBudgetRevision: budget.Revision);
+        CreateMarker(profileId);
         StoredRecoveryState created = _session.Create(profileId, initial);
         _knownBudgetRevisions[profileId] = budget.Revision;
         return created;
     }
 
+    public bool HasStateEvidence(Guid profileId) =>
+        _session.HasStateEvidence(profileId) || File.Exists(MarkerPath(profileId));
+
     public StoredRecoveryState Create(Guid profileId, RecoveryCheckpoint initial)
     {
         SharedRecoveryBudget budget = _budgets.Load(profileId);
         EnsureSharedBudgetFieldsMatch(initial, budget);
+        CreateMarker(profileId);
         StoredRecoveryState created = _session.Create(profileId,
             initial with { SharedBudgetRevision = budget.Revision });
         _knownBudgetRevisions[profileId] = budget.Revision;
@@ -60,6 +69,7 @@ public sealed class RecoverySessionStateStore : IRecoveryStateStore
         SharedRecoveryBudget budget = _budgets.Load(profileId);
         StoredRecoveryState local = _session.Load(profileId);
         EnsureSharedBudgetMatches(local.Checkpoint, budget);
+        EnsureMarker(profileId);
         _knownBudgetRevisions[profileId] = budget.Revision;
         return local;
     }
@@ -105,5 +115,50 @@ public sealed class RecoverySessionStateStore : IRecoveryStateStore
             budget.LockedOut && !checkpoint.LockedOut)
             throw new StaleRecoveryRevisionException(
                 "The shared recovery budget changed; this session must reconcile before automatic actions.");
+    }
+
+    private string MarkerPath(Guid profileId)
+    {
+        if (profileId == Guid.Empty)
+            throw new ArgumentException("Profile ID is required.", nameof(profileId));
+        return Path.Combine(_markerDirectory, $"{profileId:N}.session");
+    }
+
+    private void CreateMarker(Guid profileId)
+    {
+        string path = MarkerPath(profileId);
+        if (File.Exists(path))
+            throw new RecoveryStateUnavailableException(
+                "This logon session already owns recovery state for the profile; missing state cannot be reinitialized.");
+        try
+        {
+            using var stream = new FileStream(path, FileMode.CreateNew,
+                FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough);
+            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(MarkerContents);
+            stream.Write(bytes);
+            stream.Flush(flushToDisk: true);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            throw new RecoveryStateUnavailableException(
+                "Session ownership could not be committed; automatic actions remain suspended.", error);
+        }
+    }
+
+    private void EnsureMarker(Guid profileId)
+    {
+        string path = MarkerPath(profileId);
+        if (!File.Exists(path)) CreateMarker(profileId);
+        try
+        {
+            if (File.ReadAllText(path) != MarkerContents)
+                throw new RecoveryStateUnavailableException(
+                    "Session ownership marker is invalid; automatic actions remain suspended.");
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            throw new RecoveryStateUnavailableException(
+                "Session ownership marker cannot be read; automatic actions remain suspended.", error);
+        }
     }
 }

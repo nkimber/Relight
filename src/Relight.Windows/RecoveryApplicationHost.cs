@@ -29,6 +29,10 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
 {
     private readonly ConfigurationStore _configurationStore;
     private readonly RecoveryStateStore _stateStore;
+    private readonly RecoverySessionStateStore? _sessionStateStore;
+    private readonly SharedRecoveryBudgetStore? _sharedBudgetStore;
+    private readonly bool _allowLegacyMigration;
+    private readonly IRecoveryStateStore _activeStateStore;
     private OperationalEventJournal? _journal;
     private QueuedEventRecorder? _recorder;
     private LiveNotificationTap? _notificationTap;
@@ -43,10 +47,19 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     private readonly SemaphoreSlim _changes = new(1, 1);
     private bool _disposed;
 
-    private RecoveryApplicationHost(string dataDirectory, IMonotonicClock clock)
+    private RecoveryApplicationHost(string dataDirectory, IMonotonicClock clock,
+        bool useSharedSessionState, bool allowLegacyMigration)
     {
         _configurationStore = new(dataDirectory);
         _stateStore = new(dataDirectory);
+        _allowLegacyMigration = allowLegacyMigration;
+        if (useSharedSessionState)
+        {
+            _sharedBudgetStore = new(dataDirectory);
+            _sessionStateStore = new(dataDirectory,
+                WindowsLogonSessionIdentity.Current().StorageKey, _sharedBudgetStore);
+        }
+        _activeStateStore = (IRecoveryStateStore?)_sessionStateStore ?? _stateStore;
         _clock = clock;
         _scheduler = new(clock);
     }
@@ -61,9 +74,25 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     public static async Task<RecoveryApplicationHost> OpenAsync(
         string? dataDirectory = null, IMonotonicClock? clock = null,
         CancellationToken cancellationToken = default)
+        => await OpenCoreAsync(dataDirectory, clock, cancellationToken,
+            useSharedSessionState: false, allowLegacyMigration: false)
+            .ConfigureAwait(false);
+
+    internal static Task<RecoveryApplicationHost> OpenSharedSessionAsync(
+        string? dataDirectory = null, IMonotonicClock? clock = null,
+        bool allowLegacyMigration = false,
+        CancellationToken cancellationToken = default) =>
+        OpenCoreAsync(dataDirectory, clock, cancellationToken,
+            useSharedSessionState: true, allowLegacyMigration);
+
+    private static async Task<RecoveryApplicationHost> OpenCoreAsync(
+        string? dataDirectory, IMonotonicClock? clock,
+        CancellationToken cancellationToken, bool useSharedSessionState,
+        bool allowLegacyMigration)
     {
         var host = new RecoveryApplicationHost(dataDirectory ?? DefaultDataDirectory,
-            clock ?? new StopwatchClock());
+            clock ?? new StopwatchClock(), useSharedSessionState,
+            allowLegacyMigration);
         try
         {
             await host.InitializeAsync(dataDirectory ?? DefaultDataDirectory, cancellationToken)
@@ -115,7 +144,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 try
                 {
                     disabledRecovery = RecoveryMachine.Restore(profile.Policy,
-                        _stateStore.Load(profile.Id).Checkpoint).Snapshot;
+                        StateStoreForExisting(profile).Load(profile.Id).Checkpoint).Snapshot;
                 }
                 catch (Exception error) when (error is IOException or InvalidOperationException or ArgumentException)
                 {
@@ -142,9 +171,10 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 try
                 {
                     ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(
-                        profile.Id, profile.Policy, _stateStore, packagedDiscovery,
+                        profile.Id, profile.Policy, StateStoreForExisting(profile), packagedDiscovery,
                         new PackagedApplicationLauncher(profile.Target.Identity),
-                        _clock, _launchGate, _notificationTap);
+                        _clock, _launchGate, _notificationTap,
+                        sharedBudget: _sharedBudgetStore);
                     _scheduler.Add(profile.Id, coordinator, profile.Policy);
                     _coordinators.Add(profile.Id, coordinator);
                     _statuses[profile.Id] = new(profile.Id, profile.Name, true, true,
@@ -203,8 +233,9 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             try
             {
                 ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(profile.Id,
-                    profile.Policy, _stateStore, discovery, new ExecutableLauncher(target),
-                    _clock, _launchGate, _notificationTap, new ExecutableStopper(target));
+                    profile.Policy, StateStoreForExisting(profile), discovery,
+                    new ExecutableLauncher(target), _clock, _launchGate,
+                    _notificationTap, new ExecutableStopper(target), _sharedBudgetStore);
                 _scheduler.Add(profile.Id, coordinator, profile.Policy);
                 _coordinators.Add(profile.Id, coordinator);
                 _statuses[profile.Id] = new(profile.Id, profile.Name, true, true,
@@ -224,6 +255,47 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         _journal = new(dataDirectory, settings);
         _recorder = new(_journal);
         _notificationTap = new(_recorder);
+    }
+
+    private IRecoveryStateStore StateStoreForExisting(ProfileConfiguration profile)
+    {
+        if (_sessionStateStore is null) return _stateStore;
+        SharedRecoveryBudgetStore budgets = _sharedBudgetStore!;
+        bool sessionEvidence = _sessionStateStore.HasStateEvidence(profile.Id);
+        bool budgetEvidence = budgets.HasBudgetEvidence(profile.Id);
+        LegacyStateOwnership ownership = _stateStore.GetOwnership(profile.Id);
+        bool legacyEvidence = _stateStore.HasStateEvidence(profile.Id);
+
+        if (ownership == LegacyStateOwnership.MigrationPending)
+            throw new RecoveryStateUnavailableException(
+                "Recovery-state migration was interrupted; automatic actions remain suspended until repaired.");
+        if (sessionEvidence)
+        {
+            if (!budgetEvidence)
+                throw new RecoveryStateUnavailableException(
+                    "Session state exists without its shared budget; automatic actions remain suspended.");
+            if (legacyEvidence && ownership != LegacyStateOwnership.SessionOwner)
+                throw new RecoveryStateUnavailableException(
+                    "Shared and legacy recovery state conflict; automatic actions remain suspended.");
+            _sessionStateStore.Load(profile.Id);
+            return _sessionStateStore;
+        }
+        if (budgetEvidence)
+        {
+            if (legacyEvidence && ownership != LegacyStateOwnership.SessionOwner)
+                throw new RecoveryStateUnavailableException(
+                    "Shared and legacy recovery state conflict; automatic actions remain suspended.");
+            _sessionStateStore.InitializeForNewSignIn(profile.Id, profile.Enabled);
+            return _sessionStateStore;
+        }
+        if (!legacyEvidence || ownership == LegacyStateOwnership.SessionOwner)
+            throw new RecoveryStateUnavailableException(
+                "Recovery budget is missing for an existing profile; automatic actions remain suspended.");
+        if (!_allowLegacyMigration)
+            throw new RecoveryStateUnavailableException(
+                "Legacy recovery state requires a guarded migration before shared-session monitoring can start.");
+        _stateStore.MigrateToSession(profile.Id, budgets, _sessionStateStore);
+        return _sessionStateStore;
     }
 
     private async Task<HostedProfileStatus> PassiveStatus(ProfileConfiguration profile,
@@ -378,8 +450,9 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             // profile ID. The final Save repeats both checks atomically.
             ConfigurationStore.ValidateConfiguration(updated);
             ProfileCoordinator coordinator = await Task.Run(() =>
-                ProfileCoordinator.CreateNew(id, policy, _stateStore, discovery,
-                    launcher, _clock, _launchGate, _notificationTap, stopper),
+                ProfileCoordinator.CreateNew(id, policy, _activeStateStore, discovery,
+                    launcher, _clock, _launchGate, _notificationTap, stopper,
+                    _sharedBudgetStore),
                 CancellationToken.None).ConfigureAwait(false);
             try
             {
@@ -693,8 +766,12 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             ConfigurationStore.ValidateConfiguration(updated);
             // Never copy the source budget or live process state. A failed save
             // leaves an unreferenced state file, not an enabled duplicate.
-            await Task.Run(() => _stateStore.Create(duplicateId,
-                new RecoveryMachine(duplicate.Policy, enabled: false).ExportCheckpoint()),
+            await Task.Run(() =>
+            {
+                _sharedBudgetStore?.Create(duplicateId);
+                _activeStateStore.Create(duplicateId,
+                    new RecoveryMachine(duplicate.Policy, enabled: false).ExportCheckpoint());
+            },
                 CancellationToken.None).ConfigureAwait(false);
             StoredConfiguration saved = await Task.Run(() =>
                 _configurationStore.Save(current, updated), CancellationToken.None)
@@ -785,8 +862,8 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             if (_coordinators.ContainsKey(profile.Id))
                 throw new InvalidOperationException("This profile is already scheduled.");
         ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(profile.Id,
-            profile.Policy, _stateStore, discovery, launcher,
-            _clock, _launchGate, _notificationTap, stopper);
+            profile.Policy, StateStoreForExisting(profile), discovery, launcher,
+            _clock, _launchGate, _notificationTap, stopper, _sharedBudgetStore);
         RecoveryState previousState = coordinator.Snapshot.State;
         bool schedulerOwnsCoordinator = false;
         try

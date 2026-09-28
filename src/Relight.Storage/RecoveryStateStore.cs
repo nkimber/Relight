@@ -13,6 +13,8 @@ public sealed class StaleRecoveryRevisionException(string message) : InvalidOper
 
 public sealed record StoredRecoveryState(Guid ProfileId, long Revision, RecoveryCheckpoint Checkpoint);
 
+public enum LegacyStateOwnership { Unclaimed, MigrationPending, SessionOwner }
+
 public interface IRecoveryStateStore
 {
     StoredRecoveryState Create(Guid profileId, RecoveryCheckpoint initial);
@@ -74,6 +76,41 @@ public sealed class RecoveryStateStore : IRecoveryStateStore
         var next = new StoredRecoveryState(profileId, expectedRevision + 1, checkpoint);
         Write(path, next, initialCreate: false);
         return next;
+    }
+
+    public bool HasStateEvidence(Guid profileId)
+    {
+        CheckId(profileId);
+        using FileStream guard = Lock(profileId);
+        string path = PathFor(profileId);
+        return File.Exists(path) || File.Exists(path + ".bak") ||
+            File.Exists(OwnershipPathFor(profileId));
+    }
+
+    public LegacyStateOwnership GetOwnership(Guid profileId)
+    {
+        CheckId(profileId);
+        using FileStream guard = Lock(profileId);
+        string path = OwnershipPathFor(profileId);
+        if (!File.Exists(path)) return LegacyStateOwnership.Unclaimed;
+        try
+        {
+            return File.ReadAllText(path).Trim() switch
+            {
+                "Relight recovery-state migration-pending v1" =>
+                    LegacyStateOwnership.MigrationPending,
+                "Relight recovery-state session-owner v1" =>
+                    LegacyStateOwnership.SessionOwner,
+                _ => throw new RecoveryStateUnavailableException(
+                    "Recovery-state ownership marker is invalid; automatic actions remain suspended.")
+            };
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            throw new RecoveryStateUnavailableException(
+                "Recovery-state ownership marker cannot be read; automatic actions remain suspended.",
+                error);
+        }
     }
 
     /// <summary>
