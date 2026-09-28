@@ -59,6 +59,8 @@ Cross-file updates cannot be one atomic filesystem replacement. The shared ledge
 
 ## Evidence required before enabling multi-session recovery
 
+For AT-30, an ordinary shared-host startup test now corrupts genuine legacy state before migration, with and without a separate invalid current configuration. The host uses the last-good configuration where available, leaves both damaged originals unchanged, creates no shared budget or legacy archive, suspends automatic actions, and records no target dispatch even after a later scheduler pulse. Both cases passed locally. `scripts/Test-MigrationInterruption.ps1` passed all five durable boundaries again, and `scripts/Test-LegacyMigration.ps1` passed the pre-marker Save/Create rejection, archive/tombstone preservation and in-flight one-dispatch/no-second-launch probes. These are controlled host and storage-process checks; a full older WPF app rollout and two real sign-ins remain separate gates.
+
 - Two real concurrently signed-in interactive sessions on Windows, with one target instance in each. Show each host sees only its own target and never terminates the other's process.
 - Competing automatic launch attempts at the final available count. Exactly one reservation succeeds; neither session can dispatch beyond the shared cap. Inject crashes before reservation, after reservation and before dispatch.
 - Lockout in session A, sign-in to B, pause/resume and policy-limit edits in both, then Relight restart. The lockout persists until explicit reset or a newly qualified stable observation under the rearm rule.

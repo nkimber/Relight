@@ -877,6 +877,74 @@ public sealed class RecoveryApplicationHostIntegrationTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Invalid_legacy_state_suspends_ordinary_startup_without_losing_original_bytes(
+        bool corruptConfiguration)
+    {
+        string root = Path.Combine(Path.GetTempPath(),
+            $"relight-invalid-legacy-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        string ready = Path.Combine(root, "target.ready");
+        try
+        {
+            string label = $"invalid-legacy-{Guid.NewGuid():N}";
+            RecoveryPolicy policy = RecoveryPolicy.Default with
+            {
+                StartAutomaticallyWhenInitiallyAbsent = true,
+                RetryDelay = TimeSpan.FromSeconds(5)
+            };
+            Guid id;
+            await using (var legacy = await RecoveryApplicationHost.OpenLegacyForTestsAsync(
+                             root, new FakeClock()))
+                id = await legacy.RegisterExecutableAsync("Disposable target", TestExecutable(),
+                    ["--label", label, "--ready-file", ready, "--hidden"],
+                    Path.GetTempPath(), policy);
+
+            var configurations = new ConfigurationStore(root);
+            StoredConfiguration current = configurations.Load();
+            configurations.Save(current, current.Configuration);
+            string statePath = Path.Combine(root, "State", $"{id:N}.json");
+            const string invalidState = "untrusted legacy state bytes";
+            File.WriteAllText(statePath, invalidState);
+            string configurationPath = Path.Combine(root, "configuration.json");
+            const string invalidConfiguration = "untrusted configuration bytes";
+            if (corruptConfiguration)
+                File.WriteAllText(configurationPath, invalidConfiguration);
+
+            var clock = new FakeClock();
+            await using (var reopened = await RecoveryApplicationHost.OpenAsync(root, clock))
+            {
+                HostedProfileStatus blocked = Assert.Single(reopened.GetProfiles());
+                Assert.Equal(id, blocked.Id);
+                Assert.False(blocked.AutomaticActionsAllowed);
+                Assert.NotNull(blocked.Problem);
+                if (corruptConfiguration)
+                    Assert.NotNull(reopened.ConfigurationProblem);
+                clock.Elapsed = TimeSpan.FromMinutes(5);
+                foreach (Task pulse in reopened.Pulse().Values)
+                    await pulse.WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.False(Assert.Single(reopened.GetProfiles()).AutomaticActionsAllowed);
+            }
+
+            Assert.Equal(invalidState, File.ReadAllText(statePath));
+            Assert.False(File.Exists(Path.Combine(root, "State", $"{id:N}.legacy.json")));
+            Assert.False(new SharedRecoveryBudgetStore(root).HasBudgetEvidence(id));
+            Assert.False(File.Exists(ready));
+            if (corruptConfiguration)
+                Assert.Equal(invalidConfiguration, File.ReadAllText(configurationPath));
+            Assert.Equal(0, (await new OperationalEventHistoryReader(root).ReadAsync(
+                new EventHistoryQuery(ProfileId: id,
+                    Kind: OperationalEventKind.LaunchDispatched))).TotalMatches);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact]
     [Trait("Category", "WindowsDesktop")]
     public async Task Shared_host_does_not_recreate_missing_budget_or_finish_partial_migration()
