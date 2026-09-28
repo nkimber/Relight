@@ -113,6 +113,7 @@ public sealed class OperationalEventJournal : IOperationalEventWriter, IDisposab
         @"^events-\d{8}T\d{13}Z-[0-9a-f]{32}\.jsonl$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
     internal static readonly JsonSerializerOptions Json = CreateJsonOptions();
+    private readonly string _dataDirectory;
     private readonly string _directory;
     private readonly int _retentionDays;
     private readonly long _maximumBytes;
@@ -138,7 +139,8 @@ public sealed class OperationalEventJournal : IOperationalEventWriter, IDisposab
             settings.LogRotationBytes > settings.MaximumLogBytes ||
             bufferLimit < 1)
             throw new ArgumentOutOfRangeException(nameof(settings));
-        _directory = Path.Combine(Path.GetFullPath(dataDirectory), "Logs");
+        _dataDirectory = Path.GetFullPath(dataDirectory);
+        _directory = Path.Combine(_dataDirectory, "Logs");
         _retentionDays = settings.LogRetentionDays;
         _maximumBytes = settings.MaximumLogBytes;
         _rotationBytes = settings.LogRotationBytes;
@@ -236,6 +238,9 @@ public sealed class OperationalEventJournal : IOperationalEventWriter, IDisposab
 
     private void EnforceRetention()
     {
+        using FileStream? lease = OperationalLogRetentionGate
+            .TryEnterRetention(_dataDirectory);
+        if (lease is null) return;
         DateTime cutoff = DateTime.UtcNow.AddDays(-_retentionDays);
         var owned = Directory.EnumerateFiles(_directory, "events-*.jsonl", SearchOption.TopDirectoryOnly)
             .Where(path => OwnedFileName.IsMatch(Path.GetFileName(path)))

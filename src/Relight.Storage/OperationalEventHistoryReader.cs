@@ -239,6 +239,9 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
         string parent = Path.GetDirectoryName(output)!;
         if (!Directory.Exists(parent))
             throw new DirectoryNotFoundException("The export folder does not exist.");
+        await using FileStream retentionLease = await OperationalLogRetentionGate
+            .EnterExportAsync(_dataDirectory, cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<string> ownedAtStart = SnapshotOwnedFiles();
         string temporary = Path.Combine(parent, $".relight-export-{Guid.NewGuid():N}.tmp");
         try
         {
@@ -256,7 +259,8 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
                         ? CsvLine(entry with { ProcessIdentity = null })
                         : TextBlock(entry with { ProcessIdentity = null })).AsMemory(),
                         cancellationToken),
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken, requireCompleteFiles: true,
+                    sourceFiles: ownedAtStart).ConfigureAwait(false);
                 await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -275,23 +279,32 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
     private async Task<ScanSummary> ScanAsync(EventHistoryQuery query,
         Func<OperationalEvent, Task> visit, CancellationToken cancellationToken,
         Action<OperationalEvent>? beforeSeverityAndKind = null,
-        Action<OperationalEvent>? beforeFilters = null)
+        Action<OperationalEvent>? beforeFilters = null,
+        bool requireCompleteFiles = false,
+        IReadOnlyList<string>? sourceFiles = null)
     {
-        if (!Directory.Exists(_directory)) return new(0, 0);
+        if (!Directory.Exists(_directory))
+        {
+            if (requireCompleteFiles && sourceFiles is { Count: > 0 })
+                throw new IOException("The log directory disappeared during export; try again.");
+            return new(0, 0);
+        }
         if ((File.GetAttributes(_directory) & FileAttributes.ReparsePoint) != 0)
             throw new IOException("The log directory cannot be a reparse point.");
         var seenIds = new HashSet<Guid>();
         int matched = 0;
         int malformed = 0;
-        foreach (string path in Directory.EnumerateFiles(_directory,
-                     "events-*.jsonl", SearchOption.TopDirectoryOnly)
-                     .OrderByDescending(Path.GetFileName, StringComparer.Ordinal))
+        foreach (string path in sourceFiles ?? SnapshotOwnedFiles())
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!OperationalEventJournal.OwnedFileName.IsMatch(Path.GetFileName(path))) continue;
             FileAttributes attributes;
             try { attributes = File.GetAttributes(path); }
-            catch (FileNotFoundException) { continue; }
+            catch (FileNotFoundException) when (!requireCompleteFiles) { continue; }
+            catch (FileNotFoundException error)
+            {
+                throw new IOException("A retained log file disappeared during export; try again.",
+                    error);
+            }
             if ((attributes & FileAttributes.ReparsePoint) != 0) continue;
             FileStream stream;
             try
@@ -300,7 +313,12 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
                     FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.Asynchronous |
                         FileOptions.SequentialScan);
             }
-            catch (FileNotFoundException) { continue; }
+            catch (FileNotFoundException) when (!requireCompleteFiles) { continue; }
+            catch (FileNotFoundException error)
+            {
+                throw new IOException("A retained log file disappeared during export; try again.",
+                    error);
+            }
             using var reader = new StreamReader(stream);
             while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
             {
@@ -332,6 +350,18 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
             }
         }
         return new(matched, malformed);
+    }
+
+    private IReadOnlyList<string> SnapshotOwnedFiles()
+    {
+        if (!Directory.Exists(_directory)) return [];
+        if ((File.GetAttributes(_directory) & FileAttributes.ReparsePoint) != 0)
+            throw new IOException("The log directory cannot be a reparse point.");
+        return Directory.EnumerateFiles(_directory, "events-*.jsonl",
+                SearchOption.TopDirectoryOnly)
+            .Where(path => OperationalEventJournal.OwnedFileName.IsMatch(Path.GetFileName(path)))
+            .OrderByDescending(Path.GetFileName, StringComparer.Ordinal)
+            .ToArray();
     }
 
     private static void ValidateQuery(EventHistoryQuery query)

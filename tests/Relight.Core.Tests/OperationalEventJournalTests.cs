@@ -85,6 +85,31 @@ public sealed class OperationalEventJournalTests
     }
 
     [Fact]
+    public async Task Retention_waits_for_an_active_export_lease_without_degrading_logging()
+    {
+        using var directory = new TestDirectory();
+        string logs = Path.Combine(directory.Path, "Logs");
+        Directory.CreateDirectory(logs);
+        string owned = Path.Combine(logs,
+            $"events-20200101T0000000000000Z-{Guid.NewGuid():N}.jsonl");
+        File.WriteAllText(owned, "Old journal");
+        File.SetLastWriteTimeUtc(owned, DateTime.UtcNow.AddDays(-40));
+        using var journal = new OperationalEventJournal(directory.Path,
+            GlobalConfiguration.Default);
+        string gate = Path.Combine(directory.Path, ".relight-log-retention.lock");
+        using (var exportLease = new FileStream(gate, FileMode.OpenOrCreate,
+                   FileAccess.ReadWrite, FileShare.ReadWrite))
+        {
+            EventJournalStatus status = await journal.AppendAsync(NewEvent());
+            Assert.False(status.Degraded);
+            Assert.True(File.Exists(owned));
+        }
+
+        Assert.False((await journal.AppendAsync(NewEvent())).Degraded);
+        Assert.False(File.Exists(owned));
+    }
+
+    [Fact]
     public async Task Rotation_and_total_size_retention_keep_owned_logs_bounded()
     {
         using var directory = new TestDirectory();
