@@ -195,6 +195,31 @@ public sealed class SharedRecoveryBudgetStoreTests
         Assert.Equal(1, finished.ReservedAutomaticAttempts);
     }
 
+    [Fact]
+    public void Stable_observation_cannot_refund_an_unresolved_automatic_reservation()
+    {
+        using var directory = new TestDirectory();
+        Guid profile = Guid.NewGuid();
+        Guid episode = Guid.NewGuid();
+        Guid operation = Guid.NewGuid();
+        var store = new SharedRecoveryBudgetStore(directory.Path);
+        SharedRecoveryBudget created = store.Create(profile);
+        SharedRecoveryBudget reserved = store.ReserveAutomatic(profile,
+            created.Revision, 3, episode, operation);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            store.CompleteStableObservation(profile, reserved.Revision, episode));
+        SharedRecoveryBudget unchanged = store.Load(profile);
+        Assert.Equal(reserved, unchanged);
+
+        SharedRecoveryBudget resolved = store.ResolveAutomatic(profile,
+            unchanged.Revision, operation);
+        SharedRecoveryBudget stable = store.CompleteStableObservation(profile,
+            resolved.Revision, episode);
+        Assert.Equal(0, stable.ReservedAutomaticAttempts);
+        Assert.Null(stable.EpisodeId);
+    }
+
     private sealed class TestDirectory : IDisposable
     {
         public string Path { get; } = System.IO.Path.Combine(

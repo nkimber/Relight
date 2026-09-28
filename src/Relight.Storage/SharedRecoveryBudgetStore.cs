@@ -149,9 +149,10 @@ public sealed class SharedRecoveryBudgetStore
         {
             if (current.EpisodeId != episodeId)
                 throw new StaleRecoveryRevisionException("The recovery episode changed in another session.");
-            if (current.PendingExplicitOperationId is not null)
+            if (current.PendingAutomaticOperationId is not null ||
+                current.PendingExplicitOperationId is not null)
                 throw new InvalidOperationException(
-                    "An explicit launch is unresolved; stable observation cannot clear it.");
+                    "A launch is unresolved; stable observation cannot clear it.");
             return current with
             {
                 EpisodeId = null,
