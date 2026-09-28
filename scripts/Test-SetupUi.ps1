@@ -399,7 +399,55 @@ try {
             }
             return $hasCount -and $hasDispatch
         } 'loaded profile dispatch history' 20 | Out-Null
-        Write-Output 'PASS: WPF View history opened the History page, selected the source profile and displayed its retained launch event.'
+        $summaryTexts = $dashboard.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+            [System.Windows.Automation.PropertyCondition]::new(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::Text))
+        $launchSummary = @($summaryTexts | Where-Object {
+            $_.Current.Name.StartsWith('Launch Dispatched',
+                [StringComparison]::OrdinalIgnoreCase) }) | Select-Object -First 1
+        if ($null -eq $launchSummary) { throw 'Retained launch row has no accessible summary.' }
+        $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+        $eventExpander = $launchSummary
+        while ($null -ne $eventExpander -and -not [bool]$eventExpander.GetCurrentPropertyValue(
+            [System.Windows.Automation.AutomationElement]::IsExpandCollapsePatternAvailableProperty)) {
+            $eventExpander = $walker.GetParent($eventExpander)
+        }
+        if ($null -eq $eventExpander) { throw 'Launch event cannot be expanded through UI Automation.' }
+        $eventExpander.GetCurrentPattern(
+            [System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
+        Wait-For {
+            $details = $eventExpander.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.PropertyCondition]::new(
+                    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                    [System.Windows.Automation.ControlType]::Edit))
+            foreach ($field in $details) {
+                $value = $field.GetCurrentPattern(
+                    [System.Windows.Automation.ValuePattern]::Pattern).Current.Value
+                if ($value.Contains("Profile ID: $($profile.id)") -and
+                    $value.Contains('UTC:') -and $value.Contains('Operation ID:')) {
+                    return $true
+                }
+            }
+            return $false
+        } 'expanded launch correlation details' | Out-Null
+        $kindFilter = Find-Control $dashboard 'Filter history by event type' `
+            ([System.Windows.Automation.ControlType]::ComboBox)
+        if ($null -eq $kindFilter) { throw 'Event type filter is inaccessible.' }
+        $kindFilter.GetCurrentPattern(
+            [System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
+        $launchOption = Wait-For {
+            Find-Control $kindFilter 'Launch Dispatched' `
+                ([System.Windows.Automation.ControlType]::ListItem)
+        } 'Launch Dispatched event type option'
+        $launchOption.GetCurrentPattern(
+            [System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+        Invoke-Button $dashboard 'Refresh history'
+        Wait-For {
+            Find-Control $dashboard 'Showing 1 matching event(s).' `
+                ([System.Windows.Automation.ControlType]::Text)
+        } 'filtered launch event history' 20 | Out-Null
+        Write-Output 'PASS: WPF View history selected the source profile, expanded launch correlation details and filtered to its one launch dispatch.'
     }
 
     if ($ExplicitAction) {
