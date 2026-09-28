@@ -91,26 +91,7 @@ public sealed class RecoveryStateStore : IRecoveryStateStore
     {
         CheckId(profileId);
         using FileStream guard = Lock(profileId);
-        string path = OwnershipPathFor(profileId);
-        if (!File.Exists(path)) return LegacyStateOwnership.Unclaimed;
-        try
-        {
-            return File.ReadAllText(path).Trim() switch
-            {
-                "Relight recovery-state migration-pending v1" =>
-                    LegacyStateOwnership.MigrationPending,
-                "Relight recovery-state session-owner v1" =>
-                    LegacyStateOwnership.SessionOwner,
-                _ => throw new RecoveryStateUnavailableException(
-                    "Recovery-state ownership marker is invalid; automatic actions remain suspended.")
-            };
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
-        {
-            throw new RecoveryStateUnavailableException(
-                "Recovery-state ownership marker cannot be read; automatic actions remain suspended.",
-                error);
-        }
+        return GetOwnershipWithoutLock(profileId);
     }
 
     /// <summary>
@@ -144,11 +125,75 @@ public sealed class RecoveryStateStore : IRecoveryStateStore
         WriteOwnershipMarker(profileId, "session-owner");
     }
 
+    /// <summary>
+    /// Completes only a transfer whose imported budget is still byte-for-byte
+    /// equivalent at the model level to the untouched legacy snapshot. A missing
+    /// budget cannot be recreated: it may have contained later reservations.
+    /// </summary>
+    public void RepairPendingMigration(Guid profileId, SharedRecoveryBudgetStore budgets,
+        RecoverySessionStateStore session)
+    {
+        ArgumentNullException.ThrowIfNull(budgets);
+        ArgumentNullException.ThrowIfNull(session);
+        CheckId(profileId);
+        using FileStream guard = Lock(profileId);
+        if (GetOwnershipWithoutLock(profileId) != LegacyStateOwnership.MigrationPending)
+            throw new InvalidOperationException("This profile has no pending migration to repair.");
+
+        StoredRecoveryState legacy = Read(PathFor(profileId), profileId);
+        SharedRecoveryBudget expected = SharedRecoveryBudgetStore.ProjectLegacy(legacy);
+        SharedRecoveryBudget actual = budgets.Load(profileId);
+        if (actual != expected)
+            throw new RecoveryStateUnavailableException(
+                "The imported budget differs from legacy evidence; migration repair remains suspended.");
+
+        RecoveryCheckpoint old = legacy.Checkpoint;
+        RecoveryState initialState = !old.Enabled ? RecoveryState.Disabled :
+            actual.LockedOut ? RecoveryState.AwaitingIntervention :
+            RecoveryState.WaitingForFirstStart;
+        var expectedCheckpoint = new RecoveryCheckpoint(old.Enabled, old.Paused,
+            false, actual.LockedOut, actual.ReservedAutomaticAttempts,
+            actual.EpisodeId, initialState, null,
+            SharedBudgetRevision: actual.Revision);
+        if (session.HasStateEvidence(profileId))
+        {
+            if (session.Load(profileId).Checkpoint != expectedCheckpoint)
+                throw new RecoveryStateUnavailableException(
+                    "The session checkpoint differs from legacy evidence; migration repair remains suspended.");
+        }
+        else
+        {
+            session.Create(profileId, expectedCheckpoint);
+        }
+        WriteOwnershipMarker(profileId, "session-owner");
+    }
+
     private void RejectMigratedProfile(Guid profileId)
     {
         if (File.Exists(OwnershipPathFor(profileId)))
             throw new RecoveryStateUnavailableException(
                 $"Legacy recovery state for profile {profileId} has transferred ownership; it cannot authorize launches.");
+    }
+
+    private LegacyStateOwnership GetOwnershipWithoutLock(Guid profileId)
+    {
+        string path = OwnershipPathFor(profileId);
+        if (!File.Exists(path)) return LegacyStateOwnership.Unclaimed;
+        try
+        {
+            return File.ReadAllText(path).Trim() switch
+            {
+                "Relight recovery-state migration-pending v1" => LegacyStateOwnership.MigrationPending,
+                "Relight recovery-state session-owner v1" => LegacyStateOwnership.SessionOwner,
+                _ => throw new RecoveryStateUnavailableException(
+                    "Recovery-state ownership marker is invalid; automatic actions remain suspended.")
+            };
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            throw new RecoveryStateUnavailableException(
+                "Recovery-state ownership marker cannot be read; automatic actions remain suspended.", error);
+        }
     }
 
     private void WriteOwnershipMarker(Guid profileId, string phase)

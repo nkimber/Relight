@@ -362,6 +362,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
             var old = new RecoveryStateStore(migrationRoot);
             var budgets = new SharedRecoveryBudgetStore(migrationRoot);
             budgets.Create(id);
+            budgets.BeginEpisode(id, 1, Guid.NewGuid());
             var session = new RecoverySessionStateStore(migrationRoot,
                 WindowsLogonSessionIdentity.Current().StorageKey, budgets);
             Assert.Throws<InvalidOperationException>(() =>
@@ -371,7 +372,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
                 migrationRoot, new FakeClock(), allowLegacyMigration: true);
             HostedProfileStatus blocked = Assert.Single(reopened.GetProfiles());
             Assert.False(blocked.AutomaticActionsAllowed);
-            Assert.Contains("interrupted", blocked.Problem, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("differs", blocked.Problem, StringComparison.OrdinalIgnoreCase);
             Assert.Equal(LegacyStateOwnership.MigrationPending, old.GetOwnership(id));
             Assert.False(session.HasStateEvidence(id));
         }

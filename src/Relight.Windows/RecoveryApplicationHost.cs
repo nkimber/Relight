@@ -267,8 +267,13 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         bool legacyEvidence = _stateStore.HasStateEvidence(profile.Id);
 
         if (ownership == LegacyStateOwnership.MigrationPending)
-            throw new RecoveryStateUnavailableException(
-                "Recovery-state migration was interrupted; automatic actions remain suspended until repaired.");
+        {
+            if (!_allowLegacyMigration)
+                throw new RecoveryStateUnavailableException(
+                    "Recovery-state migration was interrupted; automatic actions remain suspended until repaired.");
+            _stateStore.RepairPendingMigration(profile.Id, budgets, _sessionStateStore);
+            return _sessionStateStore;
+        }
         if (sessionEvidence)
         {
             if (!budgetEvidence)

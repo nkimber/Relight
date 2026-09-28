@@ -41,6 +41,9 @@ public sealed class SharedRecoveryBudgetStore
     }
 
     public SharedRecoveryBudget ImportLegacy(StoredRecoveryState legacy)
+        => CreateInitial(ProjectLegacy(legacy));
+
+    internal static SharedRecoveryBudget ProjectLegacy(StoredRecoveryState legacy)
     {
         ArgumentNullException.ThrowIfNull(legacy);
         CheckId(legacy.ProfileId);
@@ -59,7 +62,7 @@ public sealed class SharedRecoveryBudgetStore
             checkpoint.LockedOut,
             explicitPending ? null : checkpoint.PendingOperationId,
             explicitPending ? checkpoint.PendingOperationId : null);
-        return CreateInitial(initial);
+        return initial;
     }
 
     public SharedRecoveryBudget Load(Guid profileId)
