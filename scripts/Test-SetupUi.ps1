@@ -8,7 +8,9 @@ param(
     [switch]$TestSavedLaunch,
     [switch]$ExercisePauseResume,
     [switch]$ExerciseDisableRemove,
-    [switch]$ExerciseExit
+    [switch]$ExerciseExit,
+    [ValidateSet('Pause', 'Disable', 'Remove', 'Exit')]
+    [string]$CancelPendingAction = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -95,6 +97,11 @@ if ($VerifyInitialStartConfirmation -and $AcceptInitialStart) {
 if (($ExercisePauseResume -or $ExerciseDisableRemove -or $ExerciseExit) -and
     -not $AcceptInitialStart) {
     throw 'Lifecycle acceptance requires an automatically started disposable target.'
+}
+if ($CancelPendingAction -and (-not $AcceptInitialStart -or $ExercisePauseResume -or
+    $ExerciseDisableRemove -or $ExerciseExit -or $EditSavedExecutable -or
+    $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
+    throw 'Pending-dispatch acceptance uses only accepted initial start and one cancellation action.'
 }
 
 $executablePath = (Resolve-Path -LiteralPath $Executable).Path
@@ -191,6 +198,59 @@ try {
         Wait-For {
             Find-Control $dashboard 'Disposable UI target' ([System.Windows.Automation.ControlType]::Text)
         } 'new dashboard row' | Out-Null
+    }
+    if ($CancelPendingAction) {
+        $budgetPath = Join-Path $root ('Budgets\' + $profile.id.Replace('-', '') + '.json')
+        $pendingBudget = Wait-For { Read-Configuration $budgetPath } 'pending-start budget'
+        if ($pendingBudget.budget.reservedAutomaticAttempts -ne 0) {
+            throw 'An automatic attempt was charged before the pending-dispatch action.'
+        }
+        if (Test-Path -LiteralPath $ready) {
+            throw 'The target started before the pending-dispatch action.'
+        }
+        switch ($CancelPendingAction) {
+            'Pause' { Invoke-Button $dashboard 'Pause protection' }
+            'Disable' { Invoke-Button $dashboard 'Disable protection' }
+            'Remove' {
+                Invoke-Button $dashboard 'Remove profile'
+                Click-NativeMessageChoice (Find-MessageBox $dashboard 'Remove profile?') 'OK'
+            }
+            'Exit' {
+                Invoke-Button $dashboard 'Exit Relight'
+                Click-NativeMessageChoice (Find-MessageBox $dashboard 'Exit Relight?') 'OK'
+                Wait-For { $primary.Refresh(); $primary.HasExited } 'pending-dispatch Relight exit' 20 | Out-Null
+            }
+        }
+        if ($CancelPendingAction -ne 'Exit') {
+            Wait-For {
+                $config = Read-Configuration (Join-Path $root 'configuration.json')
+                $state = Read-Configuration $budgetPath
+                if ($null -eq $config -or $null -eq $state) { return $false }
+                if ($CancelPendingAction -eq 'Remove') {
+                    return @($config.configuration.profiles | Where-Object id -eq $profile.id).Count -eq 0
+                }
+                if ($CancelPendingAction -eq 'Disable') {
+                    return @($config.configuration.profiles | Where-Object {
+                        $_.id -eq $profile.id -and $_.enabled -eq $false }).Count -eq 1
+                }
+                $button = Find-Control $dashboard 'Resume protection' `
+                    ([System.Windows.Automation.ControlType]::Button)
+                return $null -ne $button -and $button.Current.IsEnabled
+            } "$CancelPendingAction configuration" | Out-Null
+        }
+        if (Test-Path -LiteralPath $ready) {
+            throw "The target started while applying $CancelPendingAction."
+        }
+        Start-Sleep -Seconds 45
+        if (Test-Path -LiteralPath $ready) {
+            throw "$CancelPendingAction failed to cancel the pending automatic dispatch."
+        }
+        $budget = Read-Configuration $budgetPath
+        if ($null -eq $budget -or $budget.budget.reservedAutomaticAttempts -ne 0) {
+            throw "$CancelPendingAction charged an automatic attempt despite canceling dispatch."
+        }
+        Write-Output "PASS: $CancelPendingAction canceled the pending WPF automatic start; no target appeared or automatic attempt was charged after the retry deadline."
+        return
     }
     if ($AcceptInitialStart) {
         Wait-For { Test-Path -LiteralPath $ready } 'automatic initial target start' 75 | Out-Null
