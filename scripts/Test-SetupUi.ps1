@@ -4,7 +4,8 @@ param(
     [switch]$RegisterSelectedChatGpt,
     [switch]$VerifyInitialStartConfirmation,
     [switch]$AcceptInitialStart,
-    [switch]$EditSavedExecutable
+    [switch]$EditSavedExecutable,
+    [switch]$TestSavedLaunch
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,29 +53,37 @@ function Read-Configuration([string]$Path) {
     catch [UnauthorizedAccessException] { return $null }
 }
 
-function Complete-InitialStartWarning($Dashboard, [string]$Choice) {
-    $warning = Wait-For {
-        $nested = Find-Control $Dashboard 'Enable automatic start?' `
+function Find-MessageBox($Dashboard, [string]$Title, [int]$Seconds = 12) {
+    Wait-For {
+        $nested = Find-Control $Dashboard $Title `
             ([System.Windows.Automation.ControlType]::Window)
         if ($null -ne $nested) { return $nested }
         $condition = [System.Windows.Automation.PropertyCondition]::new(
-            [System.Windows.Automation.AutomationElement]::NameProperty, 'Enable automatic start?')
+            [System.Windows.Automation.AutomationElement]::NameProperty, $Title)
         [System.Windows.Automation.AutomationElement]::RootElement.FindFirst(
             [System.Windows.Automation.TreeScope]::Children, $condition)
-    } 'automatic-start confirmation'
+    } $Title $Seconds
+}
+
+function Click-NativeMessageChoice($MessageBox, [string]$Choice) {
     $choiceElement = Wait-For {
         $condition = [System.Windows.Automation.PropertyCondition]::new(
             [System.Windows.Automation.AutomationElement]::NameProperty, $Choice)
-        $warning.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
-    } "automatic-start $Choice button"
+        $MessageBox.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    } "$Choice button"
     $className = [Text.StringBuilder]::new(128)
     [RelightUiNative]::GetClassName([IntPtr]::new($choiceElement.Current.NativeWindowHandle),
         $className, $className.Capacity) | Out-Null
     if ($className.ToString() -ne 'Button') {
-        throw "The warning's $Choice control has unexpected native class $className."
+        throw "The message box's $Choice control has unexpected native class $className."
     }
     [RelightUiNative]::SendMessage([IntPtr]::new($choiceElement.Current.NativeWindowHandle),
         0xF5, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+}
+
+function Complete-InitialStartWarning($Dashboard, [string]$Choice) {
+    $warning = Find-MessageBox $Dashboard 'Enable automatic start?'
+    Click-NativeMessageChoice $warning $Choice
 }
 
 if ($VerifyInitialStartConfirmation -and $AcceptInitialStart) {
@@ -117,6 +126,14 @@ try {
         if ($null -eq $edit) { throw "Field '$($field[0])' has no accessible edit control." }
         $edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($field[1])
     }
+    $ready = Join-Path $root 'target.ready'
+    $label = 'relight-ui-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
+    $argumentsInput = Find-Control $dialog 'Launch arguments, one per line' `
+        ([System.Windows.Automation.ControlType]::Edit)
+    if ($null -eq $argumentsInput) { throw 'Launch arguments field is unavailable.' }
+    $argumentsInput.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue(
+        (@('--label', $label, '--hidden', '--ready-file', $ready,
+            '--exit-after-ms', '180000') -join "`n"))
     Invoke-Button $dialog 'Detect now'
     $result = Wait-For {
         $condition = [System.Windows.Automation.PropertyCondition]::new(
@@ -134,16 +151,6 @@ try {
     }
     $expectedInitialStart = [bool]$AcceptInitialStart
     if ($VerifyInitialStartConfirmation -or $AcceptInitialStart) {
-        if ($AcceptInitialStart) {
-            $ready = Join-Path $root 'target.ready'
-            $label = 'relight-ui-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
-            $argumentsInput = Find-Control $dialog 'Launch arguments, one per line' `
-                ([System.Windows.Automation.ControlType]::Edit)
-            if ($null -eq $argumentsInput) { throw 'Launch arguments field is unavailable.' }
-            $argumentsInput.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue(
-                (@('--label', $label, '--hidden', '--ready-file', $ready,
-                    '--exit-after-ms', '60000') -join "`n"))
-        }
         $toggle.Toggle()
         if ($toggle.Current.ToggleState -ne [System.Windows.Automation.ToggleState]::On) {
             throw 'Initial automatic start could not be selected.'
@@ -241,6 +248,59 @@ try {
         Write-Output 'PASS: WPF editor saved name and attempt limit with the same profile ID and unchanged recovery budget.'
     }
 
+    if ($TestSavedLaunch) {
+        if ($AcceptInitialStart) {
+            Wait-For {
+                Find-Control $dashboard 'Observing stability' `
+                    ([System.Windows.Automation.ControlType]::Text)
+            } 'automatic launch observation before Test launch' 30 | Out-Null
+        }
+        $budgetPath = Join-Path $root ('Budgets\' + $profile.id.Replace('-', '') + '.json')
+        $budgetBeforeTest = Wait-For { Read-Configuration $budgetPath } 'budget before Test launch'
+        Invoke-Button $dashboard 'Edit policy'
+        $editor = Wait-For {
+            Find-Control $dashboard 'Edit protection · Relight' `
+                ([System.Windows.Automation.ControlType]::Window)
+        } 'profile editor for Test launch'
+        foreach ($expectDispatched in @($(if ($AcceptInitialStart) { $false } else { $true }), $false)) {
+            Invoke-Button $editor 'Test launch'
+            $resultWindow = Find-MessageBox $dashboard 'Test launch result' 75
+            $expectedPhrase = if ($expectDispatched) { 'A test launch was dispatched.' }
+                else { 'No duplicate launch was dispatched.' }
+            $message = Wait-For {
+                $nodes = $resultWindow.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                    [System.Windows.Automation.Condition]::TrueCondition)
+                foreach ($node in $nodes) {
+                    if ($node.Current.Name.Contains($expectedPhrase)) { return $node.Current.Name }
+                }
+                return $null
+            } 'Test launch result detail'
+            Click-NativeMessageChoice $resultWindow 'OK'
+            if ($expectDispatched) {
+                Wait-For { Test-Path -LiteralPath $ready } 'explicit test target start' 15 | Out-Null
+            }
+        }
+        $targetPid = [int](Get-Content -LiteralPath $ready -Raw).Split('|')[0]
+        $budgetAfterTest = Wait-For { Read-Configuration $budgetPath } 'budget after Test launch'
+        if ($budgetAfterTest.budget.reservedAutomaticAttempts -ne
+            $budgetBeforeTest.budget.reservedAutomaticAttempts) {
+            throw 'Test launch changed the automatic attempt budget.'
+        }
+        Wait-For {
+            $button = Find-Control $editor 'Test launch' `
+                ([System.Windows.Automation.ControlType]::Button)
+            if ($null -ne $button -and $button.Current.IsEnabled) { return $button }
+            return $null
+        } 'Test launch command completion' | Out-Null
+        Invoke-Button $editor 'Cancel'
+        Wait-For {
+            if ($null -eq (Find-Control $dashboard 'Edit protection · Relight' `
+                ([System.Windows.Automation.ControlType]::Window))) { return $true }
+            return $false
+        } 'profile editor close' | Out-Null
+        Write-Output 'PASS: WPF Test launch found the disposable target, avoided a duplicate on repeat, and preserved the automatic budget.'
+    }
+
     if ($RegisterSelectedChatGpt) {
         Invoke-Button $dashboard '+ Add application'
         $dialog = Wait-For {
@@ -297,7 +357,15 @@ try {
     }
 }
 finally {
-    if ($null -eq $targetPid -and $AcceptInitialStart -and
+    if ($null -ne $secondary) { $secondary.Dispose() }
+    if ($null -ne $primary) {
+        if (-not $primary.HasExited) {
+            Stop-Process -Id $primary.Id
+            $primary.WaitForExit(10000) | Out-Null
+        }
+        $primary.Dispose()
+    }
+    if ($null -eq $targetPid -and ($AcceptInitialStart -or $TestSavedLaunch) -and
         $null -ne $ready -and (Test-Path -LiteralPath $ready)) {
         try { $targetPid = [int](Get-Content -LiteralPath $ready -Raw).Split('|')[0] }
         catch { $targetPid = $null }
@@ -313,14 +381,6 @@ finally {
             }
             finally { $targetProcess.Dispose() }
         }
-    }
-    if ($null -ne $secondary) { $secondary.Dispose() }
-    if ($null -ne $primary) {
-        if (-not $primary.HasExited) {
-            Stop-Process -Id $primary.Id
-            $primary.WaitForExit(10000) | Out-Null
-        }
-        $primary.Dispose()
     }
     $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
     $resolvedRoot = [IO.Path]::GetFullPath($root)
