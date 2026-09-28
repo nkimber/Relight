@@ -1,5 +1,8 @@
 using System;
+using System.IO;
 using System.Security.Principal;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 
 namespace Relight.Services;
@@ -11,12 +14,21 @@ internal sealed class SingleInstanceService : IDisposable
     private readonly EventWaitHandle _activation;
     private RegisteredWaitHandle? _registration;
 
-    public SingleInstanceService()
+    public SingleInstanceService(string? previewDataDirectory = null)
     {
         using WindowsIdentity identity = WindowsIdentity.GetCurrent();
         string userId = identity.User?.Value ?? throw new InvalidOperationException("Windows user identity is unavailable.");
         // Local kernel objects are session-scoped. The SID separates users in that session.
         string prefix = $@"Local\Relight.{userId}";
+        if (previewDataDirectory is not null)
+        {
+            string canonicalDirectory = Path.GetFullPath(previewDataDirectory)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                .ToUpperInvariant();
+            string scope = Convert.ToHexString(SHA256.HashData(
+                Encoding.UTF8.GetBytes(canonicalDirectory)))[..24];
+            prefix += $".Preview.{scope}";
+        }
         _activation = new EventWaitHandle(false, EventResetMode.AutoReset, prefix + ".Activate");
         try
         {

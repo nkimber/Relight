@@ -58,7 +58,7 @@ public partial class App : Application
         try
         {
             _sharedSessionPreviewDataDirectory = PreviewDirectory(e.Args);
-            _instance = new SingleInstanceService();
+            _instance = new SingleInstanceService(_sharedSessionPreviewDataDirectory);
             if (!_instance.IsPrimary)
             {
                 _instance.ActivatePrimary();
