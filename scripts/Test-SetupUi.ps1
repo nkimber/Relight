@@ -2,7 +2,8 @@ param(
     [string]$Executable = (Join-Path $PSScriptRoot '..\src\Relight.App\bin\Release\net10.0-windows\Relight.exe'),
     [string]$Target = (Join-Path $PSScriptRoot '..\tests\Relight.TestTarget\bin\Release\net10.0-windows\Relight.TestTarget.exe'),
     [switch]$RegisterSelectedChatGpt,
-    [switch]$VerifyInitialStartConfirmation
+    [switch]$VerifyInitialStartConfirmation,
+    [switch]$AcceptInitialStart
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,12 +51,42 @@ function Read-Configuration([string]$Path) {
     catch [UnauthorizedAccessException] { return $null }
 }
 
+function Complete-InitialStartWarning($Dashboard, [string]$Choice) {
+    $warning = Wait-For {
+        $nested = Find-Control $Dashboard 'Enable automatic start?' `
+            ([System.Windows.Automation.ControlType]::Window)
+        if ($null -ne $nested) { return $nested }
+        $condition = [System.Windows.Automation.PropertyCondition]::new(
+            [System.Windows.Automation.AutomationElement]::NameProperty, 'Enable automatic start?')
+        [System.Windows.Automation.AutomationElement]::RootElement.FindFirst(
+            [System.Windows.Automation.TreeScope]::Children, $condition)
+    } 'automatic-start confirmation'
+    $choiceElement = Wait-For {
+        $condition = [System.Windows.Automation.PropertyCondition]::new(
+            [System.Windows.Automation.AutomationElement]::NameProperty, $Choice)
+        $warning.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    } "automatic-start $Choice button"
+    $className = [Text.StringBuilder]::new(128)
+    [RelightUiNative]::GetClassName([IntPtr]::new($choiceElement.Current.NativeWindowHandle),
+        $className, $className.Capacity) | Out-Null
+    if ($className.ToString() -ne 'Button') {
+        throw "The warning's $Choice control has unexpected native class $className."
+    }
+    [RelightUiNative]::SendMessage([IntPtr]::new($choiceElement.Current.NativeWindowHandle),
+        0xF5, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+}
+
+if ($VerifyInitialStartConfirmation -and $AcceptInitialStart) {
+    throw 'Choose either declining or accepting the initial-start warning for one run.'
+}
+
 $executablePath = (Resolve-Path -LiteralPath $Executable).Path
 $targetPath = (Resolve-Path -LiteralPath $Target).Path
 $root = Join-Path ([IO.Path]::GetTempPath()) ('relight-setup-ui-' + [guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($root) | Out-Null
 $primary = $null
 $secondary = $null
+$targetPid = $null
 try {
     $arguments = @('--shared-session-preview', $root, '--tray')
     $primary = Start-Process -FilePath $executablePath -ArgumentList $arguments -WindowStyle Hidden -PassThru
@@ -100,60 +131,37 @@ try {
     if ($toggle.Current.ToggleState -ne [System.Windows.Automation.ToggleState]::Off) {
         throw 'Initial automatic start did not default off.'
     }
-    if ($VerifyInitialStartConfirmation) {
+    $expectedInitialStart = [bool]$AcceptInitialStart
+    if ($VerifyInitialStartConfirmation -or $AcceptInitialStart) {
+        if ($AcceptInitialStart) {
+            $ready = Join-Path $root 'target.ready'
+            $label = 'relight-ui-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
+            $argumentsInput = Find-Control $dialog 'Launch arguments, one per line' `
+                ([System.Windows.Automation.ControlType]::Edit)
+            if ($null -eq $argumentsInput) { throw 'Launch arguments field is unavailable.' }
+            $argumentsInput.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue(
+                (@('--label', $label, '--hidden', '--ready-file', $ready,
+                    '--exit-after-ms', '60000') -join "`n"))
+        }
         $toggle.Toggle()
         if ($toggle.Current.ToggleState -ne [System.Windows.Automation.ToggleState]::On) {
             throw 'Initial automatic start could not be selected.'
         }
         Invoke-Button $dialog 'Add and protect'
-        $warning = Wait-For {
-            $nested = Find-Control $dashboard 'Enable automatic start?' `
-                ([System.Windows.Automation.ControlType]::Window)
-            if ($null -ne $nested) { return $nested }
-            $condition = [System.Windows.Automation.PropertyCondition]::new(
-                [System.Windows.Automation.AutomationElement]::NameProperty, 'Enable automatic start?')
-            [System.Windows.Automation.AutomationElement]::RootElement.FindFirst(
-                [System.Windows.Automation.TreeScope]::Children, $condition)
-        } 'automatic-start confirmation'
-        try { $decline = Wait-For {
-            $condition = [System.Windows.Automation.PropertyCondition]::new(
-                [System.Windows.Automation.AutomationElement]::NameProperty, 'No')
-            $warning.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
-        } 'automatic-start No button' }
-        catch {
-            $all = $warning.FindAll([System.Windows.Automation.TreeScope]::Descendants,
-                [System.Windows.Automation.Condition]::TrueCondition)
-            $names = @($all | ForEach-Object {
-                "$($_.Current.ControlType.ProgrammaticName):$($_.Current.Name)"
-            })
-            throw "Warning window PID $($warning.Current.ProcessId), handle $($warning.Current.NativeWindowHandle), nodes $($all.Count): $($names -join ' | ')"
+        Complete-InitialStartWarning $dashboard $(if ($AcceptInitialStart) { 'Yes' } else { 'No' })
+        if ($VerifyInitialStartConfirmation) {
+            $config = Read-Configuration (Join-Path $root 'configuration.json')
+            if ($null -eq $config -or @($config.configuration.profiles).Count -ne 0) {
+                throw 'Declining automatic start still registered a profile.'
+            }
+            $toggle.Toggle()
+            if ($toggle.Current.ToggleState -ne [System.Windows.Automation.ToggleState]::Off) {
+                throw 'Initial automatic start did not return to off.'
+            }
+            Write-Output 'PASS: declining the automatic-start warning left the profile unregistered.'
         }
-        if ($null -eq $decline) {
-            $buttons = @($warning.FindAll([System.Windows.Automation.TreeScope]::Descendants,
-                [System.Windows.Automation.Condition]::TrueCondition) |
-                Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button } |
-                ForEach-Object { $_.Current.Name })
-            throw "The automatic-start warning element $($warning.Current.ControlType.ProgrammaticName) has no accessible No button: $($buttons -join ', ')"
-        }
-        $className = [Text.StringBuilder]::new(128)
-        [RelightUiNative]::GetClassName([IntPtr]::new($decline.Current.NativeWindowHandle),
-            $className, $className.Capacity) | Out-Null
-        if ($className.ToString() -ne 'Button') {
-            throw "The warning's No control has unexpected native class $className."
-        }
-        [RelightUiNative]::SendMessage([IntPtr]::new($decline.Current.NativeWindowHandle),
-            0xF5, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
-        $config = Read-Configuration (Join-Path $root 'configuration.json')
-        if ($null -eq $config -or @($config.configuration.profiles).Count -ne 0) {
-            throw 'Declining automatic start still registered a profile.'
-        }
-        $toggle.Toggle()
-        if ($toggle.Current.ToggleState -ne [System.Windows.Automation.ToggleState]::Off) {
-            throw 'Initial automatic start did not return to off.'
-        }
-        Write-Output 'PASS: declining the automatic-start warning left the profile unregistered.'
     }
-    Invoke-Button $dialog 'Add and protect'
+    if (-not $AcceptInitialStart) { Invoke-Button $dialog 'Add and protect' }
     $profile = Wait-For {
         $config = Read-Configuration (Join-Path $root 'configuration.json')
         if ($null -eq $config) { return $null }
@@ -161,7 +169,7 @@ try {
     } 'saved disposable profile' 45
     if ($profile.target.kind -ne 'Executable' -or
         $profile.target.identity -ne $targetPath -or
-        $profile.policy.startAutomaticallyWhenInitiallyAbsent -ne $false) {
+        $profile.policy.startAutomaticallyWhenInitiallyAbsent -ne $expectedInitialStart) {
         throw 'Saved profile does not match the inspected target and selected policy.'
     }
     if ((Find-Control $dashboard 'Disposable UI target' ([System.Windows.Automation.ControlType]::Text)) -eq $null) {
@@ -169,7 +177,20 @@ try {
             Find-Control $dashboard 'Disposable UI target' ([System.Windows.Automation.ControlType]::Text)
         } 'new dashboard row' | Out-Null
     }
-    Write-Output 'PASS: Add dialog was accessible; detection found absence; saved profile kept automatic initial start off; dashboard showed the new profile.'
+    if ($AcceptInitialStart) {
+        Wait-For { Test-Path -LiteralPath $ready } 'automatic initial target start' 75 | Out-Null
+        $targetPid = [int](Get-Content -LiteralPath $ready -Raw).Split('|')[0]
+        $budgetPath = Join-Path $root ('Budgets\' + $profile.id.Replace('-', '') + '.json')
+        $budget = Wait-For {
+            $saved = Read-Configuration $budgetPath
+            if ($null -ne $saved -and $saved.budget.reservedAutomaticAttempts -eq 1) { return $saved }
+            return $null
+        } 'durably reserved automatic attempt'
+        Write-Output "PASS: accepted initial-start warning launched only disposable PID $targetPid with one durable automatic attempt."
+    }
+    else {
+        Write-Output 'PASS: Add dialog was accessible; detection found absence; saved profile kept automatic initial start off; dashboard showed the new profile.'
+    }
 
     if ($RegisterSelectedChatGpt) {
         Invoke-Button $dashboard '+ Add application'
@@ -227,6 +248,23 @@ try {
     }
 }
 finally {
+    if ($null -eq $targetPid -and $AcceptInitialStart -and
+        $null -ne $ready -and (Test-Path -LiteralPath $ready)) {
+        try { $targetPid = [int](Get-Content -LiteralPath $ready -Raw).Split('|')[0] }
+        catch { $targetPid = $null }
+    }
+    if ($null -ne $targetPid) {
+        $targetProcess = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+        if ($null -ne $targetProcess) {
+            try {
+                if ([string]::Equals($targetProcess.Path, $targetPath,
+                    [StringComparison]::OrdinalIgnoreCase)) {
+                    Stop-Process -Id $targetPid
+                }
+            }
+            finally { $targetProcess.Dispose() }
+        }
+    }
     if ($null -ne $secondary) { $secondary.Dispose() }
     if ($null -ne $primary) {
         if (-not $primary.HasExited) {
