@@ -11,6 +11,7 @@ param(
     [switch]$ExerciseExit,
     [switch]$ExerciseResetDuplicate,
     [switch]$ExerciseStartNow,
+    [switch]$ZeroAutomaticAttempts,
     [switch]$ExerciseHistoryNavigation,
     [ValidateSet('Pause', 'Disable', 'Remove', 'Exit')]
     [string]$CancelPendingAction = '',
@@ -138,6 +139,9 @@ if ($ExerciseStartNow -and ($AcceptInitialStart -or $ExercisePauseResume -or
     $ExerciseDisableRemove -or $ExerciseExit -or $ExerciseResetDuplicate -or
     $EditSavedExecutable -or $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
     throw 'Start now acceptance uses a saved initially absent disposable target with automatic initial start off.'
+}
+if ($ZeroAutomaticAttempts -and -not $ExerciseStartNow) {
+    throw 'The zero-attempt UI check requires -ExerciseStartNow.'
 }
 if ($ExerciseHistoryNavigation -and ($ExercisePauseResume -or $ExerciseDisableRemove -or
     $ExerciseExit -or $ExerciseResetDuplicate -or $EditSavedExecutable -or
@@ -313,6 +317,27 @@ try {
 
     if ($ExerciseStartNow) {
         $budgetPath = Join-Path $root ('Budgets\' + $profile.id.Replace('-', '') + '.json')
+        if ($ZeroAutomaticAttempts) {
+            Invoke-Button $dashboard 'Edit policy'
+            $editor = Wait-For {
+                Find-Control $dashboard 'Edit protection · Relight' `
+                    ([System.Windows.Automation.ControlType]::Window)
+            } 'profile editor for zero-attempt policy'
+            $attemptInput = Find-Control $editor 'Automatic attempt limit' `
+                ([System.Windows.Automation.ControlType]::Edit)
+            if ($null -eq $attemptInput) {
+                throw 'Profile editor has no accessible automatic attempt limit.'
+            }
+            $attemptInput.GetCurrentPattern(
+                [System.Windows.Automation.ValuePattern]::Pattern).SetValue('0')
+            Invoke-Button $editor 'Save changes'
+            Wait-For {
+                $config = Read-Configuration (Join-Path $root 'configuration.json')
+                $saved = @($config.configuration.profiles | Where-Object id -eq $profile.id) |
+                    Select-Object -First 1
+                $null -ne $saved -and $saved.policy.maximumAutomaticAttempts -eq 0
+            } 'saved zero-attempt policy' 45 | Out-Null
+        }
         $beforeBudget = Wait-For { Read-Configuration $budgetPath } 'budget before explicit start'
         if ($beforeBudget.budget.reservedAutomaticAttempts -ne 0 -or
             (Test-Path -LiteralPath $ready)) {
@@ -353,7 +378,8 @@ try {
             }
             return $false
         } 'explicit-start history event' | Out-Null
-        Write-Output 'PASS: WPF Start now launched the absent disposable target once, disabled duplicate start while present, logged an explicit dispatch and left the automatic budget at zero.'
+        $policyDescription = if ($ZeroAutomaticAttempts) { ' with a zero automatic-attempt limit' } else { '' }
+        Write-Output "PASS: WPF Start now$policyDescription launched the absent disposable target once, disabled duplicate start while present, logged an explicit dispatch and left the automatic budget at zero."
     }
 
     if ($ExerciseHistoryNavigation) {
