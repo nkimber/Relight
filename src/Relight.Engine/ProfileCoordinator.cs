@@ -65,6 +65,8 @@ public sealed class ProfileCoordinator : IDisposable
 {
     private readonly Guid _profileId;
     private readonly IRecoveryStateStore _store;
+    private readonly RecoverySessionStateStore? _sessionStore;
+    private readonly SharedRecoveryBudgetStore? _sharedBudget;
     private readonly IProcessDiscovery _discovery;
     private readonly IProcessLauncher _launcher;
     private readonly IProcessStopper? _stopper;
@@ -77,6 +79,9 @@ public sealed class ProfileCoordinator : IDisposable
     private int _commandGeneration;
     private readonly RecoveryMachine _machine;
     private long _revision;
+    private long _budgetRevision;
+    private RecoveryCheckpoint _lastPersistedCheckpoint;
+    private readonly HashSet<Guid> _activeLedgerOperations = [];
     private bool _storageDegraded;
     private string? _storageError;
     private bool _loggingDegraded;
@@ -88,10 +93,15 @@ public sealed class ProfileCoordinator : IDisposable
     private ProfileCoordinator(Guid profileId, IRecoveryStateStore store,
         IProcessDiscovery discovery, IProcessLauncher launcher,
         IMonotonicClock clock, RecoveryMachine machine, long revision,
-        ILaunchGate launchGate, IEventRecorder recorder, IProcessStopper? stopper)
+        RecoveryCheckpoint persistedCheckpoint, ILaunchGate launchGate,
+        IEventRecorder recorder, IProcessStopper? stopper,
+        SharedRecoveryBudgetStore? sharedBudget)
     {
         _profileId = profileId;
         _store = store;
+        _sessionStore = sharedBudget is null ? null : store as RecoverySessionStateStore ??
+            throw new ArgumentException("Shared budgets require a session state store.", nameof(store));
+        _sharedBudget = sharedBudget;
         _discovery = discovery;
         _launcher = launcher;
         _stopper = stopper;
@@ -100,30 +110,44 @@ public sealed class ProfileCoordinator : IDisposable
         _clock = clock;
         _machine = machine;
         _revision = revision;
+        _lastPersistedCheckpoint = persistedCheckpoint;
+        _budgetRevision = persistedCheckpoint.SharedBudgetRevision ?? 0;
     }
 
     public static ProfileCoordinator CreateNew(Guid profileId, RecoveryPolicy policy,
         IRecoveryStateStore store, IProcessDiscovery discovery, IProcessLauncher launcher,
         IMonotonicClock clock, ILaunchGate? launchGate = null,
-        IEventRecorder? recorder = null, IProcessStopper? stopper = null)
+        IEventRecorder? recorder = null, IProcessStopper? stopper = null,
+        SharedRecoveryBudgetStore? sharedBudget = null)
     {
         var machine = new RecoveryMachine(policy);
+        if (sharedBudget is not null)
+        {
+            if (store is not RecoverySessionStateStore)
+                throw new ArgumentException("Shared budgets require a session state store.", nameof(store));
+            sharedBudget.Create(profileId);
+        }
         StoredRecoveryState initial = store.Create(profileId, machine.ExportCheckpoint());
         return new(profileId, store, discovery, launcher, clock, machine, initial.Revision,
+            initial.Checkpoint,
             launchGate ?? UnboundedLaunchGate.Instance,
-            recorder ?? NullEventRecorder.Instance, stopper);
+            recorder ?? NullEventRecorder.Instance, stopper, sharedBudget);
     }
 
     public static ProfileCoordinator OpenExisting(Guid profileId, RecoveryPolicy policy,
         IRecoveryStateStore store, IProcessDiscovery discovery, IProcessLauncher launcher,
         IMonotonicClock clock, ILaunchGate? launchGate = null,
-        IEventRecorder? recorder = null, IProcessStopper? stopper = null)
+        IEventRecorder? recorder = null, IProcessStopper? stopper = null,
+        SharedRecoveryBudgetStore? sharedBudget = null)
     {
+        if (sharedBudget is not null && store is not RecoverySessionStateStore)
+            throw new ArgumentException("Shared budgets require a session state store.", nameof(store));
         StoredRecoveryState saved = store.Load(profileId);
         var machine = RecoveryMachine.Restore(policy, saved.Checkpoint);
         return new(profileId, store, discovery, launcher, clock, machine, saved.Revision,
+            saved.Checkpoint,
             launchGate ?? UnboundedLaunchGate.Instance,
-            recorder ?? NullEventRecorder.Instance, stopper);
+            recorder ?? NullEventRecorder.Instance, stopper, sharedBudget);
     }
 
     public RecoverySnapshot Snapshot => _machine.Snapshot;
@@ -187,6 +211,26 @@ public sealed class ProfileCoordinator : IDisposable
                 RecordTransition(previous, _machine.Snapshot);
                 Record(OperationalEventKind.LaunchReserved, EventSeverity.Information,
                     previous, _machine.Snapshot, operationId);
+                // The reservation is durable. Confirm absence once more at the
+                // dispatch boundary; a new instance or an inspection gap keeps
+                // the attempt charged but must not create a duplicate launch.
+                found = await Discover(launchCancellation.Token).ConfigureAwait(false);
+                if (found.Kind != DetectionKind.Absent)
+                {
+                    before = _machine.ExportCheckpoint();
+                    previous = _machine.Snapshot;
+                    transition = _machine.Advance(found, _clock.Elapsed);
+                    persisted = PersistIfChanged(before);
+                    RecordTransition(previous, _machine.Snapshot);
+                    Record(OperationalEventKind.LaunchAverted,
+                        found.Kind == DetectionKind.Present ? EventSeverity.Information :
+                            EventSeverity.Warning, previous, _machine.Snapshot,
+                        operationId);
+                    return Result(new(RecoveryState.Starting, _machine.Snapshot.State,
+                        RecoverySignal.None, persisted
+                            ? "Reserved launch averted after final discovery"
+                            : "Final discovery changed; session state could not be committed"));
+                }
                 launchCancellation.Token.ThrowIfCancellationRequested();
                 await _launcher.LaunchAsync(operationId, launchCancellation.Token).ConfigureAwait(false);
                 Record(OperationalEventKind.LaunchDispatched, EventSeverity.Information,
@@ -594,6 +638,26 @@ public sealed class ProfileCoordinator : IDisposable
             Record(OperationalEventKind.ExplicitStartRequested, EventSeverity.Information,
                 previous, _machine.Snapshot, operationId);
 
+            // A manual launch has the same duplicate-instance race as an
+            // automatic one after its pending marker is committed.
+            found = await Discover(launchCancellation.Token).ConfigureAwait(false);
+            if (found.Kind != DetectionKind.Absent)
+            {
+                RecoveryCheckpoint reserved = _machine.ExportCheckpoint();
+                previous = _machine.Snapshot;
+                RecoveryTransition finalTransition = _machine.Advance(found, _clock.Elapsed);
+                if (!PersistIfChanged(reserved))
+                    throw new RecoveryStateUnavailableException(
+                        _storageError ?? "Session state could not be committed.");
+                RecordTransition(previous, _machine.Snapshot);
+                Record(OperationalEventKind.ExplicitStartAverted,
+                    found.Kind == DetectionKind.Present ? EventSeverity.Information :
+                        EventSeverity.Warning, previous, _machine.Snapshot, operationId);
+                return Result(new(finalTransition.Before, finalTransition.After,
+                    RecoverySignal.None,
+                    "Explicit launch averted after final discovery"));
+            }
+
             bool enteredDispatch = false;
             try
             {
@@ -647,7 +711,11 @@ public sealed class ProfileCoordinator : IDisposable
         if (_storageDegraded) return false;
         try
         {
-            _revision = _store.Save(_profileId, _revision, _machine.ExportCheckpoint()).Revision;
+            RecoveryCheckpoint next = _machine.ExportCheckpoint();
+            if (_sharedBudget is not null) CommitSharedBudget(next);
+            StoredRecoveryState saved = _store.Save(_profileId, _revision, next);
+            _revision = saved.Revision;
+            _lastPersistedCheckpoint = saved.Checkpoint;
             return true;
         }
         catch (Exception error) when (error is IOException or InvalidOperationException or UnauthorizedAccessException)
@@ -662,6 +730,96 @@ public sealed class ProfileCoordinator : IDisposable
             }
             return false;
         }
+    }
+
+    private void CommitSharedBudget(RecoveryCheckpoint next)
+    {
+        SharedRecoveryBudgetStore budgets = _sharedBudget!;
+        RecoverySessionStateStore session = _sessionStore!;
+        SharedRecoveryBudget current = budgets.Load(_profileId);
+        if (current.Revision != _budgetRevision)
+            throw new StaleRecoveryRevisionException(
+                "The shared recovery budget changed in another session.");
+
+        void Adopt(SharedRecoveryBudget committed)
+        {
+            session.AdoptCommittedBudget(committed);
+            _budgetRevision = committed.Revision;
+            current = committed;
+        }
+
+        bool clearsBudget = next.ReservedAutomaticAttempts == 0 &&
+            next.EpisodeId is null && !next.LockedOut &&
+            (current.ReservedAutomaticAttempts > 0 || current.EpisodeId is not null ||
+             current.LockedOut);
+        if (clearsBudget)
+        {
+            bool stable = _lastPersistedCheckpoint.LastState == RecoveryState.Observing &&
+                next.LastState == RecoveryState.Healthy;
+            if (stable)
+            {
+                if (current.EpisodeId is not { } episode)
+                    throw new RecoveryStateUnavailableException(
+                        "Stable observation cannot reconcile a shared budget without an episode.");
+                Adopt(budgets.CompleteStableObservation(_profileId,
+                    current.Revision, episode));
+            }
+            else
+                Adopt(budgets.ResetExplicitly(_profileId, current.Revision));
+            return;
+        }
+
+        if (current.PendingAutomaticOperationId is { } automatic &&
+            _activeLedgerOperations.Contains(automatic) &&
+            _lastPersistedCheckpoint.LastState == RecoveryState.Starting &&
+            next.LastState is RecoveryState.Observing or RecoveryState.RetryWaiting or
+                RecoveryState.AwaitingIntervention)
+        {
+            Adopt(budgets.ResolveAutomatic(_profileId, current.Revision, automatic));
+            _activeLedgerOperations.Remove(automatic);
+        }
+        if (current.PendingExplicitOperationId is { } explicitOperation &&
+            _activeLedgerOperations.Contains(explicitOperation) &&
+            _lastPersistedCheckpoint.LastState == RecoveryState.Starting &&
+            next.LastState is RecoveryState.Observing or RecoveryState.RetryWaiting or
+                RecoveryState.AwaitingIntervention)
+        {
+            Adopt(budgets.ResolveExplicitStart(_profileId, current.Revision,
+                explicitOperation));
+            _activeLedgerOperations.Remove(explicitOperation);
+        }
+
+        if (current.EpisodeId is null && next.EpisodeId is { } newEpisode &&
+            next.ReservedAutomaticAttempts == current.ReservedAutomaticAttempts)
+            Adopt(budgets.BeginEpisode(_profileId, current.Revision, newEpisode));
+
+        if (next.ReservedAutomaticAttempts == current.ReservedAutomaticAttempts + 1)
+        {
+            if (next.PendingOperationId is not { } automaticOperation ||
+                next.PendingExplicitStart == true || next.EpisodeId is not { } episode)
+                throw new RecoveryStateUnavailableException(
+                    "An automatic reservation lacks its operation or episode identity.");
+            Adopt(budgets.ReserveAutomatic(_profileId, current.Revision,
+                _machine.Policy.MaximumAutomaticAttempts, episode, automaticOperation));
+            _activeLedgerOperations.Add(automaticOperation);
+        }
+        else if (next.ReservedAutomaticAttempts != current.ReservedAutomaticAttempts)
+            throw new StaleRecoveryRevisionException(
+                "The local automatic attempt count does not match the shared budget.");
+
+        if (next.LastState == RecoveryState.Starting &&
+            next.PendingExplicitStart == true &&
+            next.PendingOperationId is { } explicitStart &&
+            current.PendingExplicitOperationId != explicitStart)
+        {
+            Adopt(budgets.MarkExplicitStart(_profileId, current.Revision, explicitStart));
+            _activeLedgerOperations.Add(explicitStart);
+        }
+
+        if (next.LockedOut && !current.LockedOut &&
+            current.EpisodeId is { } lockedEpisode &&
+            current.PendingAutomaticOperationId is null)
+            Adopt(budgets.EnterLockout(_profileId, current.Revision, lockedEpisode));
     }
 
     private void RecordTransition(RecoverySnapshot before, RecoverySnapshot after)

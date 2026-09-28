@@ -116,6 +116,39 @@ public sealed class RecoverySessionStateStoreTests
         Assert.Equal(operation, budgets.Load(profile).PendingAutomaticOperationId);
     }
 
+    [Fact]
+    public void Episode_start_is_committed_shared_before_live_retry_state()
+    {
+        using var directory = new TestDirectory();
+        Guid profile = Guid.NewGuid();
+        Guid episode = Guid.NewGuid();
+        var budgets = new SharedRecoveryBudgetStore(directory.Path);
+        SharedRecoveryBudget initialBudget = budgets.Create(profile);
+        var session = new RecoverySessionStateStore(directory.Path, FirstKey, budgets);
+        StoredRecoveryState initial = session.InitializeForNewSignIn(profile, true);
+
+        Assert.Throws<StaleRecoveryRevisionException>(() => session.Save(profile,
+            initial.Revision, initial.Checkpoint with
+            {
+                Armed = true,
+                EpisodeId = episode,
+                LastState = RecoveryState.RetryWaiting
+            }));
+
+        SharedRecoveryBudget begun = budgets.BeginEpisode(profile,
+            initialBudget.Revision, episode);
+        session.AdoptCommittedBudget(begun);
+        StoredRecoveryState saved = session.Save(profile, initial.Revision,
+            initial.Checkpoint with
+            {
+                Armed = true,
+                EpisodeId = episode,
+                LastState = RecoveryState.RetryWaiting
+            });
+        Assert.Equal(episode, saved.Checkpoint.EpisodeId);
+        Assert.Equal(begun.Revision, saved.Checkpoint.SharedBudgetRevision);
+    }
+
     private sealed class TestDirectory : IDisposable
     {
         public string Path { get; } = System.IO.Path.Combine(

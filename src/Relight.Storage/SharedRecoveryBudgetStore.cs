@@ -69,6 +69,21 @@ public sealed class SharedRecoveryBudgetStore
         return Read(PathFor(profileId), profileId);
     }
 
+    public SharedRecoveryBudget BeginEpisode(Guid profileId, long expectedRevision,
+        Guid episodeId)
+    {
+        CheckId(episodeId);
+        return Update(profileId, expectedRevision, current =>
+        {
+            if (current.EpisodeId is not null || current.ReservedAutomaticAttempts != 0 ||
+                current.LockedOut || current.PendingAutomaticOperationId is not null ||
+                current.PendingExplicitOperationId is not null)
+                throw new InvalidOperationException(
+                    "The shared recovery budget cannot begin another episode.");
+            return current with { EpisodeId = episodeId };
+        });
+    }
+
     public SharedRecoveryBudget ReserveAutomatic(Guid profileId, long expectedRevision,
         int attemptLimit, Guid episodeId, Guid operationId)
     {
@@ -165,13 +180,18 @@ public sealed class SharedRecoveryBudgetStore
     }
 
     public SharedRecoveryBudget ResetExplicitly(Guid profileId, long expectedRevision) =>
-        Update(profileId, expectedRevision, current => current with
+        Update(profileId, expectedRevision, current =>
         {
-            EpisodeId = null,
-            ReservedAutomaticAttempts = 0,
-            LockedOut = false,
-            PendingAutomaticOperationId = null,
-            PendingExplicitOperationId = null
+            if (current.PendingAutomaticOperationId is not null ||
+                current.PendingExplicitOperationId is not null)
+                throw new InvalidOperationException(
+                    "An unresolved launch must be reconciled before recovery can be reset.");
+            return current with
+            {
+                EpisodeId = null,
+                ReservedAutomaticAttempts = 0,
+                LockedOut = false
+            };
         });
 
     private SharedRecoveryBudget Update(Guid profileId, long expectedRevision,

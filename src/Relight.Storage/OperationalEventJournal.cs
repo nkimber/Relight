@@ -46,7 +46,9 @@ public enum OperationalEventKind
     ExplicitStopCompleted,
     ExplicitStopUnresolved,
     ExplicitRestartRequested,
-    NotificationPreferencesChanged
+    NotificationPreferencesChanged,
+    LaunchAverted,
+    ExplicitStartAverted
 }
 
 /// <summary>

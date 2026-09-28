@@ -57,6 +57,30 @@ public sealed class SharedRecoveryBudgetStoreTests
     }
 
     [Fact]
+    public void Concurrent_episode_starts_cannot_create_two_authoritative_episodes()
+    {
+        using var directory = new TestDirectory();
+        Guid profile = Guid.NewGuid();
+        var firstSession = new SharedRecoveryBudgetStore(directory.Path);
+        var secondSession = new SharedRecoveryBudgetStore(directory.Path);
+        SharedRecoveryBudget initial = firstSession.Create(profile);
+        Guid firstEpisode = Guid.NewGuid();
+        Guid secondEpisode = Guid.NewGuid();
+
+        SharedRecoveryBudget begun = firstSession.BeginEpisode(profile,
+            initial.Revision, firstEpisode);
+        Assert.Throws<StaleRecoveryRevisionException>(() =>
+            secondSession.BeginEpisode(profile, initial.Revision, secondEpisode));
+        Assert.Equal(firstEpisode, secondSession.Load(profile).EpisodeId);
+        Assert.Throws<InvalidOperationException>(() =>
+            secondSession.BeginEpisode(profile, begun.Revision, secondEpisode));
+        SharedRecoveryBudget reserved = secondSession.ReserveAutomatic(profile,
+            begun.Revision, 3, firstEpisode, Guid.NewGuid());
+        Assert.Equal(firstEpisode, reserved.EpisodeId);
+        Assert.Equal(1, reserved.ReservedAutomaticAttempts);
+    }
+
+    [Fact]
     public void Interrupted_reservation_is_not_refunded_and_blocks_another_dispatch()
     {
         using var directory = new TestDirectory();
@@ -107,9 +131,14 @@ public sealed class SharedRecoveryBudgetStoreTests
         Assert.Equal(0, rearmed.ReservedAutomaticAttempts);
         Assert.Null(rearmed.EpisodeId);
 
+        Guid secondOperation = Guid.NewGuid();
         SharedRecoveryBudget second = store.ReserveAutomatic(profile,
-            rearmed.Revision, 1, Guid.NewGuid(), Guid.NewGuid());
-        SharedRecoveryBudget reset = store.ResetExplicitly(profile, second.Revision);
+            rearmed.Revision, 1, Guid.NewGuid(), secondOperation);
+        Assert.Throws<InvalidOperationException>(() =>
+            store.ResetExplicitly(profile, second.Revision));
+        SharedRecoveryBudget secondResolved = store.ResolveAutomatic(profile,
+            second.Revision, secondOperation);
+        SharedRecoveryBudget reset = store.ResetExplicitly(profile, secondResolved.Revision);
         Assert.Equal(0, reset.ReservedAutomaticAttempts);
         Assert.Null(reset.PendingAutomaticOperationId);
     }
@@ -189,6 +218,8 @@ public sealed class SharedRecoveryBudgetStoreTests
         Assert.Equal(1, pending.ReservedAutomaticAttempts);
         Assert.Throws<InvalidOperationException>(() =>
             store.CompleteStableObservation(profile, pending.Revision, episode));
+        Assert.Throws<InvalidOperationException>(() =>
+            store.ResetExplicitly(profile, pending.Revision));
         SharedRecoveryBudget finished = store.ResolveExplicitStart(profile,
             pending.Revision, explicitOperation);
         Assert.True(finished.LockedOut);
