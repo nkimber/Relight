@@ -26,26 +26,8 @@ public sealed class RecoveryWpfPreviewProcessTests
         long? targetStartedTicks = null;
         try
         {
-            Guid profileId;
-            await using (var setup = await RecoveryApplicationHost
-                             .OpenSharedSessionPreviewAsync(directory))
-            {
-                profileId = await setup.RegisterExecutableAsync("Disposable WPF target",
-                    targetExecutable,
-                    ["--label", label, "--ready-file", ready], null);
-                RecoveryPolicy policy = setup.GetProfileForEdit(profileId).Policy with
-                {
-                    StartAutomaticallyWhenInitiallyAbsent = true,
-                    MaximumAutomaticAttempts = 1,
-                    RetryDelay = TimeSpan.FromSeconds(5),
-                    AppearanceTimeout = TimeSpan.FromSeconds(5),
-                    AbsenceConfirmationDelay = TimeSpan.FromSeconds(1),
-                    ObservationPollInterval = TimeSpan.FromSeconds(1),
-                    ObservationPeriod = TimeSpan.FromSeconds(60)
-                };
-                await setup.UpdateProfileBasicsAsync(profileId,
-                    "Disposable WPF target", policy);
-            }
+            Guid profileId = await ConfigureProfileAsync(directory, targetExecutable,
+                ["--label", label, "--ready-file", ready], maximumAttempts: 1);
 
             first = StartPreview(relightExecutable, directory);
             var budgets = new SharedRecoveryBudgetStore(directory);
@@ -55,7 +37,7 @@ public sealed class RecoveryWpfPreviewProcessTests
                     throw new InvalidOperationException(
                         $"WPF preview exited before recovery: {first.ExitCode}.");
                 return File.Exists(ready) &&
-                    budgets.Load(profileId).ReservedAutomaticAttempts == 1;
+                    TryLoadBudget(budgets, profileId)?.ReservedAutomaticAttempts == 1;
             }, TimeSpan.FromSeconds(45));
             string[] identity = (await File.ReadAllTextAsync(ready)).Split('|');
             targetPid = int.Parse(identity[0], CultureInfo.InvariantCulture);
@@ -94,11 +76,89 @@ public sealed class RecoveryWpfPreviewProcessTests
                 target.Kill(entireProcessTree: false);
                 target.WaitForExit(5000);
             }
-            string fullPath = Path.GetFullPath(directory);
-            string temporaryRoot = Path.GetFullPath(Path.GetTempPath());
-            if (!fullPath.StartsWith(temporaryRoot, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("Test cleanup path escaped the temporary directory.");
-            if (Directory.Exists(fullPath)) Directory.Delete(fullPath, recursive: true);
+            DeleteTemporaryDirectory(directory);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Preview_dispatches_exactly_three_short_lived_attempts_and_locks_out()
+    {
+        string directory = Path.Combine(Path.GetTempPath(),
+            $"relight-wpf-cap-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        string targetExecutable = FindBuiltExecutable("Relight.TestTarget",
+            "Relight.TestTarget.exe");
+        string relightExecutable = FindBuiltExecutable("Relight.App", "Relight.exe");
+        string label = $"wpf-cap-{Guid.NewGuid():N}";
+        Process? preview = null;
+        try
+        {
+            Guid profileId = await ConfigureProfileAsync(directory, targetExecutable,
+                ["--label", label, "--exit-after-ms", "100"], maximumAttempts: 3);
+            var budgets = new SharedRecoveryBudgetStore(directory);
+            var history = new OperationalEventHistoryReader(directory);
+            preview = StartPreview(relightExecutable, directory);
+
+            await WaitUntilAsync(() =>
+            {
+                if (preview.HasExited)
+                    throw new InvalidOperationException(
+                        $"WPF preview exited before lockout: {preview.ExitCode}.");
+                SharedRecoveryBudget? budget = TryLoadBudget(budgets, profileId);
+                return budget?.LockedOut == true &&
+                    budget.ReservedAutomaticAttempts == 3;
+            }, TimeSpan.FromSeconds(75));
+            await WaitForEventCountAsync(history, profileId,
+                OperationalEventKind.LaunchDispatched, 3, TimeSpan.FromSeconds(10));
+            await Task.Delay(TimeSpan.FromSeconds(8));
+
+            SharedRecoveryBudget final = budgets.Load(profileId);
+            Assert.True(final.LockedOut);
+            Assert.Equal(3, final.ReservedAutomaticAttempts);
+            EventHistoryResult reserved = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.LaunchReserved));
+            EventHistoryResult dispatched = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.LaunchDispatched));
+            Assert.Equal(3, reserved.TotalMatches);
+            Assert.Equal(3, dispatched.TotalMatches);
+        }
+        finally
+        {
+            StopStartedProcess(preview);
+            DeleteTemporaryDirectory(directory);
+        }
+    }
+
+    private static async Task<Guid> ConfigureProfileAsync(string directory,
+        string targetExecutable, IReadOnlyList<string> arguments, int maximumAttempts)
+    {
+        await using var setup = await RecoveryApplicationHost
+            .OpenSharedSessionPreviewAsync(directory);
+        Guid profileId = await setup.RegisterExecutableAsync("Disposable WPF target",
+            targetExecutable, arguments, null);
+        RecoveryPolicy policy = setup.GetProfileForEdit(profileId).Policy with
+        {
+            StartAutomaticallyWhenInitiallyAbsent = true,
+            MaximumAutomaticAttempts = maximumAttempts,
+            RetryDelay = TimeSpan.FromSeconds(5),
+            AppearanceTimeout = TimeSpan.FromSeconds(5),
+            AbsenceConfirmationDelay = TimeSpan.FromSeconds(1),
+            ObservationPollInterval = TimeSpan.FromSeconds(1),
+            ObservationPeriod = TimeSpan.FromSeconds(60)
+        };
+        await setup.UpdateProfileBasicsAsync(profileId, "Disposable WPF target", policy);
+        return profileId;
+    }
+
+    private static SharedRecoveryBudget? TryLoadBudget(
+        SharedRecoveryBudgetStore budgets, Guid profileId)
+    {
+        try { return budgets.Load(profileId); }
+        catch (RecoveryStateUnavailableException error) when (error.InnerException is IOException)
+        {
+            // The WPF host may briefly hold this profile's cross-process lock.
+            return null;
         }
     }
 
@@ -142,17 +202,32 @@ public sealed class RecoveryWpfPreviewProcessTests
     private static async Task<int> WaitForTargetObservationsAsync(
         OperationalEventHistoryReader history, Guid profileId, int minimum,
         TimeSpan timeout)
+        => await WaitForEventCountAsync(history, profileId,
+            OperationalEventKind.TargetObserved, minimum, timeout);
+
+    private static async Task<int> WaitForEventCountAsync(
+        OperationalEventHistoryReader history, Guid profileId,
+        OperationalEventKind kind, int minimum, TimeSpan timeout)
     {
         using var cancellation = new CancellationTokenSource(timeout);
         while (true)
         {
             EventHistoryResult events = await history.ReadAsync(new EventHistoryQuery(
-                ProfileId: profileId, Kind: OperationalEventKind.TargetObserved,
+                ProfileId: profileId, Kind: kind,
                 Limit: 20), cancellation.Token);
             if (events.TotalMatches >= minimum) return events.TotalMatches;
             cancellation.Token.ThrowIfCancellationRequested();
             await Task.Delay(100, cancellation.Token);
         }
+    }
+
+    private static void DeleteTemporaryDirectory(string directory)
+    {
+        string fullPath = Path.GetFullPath(directory);
+        string temporaryRoot = Path.GetFullPath(Path.GetTempPath());
+        if (!fullPath.StartsWith(temporaryRoot, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Test cleanup path escaped the temporary directory.");
+        if (Directory.Exists(fullPath)) Directory.Delete(fullPath, recursive: true);
     }
 
     private static bool IsSameTargetAlive(int pid, long startedTicks, string executable)
