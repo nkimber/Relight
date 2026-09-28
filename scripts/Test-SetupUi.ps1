@@ -10,6 +10,7 @@ param(
     [switch]$ExerciseDisableRemove,
     [switch]$ExerciseExit,
     [switch]$ExerciseResetDuplicate,
+    [switch]$ExerciseStartNow,
     [ValidateSet('Pause', 'Disable', 'Remove', 'Exit')]
     [string]$CancelPendingAction = '',
     [ValidateSet('StopGraceful', 'StopForceDecline', 'StopForceAccept',
@@ -120,14 +121,21 @@ if (($ExercisePauseResume -or $ExerciseDisableRemove -or $ExerciseExit -or
 }
 if ($ExplicitAction -and (-not $AcceptInitialStart -or $ExercisePauseResume -or
     $ExerciseDisableRemove -or $ExerciseExit -or $ExerciseResetDuplicate -or
+    $ExerciseStartNow -or
     $CancelPendingAction -or
     $EditSavedExecutable -or $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
     throw 'Explicit-control acceptance uses only accepted initial start and one control action.'
 }
 if ($CancelPendingAction -and (-not $AcceptInitialStart -or $ExercisePauseResume -or
-    $ExerciseDisableRemove -or $ExerciseExit -or $EditSavedExecutable -or
+    $ExerciseDisableRemove -or $ExerciseExit -or $ExerciseStartNow -or
+    $ExerciseResetDuplicate -or $EditSavedExecutable -or
     $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
     throw 'Pending-dispatch acceptance uses only accepted initial start and one cancellation action.'
+}
+if ($ExerciseStartNow -and ($AcceptInitialStart -or $ExercisePauseResume -or
+    $ExerciseDisableRemove -or $ExerciseExit -or $ExerciseResetDuplicate -or
+    $EditSavedExecutable -or $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
+    throw 'Start now acceptance uses a saved initially absent disposable target with automatic initial start off.'
 }
 
 $executablePath = (Resolve-Path -LiteralPath $Executable).Path
@@ -294,6 +302,51 @@ try {
     }
     else {
         Write-Output 'PASS: Add dialog was accessible; detection found absence; saved profile kept automatic initial start off; dashboard showed the new profile.'
+    }
+
+    if ($ExerciseStartNow) {
+        $budgetPath = Join-Path $root ('Budgets\' + $profile.id.Replace('-', '') + '.json')
+        $beforeBudget = Wait-For { Read-Configuration $budgetPath } 'budget before explicit start'
+        if ($beforeBudget.budget.reservedAutomaticAttempts -ne 0 -or
+            (Test-Path -LiteralPath $ready)) {
+            throw 'Start now test did not begin with an absent target and zero attempts.'
+        }
+        Wait-For { Find-EnabledButton $dashboard 'Start now' } 'enabled Start now action' 20 | Out-Null
+        (Find-EnabledButton $dashboard 'Start now').GetCurrentPattern(
+            [System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+        Wait-For { Test-Path -LiteralPath $ready } 'explicitly started disposable target' 20 | Out-Null
+        $targetPid = [int](Get-Content -LiteralPath $ready -Raw).Split('|')[0]
+        Wait-For {
+            foreach ($log in @(Get-ChildItem -LiteralPath (Join-Path $root 'Logs') -File `
+                -Filter 'events-*.jsonl')) {
+                foreach ($line in @(Get-Content -LiteralPath $log.FullName)) {
+                    if ($line.Contains('"kind":"TargetObserved"') -and
+                        $line.Contains($profile.id)) { return $true }
+                }
+            }
+            return $false
+        } 'explicit target discovery' 70 | Out-Null
+        Wait-For {
+            $button = Find-Control $dashboard 'Start now' `
+                ([System.Windows.Automation.ControlType]::Button)
+            $null -ne $button -and -not $button.Current.IsEnabled
+        } 'Start now disabled for present target' 15 | Out-Null
+        $afterBudget = Read-Configuration $budgetPath
+        if ($null -eq $afterBudget -or
+            $afterBudget.budget.reservedAutomaticAttempts -ne 0) {
+            throw 'Explicit Start now charged an automatic recovery attempt.'
+        }
+        Wait-For {
+            foreach ($log in @(Get-ChildItem -LiteralPath (Join-Path $root 'Logs') -File `
+                -Filter 'events-*.jsonl')) {
+                foreach ($line in @(Get-Content -LiteralPath $log.FullName)) {
+                    if ($line.Contains('"kind":"ExplicitStartDispatched"') -and
+                        $line.Contains($profile.id)) { return $true }
+                }
+            }
+            return $false
+        } 'explicit-start history event' | Out-Null
+        Write-Output 'PASS: WPF Start now launched the absent disposable target once, disabled duplicate start while present, logged an explicit dispatch and left the automatic budget at zero.'
     }
 
     if ($ExplicitAction) {

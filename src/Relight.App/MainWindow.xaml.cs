@@ -71,7 +71,7 @@ public partial class MainWindow : Window
     private async void StartNowClick(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { DataContext: ApplicationStatusRow row } button) return;
-        button.IsEnabled = false;
+        SuspendBoundAction(button);
         string original = button.Content?.ToString() ?? "Start now";
         button.Content = "Checking and starting…";
         try { await _startNow(row.Id); }
@@ -84,7 +84,7 @@ public partial class MainWindow : Window
         finally
         {
             button.Content = original;
-            button.IsEnabled = row.CanStartNow;
+            RestoreBoundAction(button);
         }
     }
 
@@ -96,7 +96,7 @@ public partial class MainWindow : Window
                 "Stop and pause?", MessageBoxButton.OKCancel,
                 MessageBoxImage.Warning, MessageBoxResult.Cancel) != MessageBoxResult.OK)
             return;
-        button.IsEnabled = false;
+        SuspendBoundAction(button);
         button.Content = "Closing gracefully…";
         try
         {
@@ -134,7 +134,7 @@ public partial class MainWindow : Window
         finally
         {
             button.Content = "Stop and pause";
-            button.IsEnabled = row.CanStopAndPause;
+            RestoreBoundAction(button);
         }
     }
 
@@ -146,7 +146,7 @@ public partial class MainWindow : Window
                 "Restart now?", MessageBoxButton.OKCancel,
                 MessageBoxImage.Warning, MessageBoxResult.Cancel) != MessageBoxResult.OK)
             return;
-        button.IsEnabled = false;
+        SuspendBoundAction(button);
         button.Content = "Closing gracefully…";
         try
         {
@@ -191,7 +191,7 @@ public partial class MainWindow : Window
         finally
         {
             button.Content = "Restart now";
-            button.IsEnabled = row.CanRestartNow;
+            RestoreBoundAction(button);
         }
     }
 
@@ -329,7 +329,7 @@ public partial class MainWindow : Window
     private async void PauseResumeClick(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { DataContext: ApplicationStatusRow row } button) return;
-        button.IsEnabled = false;
+        SuspendBoundAction(button);
         try { await _setPaused(row.Id, !row.IsPaused); }
         catch (OperationCanceledException) { }
         catch (Exception error)
@@ -337,7 +337,7 @@ public partial class MainWindow : Window
             MessageBox.Show(this, error.Message, "Protection change failed",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
-        finally { button.IsEnabled = row.CanPauseResume; }
+        finally { RestoreBoundAction(button); }
     }
 
     private async void EnableDisableClick(object sender, RoutedEventArgs e)
@@ -349,7 +349,7 @@ public partial class MainWindow : Window
                 "Enable automatic start?", MessageBoxButton.YesNo,
                 MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
             return;
-        button.IsEnabled = false;
+        SuspendBoundAction(button);
         try { await _setEnabled(row.Id, !row.ConfiguredEnabled); }
         catch (OperationCanceledException) { }
         catch (Exception error)
@@ -357,7 +357,7 @@ public partial class MainWindow : Window
             MessageBox.Show(this, error.Message, "Protection change failed",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
-        finally { button.IsEnabled = row.CanToggleEnabled; }
+        finally { RestoreBoundAction(button); }
     }
 
     private async void RemoveProfileClick(object sender, RoutedEventArgs e)
@@ -368,7 +368,7 @@ public partial class MainWindow : Window
                 "Remove profile?", MessageBoxButton.OKCancel,
                 MessageBoxImage.Warning, MessageBoxResult.Cancel) != MessageBoxResult.OK)
             return;
-        button.IsEnabled = false;
+        SuspendBoundAction(button);
         try { await _removeProfile(row.Id); }
         catch (OperationCanceledException) { }
         catch (Exception error)
@@ -376,13 +376,13 @@ public partial class MainWindow : Window
             MessageBox.Show(this, error.Message, "Profile removal failed",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
-        finally { button.IsEnabled = row.CanRemove; }
+        finally { RestoreBoundAction(button); }
     }
 
     private async void DuplicateProfileClick(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { DataContext: ApplicationStatusRow row } button) return;
-        button.IsEnabled = false;
+        SuspendBoundAction(button);
         try
         {
             await _duplicateProfile(row.Id);
@@ -396,7 +396,7 @@ public partial class MainWindow : Window
             MessageBox.Show(this, error.Message, "Could not duplicate profile",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
-        finally { button.IsEnabled = row.CanEdit; }
+        finally { RestoreBoundAction(button); }
     }
 
     private void ViewProfileHistoryClick(object sender, RoutedEventArgs e)
@@ -440,7 +440,7 @@ public partial class MainWindow : Window
                 "Reset recovery?", MessageBoxButton.OKCancel,
                 MessageBoxImage.Warning, MessageBoxResult.Cancel) != MessageBoxResult.OK)
             return;
-        button.IsEnabled = false;
+        SuspendBoundAction(button);
         try { await _resetRecovery(row.Id); }
         catch (OperationCanceledException) { }
         catch (Exception error)
@@ -448,7 +448,7 @@ public partial class MainWindow : Window
             MessageBox.Show(this, error.Message, "Recovery reset failed",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
-        finally { button.IsEnabled = row.CanReset; }
+        finally { RestoreBoundAction(button); }
     }
 
     private async void RepairRecoveryStateClick(object sender, RoutedEventArgs e)
@@ -459,7 +459,7 @@ public partial class MainWindow : Window
                 "Repair recovery state?", MessageBoxButton.OKCancel,
                 MessageBoxImage.Warning, MessageBoxResult.Cancel) != MessageBoxResult.OK)
             return;
-        button.IsEnabled = false;
+        SuspendBoundAction(button);
         try { await _repairRecoveryState(row.Id); }
         catch (OperationCanceledException) { }
         catch (Exception error)
@@ -467,7 +467,7 @@ public partial class MainWindow : Window
             MessageBox.Show(this, error.Message, "Recovery state repair failed",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
-        finally { button.IsEnabled = row.CanRepairRecoveryState; }
+        finally { RestoreBoundAction(button); }
     }
 
     private async void ReplaceUnavailableProfileClick(object sender, RoutedEventArgs e)
@@ -478,7 +478,7 @@ public partial class MainWindow : Window
                 "Replace unavailable profile?", MessageBoxButton.OKCancel,
                 MessageBoxImage.Warning, MessageBoxResult.Cancel) != MessageBoxResult.OK)
             return;
-        button.IsEnabled = false;
+        SuspendBoundAction(button);
         try
         {
             await _replaceUnavailableProfile(row.Id);
@@ -492,6 +492,12 @@ public partial class MainWindow : Window
             MessageBox.Show(this, error.Message, "Profile replacement failed",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
-        finally { button.IsEnabled = row.CanReplaceUnavailableProfile; }
+        finally { RestoreBoundAction(button); }
     }
+
+    private static void SuspendBoundAction(Button button) =>
+        button.SetCurrentValue(IsEnabledProperty, false);
+
+    private static void RestoreBoundAction(Button button) =>
+        button.GetBindingExpression(IsEnabledProperty)?.UpdateTarget();
 }
