@@ -15,12 +15,20 @@ public sealed class RecoveryApplicationHostIntegrationTests
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-identity-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
+        int? oldPid = null;
         try
         {
+            string original = TestExecutable();
             string replacement = Path.Combine(root, "Replacement.exe");
+            string ready = Path.Combine(root, "original.ready");
             File.Copy(TestExecutable(), replacement);
             await using var host = await RecoveryApplicationHost.OpenAsync(root, new FakeClock());
-            Guid id = await host.RegisterExecutableAsync("Original", TestExecutable());
+            Guid id = await host.RegisterExecutableAsync("Original", original);
+            await new ExecutableLauncher(new ExecutableTarget(original,
+                ["--ready-file", ready, "--exit-after-ms", "30000"]))
+                .LaunchAsync(Guid.NewGuid(), CancellationToken.None);
+            oldPid = int.Parse((await WaitForFile(ready)).Split('|')[0]);
+            await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
             var stateStore = new RecoveryStateStore(root);
             StoredRecoveryState before = stateStore.Load(id);
             var target = new TargetConfiguration(TargetKind.Executable, replacement, []);
@@ -35,6 +43,12 @@ public sealed class RecoveryApplicationHostIntegrationTests
             Assert.Equal(before, stateStore.Load(id));
             Assert.True(host.GetProfiles().Single(item => item.Id == id)
                 .AutomaticActionsAllowed);
+            using (Process old = Process.GetProcessById(oldPid.Value))
+                Assert.False(old.HasExited);
+            await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(DetectionKind.Absent,
+                (await new ExecutableDiscovery(new ExecutableTarget(replacement, []))
+                    .DetectAsync(CancellationToken.None)).Kind);
             await Assert.ThrowsAsync<InvalidOperationException>(() =>
                 host.UpdateProfileDefinitionAsync(id, "Invalid",
                     new(TargetKind.PackagedApplication, "other", []),
@@ -43,6 +57,19 @@ public sealed class RecoveryApplicationHostIntegrationTests
         }
         finally
         {
+            if (oldPid is not null)
+            {
+                try
+                {
+                    using Process old = Process.GetProcessById(oldPid.Value);
+                    if (!old.HasExited)
+                    {
+                        old.Kill();
+                        await old.WaitForExitAsync();
+                    }
+                }
+                catch (ArgumentException) { }
+            }
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
     }

@@ -781,6 +781,37 @@ public sealed class ProfileCoordinatorTests
     }
 
     [Fact]
+    public async Task Identity_change_cancels_queued_launch_and_retires_old_coordinator()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var queue = new BlockingLaunchGate();
+        var launcher = new CountingLauncher();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id, AutoPolicy, store,
+            new ConstantDiscovery(Detection.Absent()), launcher, clock, queue);
+        await TickAt(coordinator, clock, 0);
+        await TickAt(coordinator, clock, 2);
+        clock.Elapsed = TimeSpan.FromSeconds(32);
+        Task<CoordinatorResult> waiting = coordinator.TickAsync();
+        await queue.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        bool committed = false;
+        await coordinator.RetireForIdentityChangeAsync(() => committed = true)
+            .WaitAsync(TimeSpan.FromSeconds(3));
+        await waiting.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.True(committed);
+        Assert.Equal(0, launcher.Dispatches);
+        Assert.Equal(0, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+        Assert.False((await coordinator.TickAsync()).LaunchDispatched);
+        Assert.Equal(0, launcher.Dispatches);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            coordinator.StartNowAsync());
+    }
+
+    [Fact]
     public async Task Disable_while_waiting_for_launch_slot_does_not_dispatch()
     {
         using var directory = new TestDirectory();
