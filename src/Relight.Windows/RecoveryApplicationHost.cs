@@ -86,6 +86,27 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         OpenCoreAsync(dataDirectory, clock, cancellationToken,
             useSharedSessionState: true, allowLegacyMigration);
 
+    /// <summary>
+    /// Opt-in WPF test entry point. Never migrates legacy state implicitly.
+    /// Use an isolated data directory until cross-sign-in acceptance is complete.
+    /// </summary>
+    public static Task<RecoveryApplicationHost> OpenSharedSessionPreviewAsync(
+        string dataDirectory, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(dataDirectory) || !Path.IsPathFullyQualified(dataDirectory))
+            throw new ArgumentException("An absolute preview data directory is required.",
+                nameof(dataDirectory));
+        string fullPath = Path.GetFullPath(dataDirectory);
+        if (string.Equals(fullPath.TrimEnd(Path.DirectorySeparatorChar),
+            Path.GetFullPath(DefaultDataDirectory).TrimEnd(Path.DirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException(
+                "Shared-session preview requires a directory separate from normal Relight data.",
+                nameof(dataDirectory));
+        return OpenCoreAsync(fullPath, null, cancellationToken,
+            useSharedSessionState: true, allowLegacyMigration: false);
+    }
+
     private static async Task<RecoveryApplicationHost> OpenCoreAsync(
         string? dataDirectory, IMonotonicClock? clock,
         CancellationToken cancellationToken, bool useSharedSessionState,

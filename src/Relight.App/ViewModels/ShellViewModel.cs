@@ -103,6 +103,7 @@ internal sealed record HistoryRow(string LocalTime, string UtcTime, string Profi
 
 internal sealed class ShellViewModel : INotifyPropertyChanged
 {
+    private readonly string _dataDirectory;
     private ShellPage _page;
     private IReadOnlyList<ApplicationStatusRow> _applicationRows = [];
     private IReadOnlyList<ApplicationStatusRow> _visibleApplicationRows = [];
@@ -128,8 +129,11 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     private HistoryRangeOption _selectedHistoryRange;
     private string _historyEpisodeText = "";
 
-    public ShellViewModel(Action hide, Action exit, Action add, Action repairConfiguration)
+    public ShellViewModel(Action hide, Action exit, Action add, Action repairConfiguration,
+        string? dataDirectory = null)
     {
+        _dataDirectory = dataDirectory ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Relight");
         ApplicationsCommand = new RelayCommand(() => Navigate(ShellPage.Applications));
         HistoryCommand = new RelayCommand(() => Navigate(ShellPage.History));
         SettingsCommand = new RelayCommand(() => Navigate(ShellPage.Settings));
@@ -274,8 +278,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         ShellPage.Settings => "A quiet presence, on your terms.",
         _ => "A home for the apps you want to keep running."
     };
-    public string DataDirectory => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Relight");
+    public string DataDirectory => _dataDirectory;
 
     public void UpdateMonitoring(string? configurationProblem, bool canRepairConfiguration,
         IReadOnlyList<HostedProfileStatus> profiles, EventRecorderStatus? logging,

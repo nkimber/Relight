@@ -1,5 +1,6 @@
 using System;
 using System.ComponentModel;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -36,6 +37,19 @@ public partial class App : Application
     private DateTimeOffset _nextDashboardHistoryRefreshUtc;
     private readonly RecoveryNotificationPlanner _notificationPlanner = new();
     private string? _notificationProblem;
+    private string? _sharedSessionPreviewDataDirectory;
+
+    private static string? PreviewDirectory(string[] args)
+    {
+        int index = Array.IndexOf(args, "--shared-session-preview");
+        if (index < 0) return null;
+        if (Array.LastIndexOf(args, "--shared-session-preview") != index ||
+            index + 1 >= args.Length || !Path.IsPathFullyQualified(args[index + 1]) ||
+            Array.IndexOf(args, "--shell-test") >= 0)
+            throw new ArgumentException(
+                "Use --shared-session-preview <absolute-data-directory> without --shell-test.");
+        return Path.GetFullPath(args[index + 1]);
+    }
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -43,6 +57,7 @@ public partial class App : Application
 
         try
         {
+            _sharedSessionPreviewDataDirectory = PreviewDirectory(e.Args);
             _instance = new SingleInstanceService();
             if (!_instance.IsPrimary)
             {
@@ -55,16 +70,19 @@ public partial class App : Application
             SystemParameters.StaticPropertyChanged += OnSystemParametersChanged;
             try
             {
-                _startupRegistration = new CurrentUserStartupRegistration(
-                    Environment.ProcessPath ?? throw new InvalidOperationException(
-                        "The Relight executable path is unavailable."));
+                if (_sharedSessionPreviewDataDirectory is null)
+                    _startupRegistration = new CurrentUserStartupRegistration(
+                        Environment.ProcessPath ?? throw new InvalidOperationException(
+                            "The Relight executable path is unavailable."));
+                else
+                    _startupUnavailable = "Sign-in startup is unavailable in shared-session preview.";
             }
             catch (Exception error) when (error is ArgumentException or InvalidOperationException)
             {
                 _startupUnavailable = error.Message;
             }
             _viewModel = new ShellViewModel(HideDashboard, RequestExit, ShowAddApplication,
-                RepairConfiguration);
+                RepairConfiguration, _sharedSessionPreviewDataDirectory);
             _viewModel.HistoryRefreshRequested += OnHistoryRefreshRequested;
             _dashboard = new MainWindow(SetProfilePausedAsync, ResetProfileRecoveryAsync,
                 StartProfileNowAsync, ExportHistoryAsync, SetProfileEnabledAsync,
@@ -76,6 +94,8 @@ public partial class App : Application
             {
                 DataContext = _viewModel
             };
+            if (_sharedSessionPreviewDataDirectory is not null)
+                _dashboard.Title = "Relight — Shared-session preview";
             MainWindow = _dashboard;
             _dashboard.Closing += OnDashboardClosing;
             _tray = new TrayService(
@@ -123,8 +143,11 @@ public partial class App : Application
         RecoveryApplicationHost? host = null;
         try
         {
-            host = await RecoveryApplicationHost.OpenAsync(cancellationToken: cancellationToken)
-                .ConfigureAwait(false);
+            host = _sharedSessionPreviewDataDirectory is { } previewDirectory
+                ? await RecoveryApplicationHost.OpenSharedSessionPreviewAsync(previewDirectory,
+                    cancellationToken).ConfigureAwait(false)
+                : await RecoveryApplicationHost.OpenAsync(cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
             Volatile.Write(ref _host, host);
             await host.RunAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -181,7 +204,7 @@ public partial class App : Application
                 try
                 {
                     _dashboardHistory = await new OperationalEventHistoryReader(
-                        RecoveryApplicationHost.DefaultDataDirectory)
+                        _viewModel?.DataDirectory ?? RecoveryApplicationHost.DefaultDataDirectory)
                         .ReadDashboardMilestonesAsync(_monitoringCancellation?.Token ??
                             CancellationToken.None);
                     _dashboardHistoryProblem = null;
