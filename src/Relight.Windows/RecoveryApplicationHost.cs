@@ -712,6 +712,119 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             notifyOnRecovery, notifyOnLockout, cancellationToken),
             CancellationToken.None);
 
+    public Task UpdateProfileDefinitionAsync(Guid profileId, string name,
+        TargetConfiguration target, RecoveryPolicy policy, bool notifyOnRecovery,
+        bool notifyOnLockout, CancellationToken cancellationToken = default) =>
+        Task.Run(() => UpdateProfileDefinitionCoreAsync(profileId, name, target,
+            policy, notifyOnRecovery, notifyOnLockout, cancellationToken),
+            CancellationToken.None);
+
+    private async Task UpdateProfileDefinitionCoreAsync(Guid profileId, string name,
+        TargetConfiguration target, RecoveryPolicy policy, bool notifyOnRecovery,
+        bool notifyOnLockout, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        if (string.IsNullOrWhiteSpace(name) || name.Trim().Length > 100)
+            throw new ArgumentException("Choose a name of 1–100 characters.", nameof(name));
+        policy.Validate();
+        if (TargetEquivalent(GetProfileForEdit(profileId).Target, target))
+        {
+            await UpdateProfileBasicsCoreAsync(profileId, name, policy,
+                notifyOnRecovery, notifyOnLockout, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        await _changes.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            StoredConfiguration current = Configuration ??
+                throw new ConfigurationUnavailableException("Configuration is unavailable.");
+            ProfileConfiguration profile = current.Configuration.Profiles.SingleOrDefault(
+                item => item.Id == profileId) ??
+                throw new InvalidOperationException("Profile no longer exists.");
+            if (profile.Target.Kind != TargetKind.Executable ||
+                target.Kind != TargetKind.Executable)
+                throw new InvalidOperationException("Installed-app identities cannot be edited.");
+            var executable = new ExecutableTarget(target.Identity, target.Arguments,
+                target.WorkingDirectory, target.RequiredArgument, target.ExcludedArgument);
+            executable.Validate();
+            if (!File.Exists(executable.CanonicalPath))
+                throw new FileNotFoundException("The executable file does not exist.",
+                    executable.CanonicalPath);
+            if (executable.WorkingDirectory is { } directory &&
+                !Directory.Exists(Environment.ExpandEnvironmentVariables(directory)))
+                throw new DirectoryNotFoundException("The working directory does not exist.");
+            var normalized = target with { Identity = executable.CanonicalPath,
+                Arguments = [.. target.Arguments], WorkingDirectory = executable.WorkingDirectory };
+            bool identityChanged = !TargetEquivalent(profile.Target, normalized);
+            if (!identityChanged)
+                throw new InvalidOperationException("Target identity changed concurrently; reopen the editor.");
+            Detection detected = await new ExecutableDiscovery(executable)
+                .DetectAsync(cancellationToken).ConfigureAwait(false);
+            if (detected.Kind == DetectionKind.Unavailable)
+                throw new InvalidOperationException(
+                    $"Target identity cannot be verified: {detected.Reason}");
+            if (!current.AutomaticActionsAllowed)
+                throw new ConfigurationUnavailableException(
+                    "Repair configuration before editing profiles.");
+            var edited = profile with { Name = name.Trim(), Target = normalized,
+                Policy = policy, NotifyOnRecovery = notifyOnRecovery,
+                NotifyOnLockout = notifyOnLockout };
+            var updated = current.Configuration with { Profiles = current.Configuration.Profiles
+                .Select(item => item.Id == profileId ? edited : item).ToList() };
+            ConfigurationStore.ValidateConfiguration(updated);
+            EnsureSharedConfigurationCurrent();
+            ProfileCoordinator? coordinator;
+            Task[] active;
+            lock (_statusSync)
+            {
+                _closingProfiles.Add(profileId);
+                _coordinators.TryGetValue(profileId, out coordinator);
+                active = _activeCommands.Where(pair => pair.Value == profileId)
+                    .Select(pair => pair.Key).ToArray();
+            }
+            try
+            {
+                try { await Task.WhenAll(active).ConfigureAwait(false); }
+                catch { /* Command callers receive their own failures. */ }
+                StoredConfiguration? saved = null;
+                if (coordinator is not null)
+                    await coordinator.RetireForIdentityChangeAsync(
+                        () => saved = _configurationStore.Save(current, updated),
+                        cancellationToken).ConfigureAwait(false);
+                else
+                    saved = _configurationStore.Save(current, updated);
+                Configuration = saved;
+                await _scheduler.RemoveAsync(profileId).ConfigureAwait(false);
+                lock (_statusSync)
+                {
+                    _coordinators.Remove(profileId);
+                    _statuses.Remove(profileId);
+                }
+                await LoadProfilesAsync(saved! with { Configuration = saved.Configuration with
+                    { Profiles = [edited] } }, CancellationToken.None).ConfigureAwait(false);
+                _scheduler.RequestImmediate(profileId);
+                _recorder?.TryRecord(new(DateTimeOffset.UtcNow, Guid.NewGuid(),
+                    EventSeverity.Information, OperationalEventKind.ProfileTargetChanged,
+                    ProfileId: profileId, ProfileName: edited.Name,
+                    EpisodeId: coordinator?.Snapshot.EpisodeId));
+            }
+            finally
+            {
+                lock (_statusSync) _closingProfiles.Remove(profileId);
+            }
+        }
+        finally { _changes.Release(); }
+    }
+
+    private static bool TargetEquivalent(TargetConfiguration left, TargetConfiguration right) =>
+        left.Kind == right.Kind &&
+        string.Equals(left.Identity, right.Identity, StringComparison.OrdinalIgnoreCase) &&
+        left.Arguments.SequenceEqual(right.Arguments, StringComparer.Ordinal) &&
+        string.Equals(left.WorkingDirectory, right.WorkingDirectory,
+            StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(left.RequiredArgument, right.RequiredArgument, StringComparison.Ordinal) &&
+        string.Equals(left.ExcludedArgument, right.ExcludedArgument, StringComparison.Ordinal);
+
     private async Task UpdateProfileBasicsCoreAsync(Guid profileId, string name,
         RecoveryPolicy policy, bool? notifyOnRecovery, bool? notifyOnLockout,
         CancellationToken cancellationToken)

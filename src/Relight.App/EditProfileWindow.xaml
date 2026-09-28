@@ -23,8 +23,21 @@
                 <TextBlock Text="Target identity" FontWeight="SemiBold" Margin="0,0,0,6" />
                 <TextBox x:Name="IdentityInput" IsReadOnly="True" TextWrapping="Wrap"
                          AutomationProperties.Name="Target identity" Margin="0,0,0,6" />
-                <TextBlock Text="Launch identity editing will be added with fresh target reconciliation."
-                           Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,20" />
+                <StackPanel x:Name="ExecutableFields" Margin="0,0,0,20">
+                    <TextBlock Text="Executable path" Margin="0,8,0,4" />
+                    <DockPanel Margin="0,0,0,12">
+                        <Button Content="Browse…" DockPanel.Dock="Right" Click="BrowseClick" Margin="8,0,0,0" />
+                        <TextBox x:Name="PathInput" AutomationProperties.Name="Executable path" />
+                    </DockPanel>
+                    <TextBlock Text="Launch arguments · one literal argument per line" Margin="0,0,0,4" />
+                    <TextBox x:Name="ArgumentsInput" AcceptsReturn="True" MinHeight="54"
+                             AutomationProperties.Name="Launch arguments" Margin="0,0,0,12" />
+                    <TextBlock Text="Working directory · optional absolute path" Margin="0,0,0,4" />
+                    <TextBox x:Name="WorkingDirectoryInput"
+                             AutomationProperties.Name="Working directory" />
+                    <TextBlock Text="Changing the target leaves the old application running, keeps the recovery budget, and starts fresh discovery for the new identity."
+                               Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0" />
+                </StackPanel>
 
                 <TextBlock Text="Monitoring" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12" />
                 <TextBlock Text="Normal check interval · seconds (60–300)" Margin="0,0,0,4" />

@@ -1,8 +1,10 @@
 using System;
 using System.ComponentModel;
 using System.Globalization;
+using System.IO;
 using System.Threading.Tasks;
 using System.Windows;
+using Microsoft.Win32;
 using Relight.Core;
 using Relight.Storage;
 
@@ -11,17 +13,22 @@ namespace Relight;
 public partial class EditProfileWindow : Window
 {
     private readonly ProfileConfiguration _profile;
-    private readonly Func<Guid, string, RecoveryPolicy, bool, bool, Task> _save;
+    private readonly Func<Guid, string, TargetConfiguration, RecoveryPolicy, bool, bool, Task> _save;
     private bool _saving;
 
     public EditProfileWindow(ProfileConfiguration profile,
-        Func<Guid, string, RecoveryPolicy, bool, bool, Task> save)
+        Func<Guid, string, TargetConfiguration, RecoveryPolicy, bool, bool, Task> save)
     {
         _profile = profile;
         _save = save;
         InitializeComponent();
         NameInput.Text = profile.Name;
         IdentityInput.Text = profile.Target.Identity;
+        ExecutableFields.Visibility = profile.Target.Kind == TargetKind.Executable
+            ? Visibility.Visible : Visibility.Collapsed;
+        PathInput.Text = profile.Target.Identity;
+        ArgumentsInput.Text = string.Join(Environment.NewLine, profile.Target.Arguments);
+        WorkingDirectoryInput.Text = profile.Target.WorkingDirectory ?? string.Empty;
         RecoveryPolicy policy = profile.Policy;
         NormalInput.Text = policy.NormalPollInterval.TotalSeconds.ToString(CultureInfo.CurrentCulture);
         ObservationPollInput.Text = policy.ObservationPollInterval.TotalSeconds.ToString(CultureInfo.CurrentCulture);
@@ -41,6 +48,7 @@ public partial class EditProfileWindow : Window
     private async void SaveClick(object sender, RoutedEventArgs e)
     {
         RecoveryPolicy policy;
+        TargetConfiguration target;
         string name = NameInput.Text.Trim();
         try
         {
@@ -61,6 +69,17 @@ public partial class EditProfileWindow : Window
                 RearmAfterStableExternalStart = RearmInput.IsChecked == true
             };
             policy.Validate();
+            target = _profile.Target.Kind == TargetKind.Executable
+                ? _profile.Target with
+                {
+                    Identity = PathInput.Text.Trim(),
+                    Arguments = [.. ArgumentsInput.Text.Split(['\r', '\n'],
+                        StringSplitOptions.RemoveEmptyEntries |
+                        StringSplitOptions.TrimEntries)],
+                    WorkingDirectory = string.IsNullOrWhiteSpace(WorkingDirectoryInput.Text)
+                        ? null : WorkingDirectoryInput.Text.Trim()
+                }
+                : _profile.Target;
         }
         catch (Exception error) when (error is ArgumentException or OverflowException)
         {
@@ -74,7 +93,7 @@ public partial class EditProfileWindow : Window
         SaveButton.Content = "Saving…";
         try
         {
-            await _save(_profile.Id, name, policy,
+            await _save(_profile.Id, name, target, policy,
                 NotifyRecoveryInput.IsChecked == true,
                 NotifyLockoutInput.IsChecked == true);
             DialogResult = true;
@@ -98,6 +117,19 @@ public partial class EditProfileWindow : Window
 
     private static TimeSpan Seconds(string text, string label) =>
         TimeSpan.FromSeconds(Number(text, label));
+
+    private void BrowseClick(object sender, RoutedEventArgs e)
+    {
+        var picker = new OpenFileDialog
+        {
+            Title = "Choose the application executable",
+            Filter = "Applications (*.exe)|*.exe",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+        if (picker.ShowDialog(this) == true)
+            PathInput.Text = picker.FileName;
+    }
 
     private void WindowClosing(object? sender, CancelEventArgs e)
     {

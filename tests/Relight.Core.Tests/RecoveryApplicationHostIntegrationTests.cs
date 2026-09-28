@@ -11,6 +11,44 @@ public sealed class RecoveryApplicationHostIntegrationTests
 {
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Editing_executable_identity_preserves_budget_and_rebinds_profile()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-identity-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            string replacement = Path.Combine(root, "Replacement.exe");
+            File.Copy(TestExecutable(), replacement);
+            await using var host = await RecoveryApplicationHost.OpenAsync(root, new FakeClock());
+            Guid id = await host.RegisterExecutableAsync("Original", TestExecutable());
+            var stateStore = new RecoveryStateStore(root);
+            StoredRecoveryState before = stateStore.Load(id);
+            var target = new TargetConfiguration(TargetKind.Executable, replacement, []);
+
+            await host.UpdateProfileDefinitionAsync(id, "Replacement", target,
+                host.GetProfileForEdit(id).Policy, true, true);
+
+            ProfileConfiguration edited = host.GetProfileForEdit(id);
+            Assert.Equal(id, edited.Id);
+            Assert.Equal("Replacement", edited.Name);
+            Assert.Equal(replacement, edited.Target.Identity);
+            Assert.Equal(before, stateStore.Load(id));
+            Assert.True(host.GetProfiles().Single(item => item.Id == id)
+                .AutomaticActionsAllowed);
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                host.UpdateProfileDefinitionAsync(id, "Invalid",
+                    new(TargetKind.PackagedApplication, "other", []),
+                    edited.Policy, true, true));
+            Assert.Equal(replacement, host.GetProfileForEdit(id).Target.Identity);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Sign_in_preference_saves_with_registry_and_rolls_back_on_stale_configuration()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-startup-{Guid.NewGuid():N}");

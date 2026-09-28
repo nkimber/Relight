@@ -49,7 +49,8 @@ public enum OperationalEventKind
     NotificationPreferencesChanged,
     LaunchAverted,
     ExplicitStartAverted,
-    InterruptedLaunchReconciled
+    InterruptedLaunchReconciled,
+    ProfileTargetChanged
 }
 
 /// <summary>

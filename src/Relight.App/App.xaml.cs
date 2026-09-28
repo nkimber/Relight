@@ -469,10 +469,14 @@ public partial class App : Application
         try
         {
             var dialog = new EditProfileWindow(host.GetProfileForEdit(profileId),
-                (id, name, policy, recovery, lockout) =>
-                    host.UpdateProfileSettingsAsync(id, name, policy,
-                    recovery, lockout,
-                    _monitoringCancellation?.Token ?? CancellationToken.None))
+                (id, name, target, policy, recovery, lockout) =>
+                    target.Kind == TargetKind.Executable
+                        ? host.UpdateProfileDefinitionAsync(id, name, target, policy,
+                            recovery, lockout,
+                            _monitoringCancellation?.Token ?? CancellationToken.None)
+                        : host.UpdateProfileSettingsAsync(id, name, policy,
+                            recovery, lockout,
+                            _monitoringCancellation?.Token ?? CancellationToken.None))
             {
                 Owner = _dashboard
             };

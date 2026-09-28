@@ -92,6 +92,7 @@ public sealed class ProfileCoordinator : IDisposable
     private bool _loggingDegraded;
     private string? _loggingError;
     private bool _storageEventEmitted;
+    private volatile bool _identityRetired;
     private (Guid OperationId, string Identity, bool Restart)? _pendingForceChoice;
     private (Guid OperationId, string? Identity)? _pendingRestart;
 
@@ -278,6 +279,9 @@ public sealed class ProfileCoordinator : IDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (_identityRetired)
+                return Result(new(_machine.Snapshot.State, _machine.Snapshot.State,
+                    RecoverySignal.None, "This target identity was replaced"));
             if (_interruptedLedgerOperation is not null)
                 return await ReconcileInterruptedLaunchAsync(cancellationToken)
                     .ConfigureAwait(false);
@@ -471,6 +475,8 @@ public sealed class ProfileCoordinator : IDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (_identityRetired)
+                throw new InvalidOperationException("This target identity was replaced.");
             if (_storageDegraded)
                 throw new RecoveryStateUnavailableException(
                     "Recovery state is degraded; protection cannot be paused safely.");
@@ -528,6 +534,8 @@ public sealed class ProfileCoordinator : IDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (_identityRetired)
+                throw new InvalidOperationException("This target identity was replaced.");
             if (_storageDegraded || !_machine.Snapshot.Enabled ||
                 !_machine.Snapshot.Paused ||
                 _pendingForceChoice is not { } choice ||
@@ -670,6 +678,47 @@ public sealed class ProfileCoordinator : IDisposable
         finally { _gate.Release(); }
     }
 
+    /// <summary>
+    /// Cancels pending dispatch, serializes with the active target operation,
+    /// then commits a replacement identity. A rejected commit leaves this
+    /// coordinator usable; a successful one retires it without clearing budget.
+    /// The host must remove it and attach a fresh adapter after commit.
+    /// </summary>
+    public async Task RetireForIdentityChangeAsync(Action commitConfiguration,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(commitConfiguration);
+        cancellationToken.ThrowIfCancellationRequested();
+        CancellationTokenSource? pending;
+        lock (_launchSync)
+        {
+            _commandGeneration++;
+            pending = _launchCancellation;
+        }
+        try { pending?.Cancel(); }
+        catch (ObjectDisposedException) { }
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_identityRetired)
+                throw new InvalidOperationException("This target identity was already replaced.");
+            if (_storageDegraded)
+                throw new RecoveryStateUnavailableException(
+                    "Recovery state is degraded; target identity cannot be changed safely.");
+            if (_machine.Snapshot.State == RecoveryState.Starting ||
+                _interruptedLedgerOperation is not null)
+                throw new InvalidOperationException(
+                    "Wait for the current launch to be reconciled before changing target identity.");
+            cancellationToken.ThrowIfCancellationRequested();
+            commitConfiguration();
+            _pendingForceChoice = null;
+            _pendingRestart = null;
+            _identityRetired = true;
+        }
+        finally { _gate.Release(); }
+    }
+
     public async Task ResetRecoveryAsync(CancellationToken cancellationToken = default)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -711,6 +760,8 @@ public sealed class ProfileCoordinator : IDisposable
     private async Task<CoordinatorResult> StartNowUnderGateAsync(
         int commandGeneration, CancellationToken cancellationToken)
     {
+        if (_identityRetired)
+            throw new InvalidOperationException("This target identity was replaced.");
         if (_storageDegraded)
             throw new RecoveryStateUnavailableException("Recovery state is degraded; explicit launch is suspended.");
         if (_interruptedLedgerOperation is not null)
