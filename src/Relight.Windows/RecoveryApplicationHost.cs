@@ -171,7 +171,8 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 try
                 {
                     ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(
-                        profile.Id, profile.Policy, StateStoreForExisting(profile), packagedDiscovery,
+                        profile.Id, profile.Policy, StateStoreForExisting(profile),
+                        GuardDiscovery(packagedDiscovery),
                         new PackagedApplicationLauncher(profile.Target.Identity),
                         _clock, _launchGate, _notificationTap,
                         sharedBudget: _sharedBudgetStore);
@@ -233,7 +234,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             try
             {
                 ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(profile.Id,
-                    profile.Policy, StateStoreForExisting(profile), discovery,
+                    profile.Policy, StateStoreForExisting(profile), GuardDiscovery(discovery),
                     new ExecutableLauncher(target), _clock, _launchGate,
                     _notificationTap, new ExecutableStopper(target), _sharedBudgetStore);
                 _scheduler.Add(profile.Id, coordinator, profile.Policy);
@@ -255,6 +256,19 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         _journal = new(dataDirectory, settings);
         _recorder = new(_journal);
         _notificationTap = new(_recorder);
+    }
+
+    private IProcessDiscovery GuardDiscovery(IProcessDiscovery discovery) =>
+        _sessionStateStore is null ? discovery :
+            new ConfigurationGuardedDiscovery(discovery, _configurationStore,
+                () => Configuration);
+
+    private void EnsureSharedConfigurationCurrent()
+    {
+        if (_sessionStateStore is null) return;
+        if (ConfigurationGuardedDiscovery.CheckConfiguration(_configurationStore,
+                Configuration) is { } problem)
+            throw new ConfigurationUnavailableException(problem);
     }
 
     private IRecoveryStateStore StateStoreForExisting(ProfileConfiguration profile)
@@ -455,7 +469,8 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             // profile ID. The final Save repeats both checks atomically.
             ConfigurationStore.ValidateConfiguration(updated);
             ProfileCoordinator coordinator = await Task.Run(() =>
-                ProfileCoordinator.CreateNew(id, policy, _activeStateStore, discovery,
+                ProfileCoordinator.CreateNew(id, policy, _activeStateStore,
+                    GuardDiscovery(discovery),
                     launcher, _clock, _launchGate, _notificationTap, stopper,
                     _sharedBudgetStore),
                 CancellationToken.None).ConfigureAwait(false);
@@ -867,7 +882,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             if (_coordinators.ContainsKey(profile.Id))
                 throw new InvalidOperationException("This profile is already scheduled.");
         ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(profile.Id,
-            profile.Policy, StateStoreForExisting(profile), discovery, launcher,
+            profile.Policy, StateStoreForExisting(profile), GuardDiscovery(discovery), launcher,
             _clock, _launchGate, _notificationTap, stopper, _sharedBudgetStore);
         RecoveryState previousState = coordinator.Snapshot.State;
         bool schedulerOwnsCoordinator = false;
@@ -1002,6 +1017,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 throw new InvalidOperationException("This profile cannot accept recovery commands.");
             command = Task.Run(async () =>
             {
+                EnsureSharedConfigurationCurrent();
                 lock (_statusSync)
                     if (_closingProfiles.Contains(profileId))
                         throw new InvalidOperationException("This profile is being changed.");
@@ -1035,6 +1051,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 throw new InvalidOperationException("This profile cannot accept recovery commands.");
             command = Task.Run(async () =>
             {
+                EnsureSharedConfigurationCurrent();
                 lock (_statusSync)
                     if (_closingProfiles.Contains(profileId))
                         throw new InvalidOperationException("This profile is being changed.");

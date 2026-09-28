@@ -227,6 +227,42 @@ public sealed class RecoveryApplicationHostIntegrationTests
 
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Shared_host_suspends_discovery_after_external_configuration_change()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-config-drift-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var clock = new FakeClock();
+            await using var host = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                root, clock);
+            Guid id = await host.RegisterExecutableAsync("Disposable target", TestExecutable());
+            await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.False(Assert.Single(host.GetProfiles()).Recovery?.DetectionUnavailable);
+
+            var store = new ConfigurationStore(root);
+            StoredConfiguration current = store.Load();
+            store.Save(current, current.Configuration with { Profiles = [] });
+            clock.Elapsed = TimeSpan.FromMinutes(5);
+            await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
+            HostedProfileStatus status = Assert.Single(host.GetProfiles());
+            Assert.Equal(id, status.Id);
+            Assert.True(status.Recovery?.DetectionUnavailable);
+            await Assert.ThrowsAsync<ConfigurationUnavailableException>(() =>
+                host.StartProfileNowAsync(id));
+            await Assert.ThrowsAsync<ConfigurationUnavailableException>(() =>
+                host.StopProfileAndPauseAsync(id, TimeSpan.FromSeconds(1)));
+            Assert.Equal(0, new SharedRecoveryBudgetStore(root).Load(id)
+                .ReservedAutomaticAttempts);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Shared_host_duplicate_and_enable_keep_separate_budgets()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-shared-copy-{Guid.NewGuid():N}");
