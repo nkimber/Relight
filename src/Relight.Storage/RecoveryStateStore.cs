@@ -29,6 +29,7 @@ public interface IRecoveryStateStore
 public sealed class RecoveryStateStore : IRecoveryStateStore
 {
     private const int SchemaVersion = 1;
+    private const string LegacyTombstone = "Relight recovery state migrated; legacy access disabled v1\n";
     private static readonly JsonSerializerOptions Json = CreateJsonOptions();
     private readonly string _directory;
 
@@ -84,6 +85,7 @@ public sealed class RecoveryStateStore : IRecoveryStateStore
         using FileStream guard = Lock(profileId);
         string path = PathFor(profileId);
         return File.Exists(path) || File.Exists(path + ".bak") ||
+            File.Exists(ArchivedPathFor(profileId)) ||
             File.Exists(OwnershipPathFor(profileId));
     }
 
@@ -111,8 +113,13 @@ public sealed class RecoveryStateStore : IRecoveryStateStore
         if (legacy.Checkpoint.SharedBudgetRevision is not null)
             throw new RecoveryStateUnavailableException(
                 "The legacy snapshot already references a shared budget.");
+        if (File.Exists(ArchivedPathFor(profileId)))
+            throw new RecoveryStateUnavailableException(
+                "Legacy recovery evidence already has an archive; migration is suspended.");
 
         WriteOwnershipMarker(profileId, "migration-pending");
+        ArchiveLegacyState(profileId);
+        EnsureLegacyTombstone(profileId);
         SharedRecoveryBudget budget = budgets.ImportLegacy(legacy);
         RecoveryCheckpoint old = legacy.Checkpoint;
         RecoveryState initialState = !old.Enabled ? RecoveryState.Disabled :
@@ -140,7 +147,15 @@ public sealed class RecoveryStateStore : IRecoveryStateStore
         if (GetOwnershipWithoutLock(profileId) != LegacyStateOwnership.MigrationPending)
             throw new InvalidOperationException("This profile has no pending migration to repair.");
 
-        StoredRecoveryState legacy = Read(PathFor(profileId), profileId);
+        if (!File.Exists(ArchivedPathFor(profileId)))
+        {
+            // A tombstone without its archive is missing the only trusted
+            // legacy budget evidence. Never archive the tombstone itself.
+            Read(PathFor(profileId), profileId);
+            ArchiveLegacyState(profileId);
+        }
+        EnsureLegacyTombstone(profileId);
+        StoredRecoveryState legacy = Read(ArchivedPathFor(profileId), profileId);
         SharedRecoveryBudget expected = SharedRecoveryBudgetStore.ProjectLegacy(legacy);
         SharedRecoveryBudget actual = budgets.Load(profileId);
         if (actual != expected)
@@ -173,6 +188,52 @@ public sealed class RecoveryStateStore : IRecoveryStateStore
         if (File.Exists(OwnershipPathFor(profileId)))
             throw new RecoveryStateUnavailableException(
                 $"Legacy recovery state for profile {profileId} has transferred ownership; it cannot authorize launches.");
+    }
+
+    private void ArchiveLegacyState(Guid profileId)
+    {
+        string original = PathFor(profileId);
+        string archived = ArchivedPathFor(profileId);
+        if (File.Exists(archived))
+            throw new RecoveryStateUnavailableException(
+                "Legacy recovery evidence conflicts with its archive; migration is suspended.");
+        try
+        {
+            // The legacy file lock is held by the caller. Published older
+            // writers need this original path for every reservation, so a
+            // same-volume move makes their next write fail closed.
+            File.Move(original, archived);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            throw new RecoveryStateUnavailableException(
+                "Legacy recovery state could not be archived; migration is suspended.", error);
+        }
+    }
+
+    private void EnsureLegacyTombstone(Guid profileId)
+    {
+        string path = PathFor(profileId);
+        try
+        {
+            if (File.Exists(path))
+            {
+                if (File.ReadAllText(path) != LegacyTombstone)
+                    throw new RecoveryStateUnavailableException(
+                        "Legacy state reappeared after archival; migration is suspended.");
+                return;
+            }
+            using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write,
+                FileShare.None, 4096, FileOptions.WriteThrough);
+            byte[] bytes = Encoding.UTF8.GetBytes(LegacyTombstone);
+            stream.Write(bytes);
+            stream.Flush(flushToDisk: true);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            throw new RecoveryStateUnavailableException(
+                "Legacy recovery tombstone could not be verified; migration is suspended.", error);
+        }
     }
 
     private LegacyStateOwnership GetOwnershipWithoutLock(Guid profileId)
@@ -308,6 +369,9 @@ public sealed class RecoveryStateStore : IRecoveryStateStore
     }
 
     private string PathFor(Guid profileId) => Path.Combine(_directory, profileId.ToString("N") + ".json");
+
+    private string ArchivedPathFor(Guid profileId) => Path.Combine(_directory,
+        profileId.ToString("N") + ".legacy.json");
 
     private string OwnershipPathFor(Guid profileId) => Path.Combine(_directory,
         profileId.ToString("N") + ".owner");

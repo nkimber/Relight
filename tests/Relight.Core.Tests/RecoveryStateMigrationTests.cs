@@ -34,7 +34,9 @@ public sealed class RecoveryStateMigrationTests
         Assert.Equal(RecoveryState.AwaitingIntervention, live.LastState);
         Assert.Null(live.PendingOperationId);
         Assert.Equal(shared.Revision, live.SharedBudgetRevision);
-        Assert.Equal(original, File.ReadAllBytes(legacyPath));
+        Assert.Contains("legacy access disabled", File.ReadAllText(legacyPath));
+        string archivedPath = Path.Combine(directory.Path, "State", $"{profile:N}.legacy.json");
+        Assert.Equal(original, File.ReadAllBytes(archivedPath));
         Assert.Contains("session-owner", File.ReadAllText(Path.Combine(
             directory.Path, "State", $"{profile:N}.owner")));
         Assert.Throws<RecoveryStateUnavailableException>(() => legacy.Load(profile));
@@ -42,7 +44,7 @@ public sealed class RecoveryStateMigrationTests
             legacy.Save(profile, old.Revision, old.Checkpoint));
         Assert.Throws<RecoveryStateUnavailableException>(() =>
             legacy.Create(profile, old.Checkpoint));
-        Assert.Equal(original, File.ReadAllBytes(legacyPath));
+        Assert.Equal(original, File.ReadAllBytes(archivedPath));
     }
 
     [Fact]
@@ -70,7 +72,9 @@ public sealed class RecoveryStateMigrationTests
             legacy.Save(profile, old.Revision, old.Checkpoint));
         Assert.Throws<RecoveryStateUnavailableException>(() =>
             session.Load(profile));
-        Assert.Equal(original, File.ReadAllBytes(legacyPath));
+        Assert.Contains("legacy access disabled", File.ReadAllText(legacyPath));
+        Assert.Equal(original, File.ReadAllBytes(Path.Combine(
+            directory.Path, "State", $"{profile:N}.legacy.json")));
     }
 
     [Fact]
@@ -115,7 +119,9 @@ public sealed class RecoveryStateMigrationTests
         legacy.RepairPendingMigration(profile, budgets, session);
 
         Assert.Equal(LegacyStateOwnership.SessionOwner, legacy.GetOwnership(profile));
-        Assert.Equal(original, File.ReadAllBytes(path));
+        Assert.Contains("legacy access disabled", File.ReadAllText(path));
+        Assert.Equal(original, File.ReadAllBytes(Path.Combine(
+            directory.Path, "State", $"{profile:N}.legacy.json")));
         Assert.Equal(2, budgets.Load(profile).ReservedAutomaticAttempts);
         Assert.True(session.Load(profile).Checkpoint.Paused);
         Assert.Throws<RecoveryStateUnavailableException>(() => legacy.Load(profile));
@@ -192,6 +198,82 @@ public sealed class RecoveryStateMigrationTests
             matchingSession);
         Assert.Equal(LegacyStateOwnership.SessionOwner,
             matchingLegacy.GetOwnership(matchingProfile));
+    }
+
+    [Fact]
+    public void Repair_restores_missing_legacy_tombstone_before_finishing_transfer()
+    {
+        using var directory = new TestDirectory();
+        Guid profile = Guid.NewGuid();
+        var legacy = new RecoveryStateStore(directory.Path);
+        StoredRecoveryState old = legacy.Create(profile,
+            new RecoveryCheckpoint(true, false, false, false, 0, null,
+                RecoveryState.WaitingForFirstStart, null));
+        var budgets = new SharedRecoveryBudgetStore(directory.Path);
+        budgets.ImportLegacy(old);
+        var session = new RecoverySessionStateStore(directory.Path, SessionKey, budgets);
+        Assert.Throws<InvalidOperationException>(() =>
+            legacy.MigrateToSession(profile, budgets, session));
+        string path = Path.Combine(directory.Path, "State", $"{profile:N}.json");
+        string archive = Path.Combine(directory.Path, "State", $"{profile:N}.legacy.json");
+        byte[] original = File.ReadAllBytes(archive);
+        File.Delete(path);
+
+        legacy.RepairPendingMigration(profile, budgets, session);
+
+        Assert.Contains("legacy access disabled", File.ReadAllText(path));
+        Assert.Equal(original, File.ReadAllBytes(archive));
+        Assert.Equal(LegacyStateOwnership.SessionOwner, legacy.GetOwnership(profile));
+    }
+
+    [Fact]
+    public void Repair_rejects_conflicting_legacy_file_after_archival()
+    {
+        using var directory = new TestDirectory();
+        Guid profile = Guid.NewGuid();
+        var legacy = new RecoveryStateStore(directory.Path);
+        StoredRecoveryState old = legacy.Create(profile,
+            new RecoveryCheckpoint(true, false, false, false, 0, null,
+                RecoveryState.WaitingForFirstStart, null));
+        var budgets = new SharedRecoveryBudgetStore(directory.Path);
+        budgets.ImportLegacy(old);
+        var session = new RecoverySessionStateStore(directory.Path, SessionKey, budgets);
+        Assert.Throws<InvalidOperationException>(() =>
+            legacy.MigrateToSession(profile, budgets, session));
+        string path = Path.Combine(directory.Path, "State", $"{profile:N}.json");
+        string archive = Path.Combine(directory.Path, "State", $"{profile:N}.legacy.json");
+        File.Copy(archive, path, overwrite: true);
+
+        Assert.Throws<RecoveryStateUnavailableException>(() =>
+            legacy.RepairPendingMigration(profile, budgets, session));
+        Assert.Equal(LegacyStateOwnership.MigrationPending, legacy.GetOwnership(profile));
+        Assert.False(session.HasStateEvidence(profile));
+    }
+
+    [Fact]
+    public void Repair_rejects_missing_archive_without_moving_tombstone()
+    {
+        using var directory = new TestDirectory();
+        Guid profile = Guid.NewGuid();
+        var legacy = new RecoveryStateStore(directory.Path);
+        StoredRecoveryState old = legacy.Create(profile,
+            new RecoveryCheckpoint(true, false, false, false, 0, null,
+                RecoveryState.WaitingForFirstStart, null));
+        var budgets = new SharedRecoveryBudgetStore(directory.Path);
+        budgets.ImportLegacy(old);
+        var session = new RecoverySessionStateStore(directory.Path, SessionKey, budgets);
+        Assert.Throws<InvalidOperationException>(() =>
+            legacy.MigrateToSession(profile, budgets, session));
+        string path = Path.Combine(directory.Path, "State", $"{profile:N}.json");
+        string archive = Path.Combine(directory.Path, "State", $"{profile:N}.legacy.json");
+        string tombstone = File.ReadAllText(path);
+        File.Delete(archive);
+
+        Assert.Throws<RecoveryStateUnavailableException>(() =>
+            legacy.RepairPendingMigration(profile, budgets, session));
+        Assert.Equal(tombstone, File.ReadAllText(path));
+        Assert.False(File.Exists(archive));
+        Assert.Equal(LegacyStateOwnership.MigrationPending, legacy.GetOwnership(profile));
     }
 
     private sealed class TestDirectory : IDisposable

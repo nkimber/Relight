@@ -531,7 +531,9 @@ public sealed class RecoveryApplicationHostIntegrationTests
                 Assert.Equal(0, new SharedRecoveryBudgetStore(root).Load(id)
                     .ReservedAutomaticAttempts);
             }
-            Assert.Equal(original, File.ReadAllBytes(oldPath));
+            Assert.Contains("legacy access disabled", File.ReadAllText(oldPath));
+            Assert.Equal(original, File.ReadAllBytes(Path.Combine(root,
+                "State", $"{id:N}.legacy.json")));
             Assert.Equal(LegacyStateOwnership.SessionOwner,
                 new RecoveryStateStore(root).GetOwnership(id));
 
