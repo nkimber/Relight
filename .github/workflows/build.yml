@@ -31,5 +31,7 @@ jobs:
         run: pwsh -File scripts/Test-ConfigurationLease.ps1
       - name: Host configuration dispatch race probe
         run: pwsh -File scripts/Test-HostConfigurationRace.ps1
+      - name: Shared budget final-attempt race probe
+        run: pwsh -File scripts/Test-SharedBudgetRace.ps1
       - name: Log retention lease cross-process probe
         run: pwsh -File scripts/Test-LogRetentionLease.ps1
