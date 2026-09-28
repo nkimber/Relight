@@ -10,4 +10,7 @@
     <Project Path="tests/Relight.Core.Tests/Relight.Core.Tests.csproj" />
     <Project Path="tests/Relight.TestTarget/Relight.TestTarget.csproj" />
   </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/Relight.PerformanceProbe/Relight.PerformanceProbe.csproj" />
+  </Folder>
 </Solution>

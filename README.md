@@ -56,6 +56,8 @@ pwsh -File scripts/Test-LogRetentionLease.ps1
 
 The shell smoke check uses `--shell-test` to disable monitoring while it starts and interrupts its own preview processes. It verifies hidden tray startup, second-instance activation, and restart after interruption. The test suite runs deterministic recovery/storage checks and controlled Windows process tests. The legacy migration probe requires the local Git history containing `bbd5879`; it builds that pre-marker storage/engine version in an ignored `artifacts` directory and verifies that its separate process cannot write after migration and an already-reserved fake launch remains charged without a second dispatch. The configuration, shared-budget and log-retention probes exercise cross-process file coordination. Interactive checks and outstanding coverage are recorded in [the shell checkpoint](docs/shell-checkpoint.md), [engine checkpoint](docs/engine-checkpoint.md) and [history checkpoint](docs/history-checkpoint.md).
 
+The 20-profile idle CPU and closed-dashboard working-set probe is described in [the performance checkpoint](docs/performance-checkpoint.md). It uses isolated preview data and a 15-minute measurement interval; it does not replace the full M8 and M9 acceptance runs.
+
 A self-contained preview can be produced locally with:
 
 ```powershell
