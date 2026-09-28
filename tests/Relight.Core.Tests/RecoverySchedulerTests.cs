@@ -117,6 +117,48 @@ public sealed class RecoverySchedulerTests
     }
 
     [Fact]
+    public async Task Exit_signal_and_manual_start_during_due_poll_dispatch_only_one_operation()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var discovery = new ThirdCallBlockingDiscovery();
+        var launcher = new CountingLauncher();
+        var recorder = new CapturingRecorder();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id, AutoPolicy, store,
+            discovery, launcher, clock, recorder: recorder);
+        await using var scheduler = new RecoveryScheduler(clock);
+        scheduler.Add(id, coordinator, AutoPolicy);
+
+        await Assert.Single(scheduler.Pulse()).Value;
+        clock.Elapsed = TimeSpan.FromSeconds(2);
+        await Assert.Single(scheduler.Pulse()).Value;
+        clock.Elapsed = TimeSpan.FromSeconds(7);
+        Task duePoll = Assert.Single(scheduler.Pulse()).Value;
+        await discovery.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        scheduler.RequestImmediate(id); // A process-exit callback requests another poll.
+        Assert.Empty(scheduler.Pulse()); // The first poll still owns this profile.
+        Task<CoordinatorResult> manualStart = coordinator.StartNowAsync();
+        discovery.Release.TrySetResult();
+        await duePoll.WaitAsync(TimeSpan.FromSeconds(3));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => manualStart);
+        await Assert.Single(scheduler.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(1, launcher.Dispatches);
+        Assert.Equal(1, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+        OperationalEvent reserved = Assert.Single(recorder.Events,
+            entry => entry.Kind == OperationalEventKind.LaunchReserved);
+        OperationalEvent dispatched = Assert.Single(recorder.Events,
+            entry => entry.Kind == OperationalEventKind.LaunchDispatched);
+        Assert.NotNull(reserved.OperationId);
+        Assert.Equal(reserved.OperationId, dispatched.OperationId);
+        Assert.DoesNotContain(recorder.Events,
+            entry => entry.Kind == OperationalEventKind.ExplicitStartRequested);
+    }
+
+    [Fact]
     public async Task Remove_cancels_an_inflight_poll_before_disposing_its_coordinator()
     {
         using var directory = new TestDirectory();
@@ -270,6 +312,35 @@ public sealed class RecoverySchedulerTests
             Entered.TrySetResult();
             await Release.Task.WaitAsync(cancellationToken);
             return Detection.Absent();
+        }
+    }
+
+    private sealed class ThirdCallBlockingDiscovery : IProcessDiscovery
+    {
+        private int _calls;
+        public TaskCompletionSource Entered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<Detection> DetectAsync(CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _calls) == 3)
+            {
+                Entered.TrySetResult();
+                await Release.Task.WaitAsync(cancellationToken);
+            }
+            return Detection.Absent();
+        }
+    }
+
+    private sealed class CapturingRecorder : IEventRecorder
+    {
+        public List<OperationalEvent> Events { get; } = [];
+        public bool TryRecord(OperationalEvent entry)
+        {
+            Events.Add(entry);
+            return true;
         }
     }
 
