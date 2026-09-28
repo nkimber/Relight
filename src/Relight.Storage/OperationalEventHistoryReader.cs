@@ -274,6 +274,25 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
         }
     }
 
+    internal async Task<EventHistoryExportResult> ExportRedactedJsonLinesAsync(
+        Stream destination, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        await using FileStream retentionLease = await OperationalLogRetentionGate
+            .EnterExportAsync(_dataDirectory, cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<string> ownedAtStart = SnapshotOwnedFiles();
+        await using var writer = new StreamWriter(destination, new UTF8Encoding(false),
+            bufferSize: 4096, leaveOpen: true);
+        ScanSummary summary = await ScanAsync(new EventHistoryQuery(), entry =>
+            writer.WriteLineAsync(JsonSerializer.Serialize(
+                    entry with { ProcessIdentity = null },
+                    OperationalEventJournal.Json).AsMemory(), cancellationToken),
+            cancellationToken, requireCompleteFiles: true,
+            sourceFiles: ownedAtStart).ConfigureAwait(false);
+        await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+        return new(summary.Matched, summary.Malformed);
+    }
+
     private sealed record ScanSummary(int Matched, int Malformed);
 
     private async Task<ScanSummary> ScanAsync(EventHistoryQuery query,

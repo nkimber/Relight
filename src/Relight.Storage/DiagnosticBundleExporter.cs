@@ -1,6 +1,5 @@
 using System.IO.Compression;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Relight.Core;
@@ -14,13 +13,12 @@ public sealed record DiagnosticTargetStatus(Guid ProfileId, TargetKind TargetKin
     bool HasProblem);
 
 /// <summary>
-/// Creates a local, bounded diagnostic bundle. Configuration arguments, working
+/// Creates a local diagnostic bundle. Configuration arguments, working
 /// directories, argument selectors and event process identities are omitted.
 /// </summary>
 public sealed class DiagnosticBundleExporter(string dataDirectory)
 {
     private static readonly JsonSerializerOptions Json = CreateJsonOptions(indented: true);
-    private static readonly JsonSerializerOptions JsonLines = CreateJsonOptions(indented: false);
     private readonly string _dataDirectory = Path.GetFullPath(dataDirectory);
 
     public async Task<DiagnosticBundleResult> ExportAsync(string destination,
@@ -39,10 +37,8 @@ public sealed class DiagnosticBundleExporter(string dataDirectory)
         string parent = Path.GetDirectoryName(output)!;
         if (!Directory.Exists(parent))
             throw new DirectoryNotFoundException("The export folder does not exist.");
-        EventHistoryResult history = await new OperationalEventHistoryReader(_dataDirectory)
-            .ReadAsync(new EventHistoryQuery(Limit: 500), cancellationToken)
-            .ConfigureAwait(false);
         string temporary = Path.Combine(parent, $".relight-diagnostics-{Guid.NewGuid():N}.tmp");
+        EventHistoryExportResult history;
         try
         {
             await using (var stream = new FileStream(temporary, FileMode.CreateNew,
@@ -52,6 +48,11 @@ public sealed class DiagnosticBundleExporter(string dataDirectory)
                 using (var archive = new ZipArchive(stream, ZipArchiveMode.Create,
                            leaveOpen: true))
                 {
+                    await using (Stream entry = archive.CreateEntry("events.jsonl",
+                                     CompressionLevel.Fastest).Open())
+                        history = await new OperationalEventHistoryReader(_dataDirectory)
+                            .ExportRedactedJsonLinesAsync(entry, cancellationToken)
+                            .ConfigureAwait(false);
                     object redactedConfiguration = configuration is null
                         ? new { Available = false }
                         : new
@@ -90,38 +91,22 @@ public sealed class DiagnosticBundleExporter(string dataDirectory)
                         Targets = targets?.ToArray(),
                         Events = new
                         {
-                            Exported = history.Events.Count,
-                            history.TotalMatches,
+                            Exported = history.ExportedEvents,
                             history.SkippedMalformedLines,
-                            Limit = 500
+                            RowLimitApplied = false
                         }
                     };
                     await using (Stream entry = archive.CreateEntry("diagnostics.json",
                                      CompressionLevel.Fastest).Open())
                         await JsonSerializer.SerializeAsync(entry, metadata, Json,
                             cancellationToken).ConfigureAwait(false);
-                    await using (Stream entry = archive.CreateEntry("events.jsonl",
-                                     CompressionLevel.Fastest).Open())
-                    await using (var writer = new StreamWriter(entry, new UTF8Encoding(false)))
-                    {
-                        foreach (OperationalEvent eventEntry in history.Events)
-                        {
-                            cancellationToken.ThrowIfCancellationRequested();
-                            string line = JsonSerializer.Serialize(eventEntry with
-                            {
-                                ProcessIdentity = null
-                            }, JsonLines);
-                            await writer.WriteLineAsync(line.AsMemory(), cancellationToken)
-                                .ConfigureAwait(false);
-                        }
-                    }
                 }
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
                 stream.Flush(flushToDisk: true);
             }
             cancellationToken.ThrowIfCancellationRequested();
             File.Move(temporary, output, overwrite: true);
-            return new(history.Events.Count, history.SkippedMalformedLines);
+            return new(history.ExportedEvents, history.SkippedMalformedLines);
         }
         finally
         {

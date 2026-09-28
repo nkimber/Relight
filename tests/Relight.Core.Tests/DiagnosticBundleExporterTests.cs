@@ -79,6 +79,45 @@ public sealed class DiagnosticBundleExporterTests
         Assert.Single(Directory.GetFiles(exports.Path));
     }
 
+    [Fact]
+    public async Task Bundle_includes_early_and_late_events_beyond_dashboard_row_limit()
+    {
+        using var data = new TestDirectory();
+        using var exports = new TestDirectory();
+        Guid episode = Guid.NewGuid();
+        Guid firstEvent = Guid.NewGuid();
+        Guid lastEvent = Guid.NewGuid();
+        DateTimeOffset start = DateTimeOffset.UtcNow.AddHours(-1);
+        using (var journal = new OperationalEventJournal(data.Path,
+                   GlobalConfiguration.Default))
+        {
+            for (int index = 0; index < 502; index++)
+                await journal.AppendAsync(new(start.AddSeconds(index),
+                    index == 0 ? firstEvent : index == 501 ? lastEvent : Guid.NewGuid(),
+                    EventSeverity.Information,
+                    index == 0 ? OperationalEventKind.LaunchReserved :
+                    index == 501 ? OperationalEventKind.ObservationCompleted :
+                    OperationalEventKind.StateChanged,
+                    EpisodeId: index is 0 or 501 ? episode : null,
+                    ProcessIdentity: "private-process-path"));
+        }
+        string destination = Path.Combine(exports.Path, "diagnostics.zip");
+
+        DiagnosticBundleResult result = await new DiagnosticBundleExporter(data.Path)
+            .ExportAsync(destination, null, null, "1.0");
+
+        Assert.Equal(502, result.ExportedEvents);
+        using ZipArchive bundle = ZipFile.OpenRead(destination);
+        string metadata = await Read(bundle, "diagnostics.json");
+        string events = await Read(bundle, "events.jsonl");
+        Assert.Contains("\"exported\": 502", metadata);
+        Assert.Contains("\"rowLimitApplied\": false", metadata);
+        Assert.Contains(firstEvent.ToString(), events);
+        Assert.Contains(lastEvent.ToString(), events);
+        Assert.DoesNotContain("private-process-path", events);
+        Assert.Equal(502, events.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+    }
+
     private static async Task<string> Read(ZipArchive archive, string name)
     {
         await using Stream stream = archive.GetEntry(name)!.Open();
