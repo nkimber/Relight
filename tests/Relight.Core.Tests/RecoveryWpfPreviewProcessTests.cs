@@ -286,6 +286,65 @@ public sealed class RecoveryWpfPreviewProcessTests
         }
     }
 
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Locked_out_external_start_that_exits_early_keeps_its_budget()
+    {
+        string directory = Path.Combine(Path.GetTempPath(),
+            $"relight-wpf-early-external-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        string targetExecutable = FindBuiltExecutable("Relight.TestTarget",
+            "Relight.TestTarget.exe");
+        string relightExecutable = FindBuiltExecutable("Relight.App", "Relight.exe");
+        string label = $"wpf-early-external-{Guid.NewGuid():N}";
+        Process? preview = null, external = null;
+        try
+        {
+            Guid profileId = await ConfigureProfileAsync(directory, targetExecutable,
+                ["--label", label, "--exit-after-ms", "100"], maximumAttempts: 1);
+            var budgets = new SharedRecoveryBudgetStore(directory);
+            var history = new OperationalEventHistoryReader(directory);
+            preview = StartPreview(relightExecutable, directory);
+            await WaitForLockoutAsync(preview, budgets, history, profileId,
+                1, TimeSpan.FromSeconds(40));
+            int observedBefore = (await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.TargetObserved)))
+                .TotalMatches;
+            int interruptedBefore = (await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.ObservationInterrupted)))
+                .TotalMatches;
+
+            var start = new ProcessStartInfo(targetExecutable) { UseShellExecute = false };
+            start.ArgumentList.Add("--label");
+            start.ArgumentList.Add(label);
+            start.ArgumentList.Add("--exit-after-ms");
+            start.ArgumentList.Add("15000");
+            external = Process.Start(start) ??
+                throw new InvalidOperationException("External test target did not start.");
+            await WaitForTargetObservationsAsync(history, profileId,
+                observedBefore + 1, TimeSpan.FromSeconds(15));
+            await external.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(25));
+            await WaitForEventCountAsync(history, profileId,
+                OperationalEventKind.ObservationInterrupted, interruptedBefore + 1,
+                TimeSpan.FromSeconds(15));
+            await Task.Delay(TimeSpan.FromSeconds(8));
+
+            SharedRecoveryBudget budget = budgets.Load(profileId);
+            Assert.True(budget.LockedOut);
+            Assert.Equal(1, budget.ReservedAutomaticAttempts);
+            EventHistoryResult dispatched = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Kind: OperationalEventKind.LaunchDispatched));
+            Assert.Equal(1, dispatched.TotalMatches);
+            Assert.False(preview.HasExited);
+        }
+        finally
+        {
+            StopStartedProcess(preview);
+            StopStartedProcess(external);
+            DeleteTemporaryDirectory(directory);
+        }
+    }
+
     private static async Task<Guid> ConfigureProfileAsync(string directory,
         string targetExecutable, IReadOnlyList<string> arguments, int maximumAttempts)
     {
