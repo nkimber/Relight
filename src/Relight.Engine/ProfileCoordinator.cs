@@ -1196,5 +1196,9 @@ public sealed class ProfileCoordinator : IDisposable
         new(_machine.Snapshot, transition, dispatched, _storageDegraded, _storageError,
             _loggingDegraded, _loggingError);
 
-    public void Dispose() => _gate.Dispose();
+    public void Dispose()
+    {
+        (_discovery as IDisposable)?.Dispose();
+        _gate.Dispose();
+    }
 }

@@ -226,7 +226,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 {
                     ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(
                         profile.Id, profile.Policy, StateStoreForExisting(profile),
-                        GuardDiscovery(packagedDiscovery),
+                        GuardDiscovery(profile.Id, packagedDiscovery),
                         GuardLauncher(new PackagedApplicationLauncher(profile.Target.Identity)),
                         _clock, _launchGate, _notificationTap,
                         stopper: GuardStopper(new ChatGptPackagedStopper()),
@@ -303,7 +303,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             try
             {
                 ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(profile.Id,
-                    profile.Policy, StateStoreForExisting(profile), GuardDiscovery(discovery),
+                    profile.Policy, StateStoreForExisting(profile), GuardDiscovery(profile.Id, discovery),
                     GuardLauncher(_executableLauncherFactory(target)), _clock, _launchGate,
                     _notificationTap, GuardStopper(new ExecutableStopper(target)), _sharedBudgetStore);
                 _scheduler.Add(profile.Id, coordinator, profile.Policy);
@@ -406,10 +406,21 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         _notificationTap = new(_recorder);
     }
 
-    private IProcessDiscovery GuardDiscovery(IProcessDiscovery discovery) =>
-        _sessionStateStore is null ? discovery :
+    private IProcessDiscovery GuardDiscovery(Guid profileId, IProcessDiscovery discovery)
+    {
+        if (discovery is ExecutableDiscovery executable)
+            discovery = new ExecutableExitSignaledDiscovery(executable, () =>
+            {
+                try
+                {
+                    if (!_disposed) _scheduler.RequestImmediate(profileId);
+                }
+                catch (ObjectDisposedException) { /* Shutdown raced the exit callback. */ }
+            });
+        return _sessionStateStore is null ? discovery :
             new ConfigurationGuardedDiscovery(discovery, _configurationStore,
                 () => _sharedConfigurationSuspended ? null : Configuration);
+    }
 
     private IProcessLauncher GuardLauncher(IProcessLauncher launcher) =>
         _sessionStateStore is null ? launcher :
@@ -786,7 +797,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             ConfigurationStore.ValidateConfiguration(updated);
             ProfileCoordinator coordinator = await Task.Run(() =>
                 ProfileCoordinator.CreateNew(id, policy, _activeStateStore,
-                    GuardDiscovery(discovery),
+                    GuardDiscovery(id, discovery),
                     GuardLauncher(launcher), _clock, _launchGate, _notificationTap,
                     GuardStopper(stopper),
                     _sharedBudgetStore),
@@ -1358,7 +1369,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             if (_coordinators.ContainsKey(profile.Id))
                 throw new InvalidOperationException("This profile is already scheduled.");
         ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(profile.Id,
-            profile.Policy, StateStoreForExisting(profile), GuardDiscovery(discovery), GuardLauncher(launcher),
+            profile.Policy, StateStoreForExisting(profile), GuardDiscovery(profile.Id, discovery), GuardLauncher(launcher),
             _clock, _launchGate, _notificationTap, GuardStopper(stopper), _sharedBudgetStore);
         RecoveryState previousState = coordinator.Snapshot.State;
         bool schedulerOwnsCoordinator = false;
