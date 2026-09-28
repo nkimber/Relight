@@ -21,6 +21,8 @@ public sealed record HostedProfileStatus(
 public sealed record ProfileBatchResult(int Requested, int Completed,
     IReadOnlyList<string> Errors);
 
+public sealed record TestLaunchReport(bool LaunchDispatched, Detection Detection);
+
 /// <summary>
 /// Composes existing executable profiles without inventing recovery state.
 /// A missing/corrupt state or invalid configuration never becomes a fresh
@@ -1148,6 +1150,51 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         CancellationToken cancellationToken = default) =>
         RunProfileCommandAsync(profileId,
             coordinator => coordinator.StartNowAsync(cancellationToken));
+
+    public async Task<TestLaunchReport> TestProfileLaunchAsync(Guid profileId,
+        CancellationToken cancellationToken = default)
+    {
+        ProfileConfiguration profile = GetProfileForEdit(profileId);
+        CoordinatorResult started = await StartProfileNowAsync(profileId,
+            cancellationToken).ConfigureAwait(false);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (started.LaunchDispatched)
+            timeout.CancelAfter(profile.Policy.AppearanceTimeout);
+        try
+        {
+            while (true)
+            {
+                timeout.Token.ThrowIfCancellationRequested();
+                Detection found = await InspectProfileTargetAsync(profile.Target,
+                    timeout.Token).ConfigureAwait(false);
+                if (found.Kind != DetectionKind.Absent || !started.LaunchDispatched)
+                    return new(started.LaunchDispatched, found);
+                await Task.Delay(TimeSpan.FromSeconds(1), timeout.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (started.LaunchDispatched &&
+            !cancellationToken.IsCancellationRequested)
+        {
+            return new(true, Detection.Absent());
+        }
+    }
+
+    private static Task<Detection> InspectProfileTargetAsync(TargetConfiguration target,
+        CancellationToken cancellationToken)
+    {
+        if (target.Kind == TargetKind.Executable)
+        {
+            var executable = new ExecutableTarget(target.Identity, target.Arguments,
+                target.WorkingDirectory, target.RequiredArgument, target.ExcludedArgument);
+            executable.Validate();
+            return new ExecutableDiscovery(executable).DetectAsync(cancellationToken);
+        }
+        if (target.Kind == TargetKind.PackagedApplication &&
+            string.Equals(target.Identity, ChatGptPackagedDiscovery.ApplicationUserModelId,
+                StringComparison.OrdinalIgnoreCase))
+            return new ChatGptPackagedDiscovery().DetectAsync(cancellationToken);
+        throw new InvalidOperationException("This target has no validated discovery adapter.");
+    }
 
     public Task<StopCommandResult> StopProfileAndPauseAsync(Guid profileId,
         TimeSpan gracefulTimeout, CancellationToken cancellationToken = default) =>

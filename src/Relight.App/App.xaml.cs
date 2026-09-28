@@ -477,7 +477,9 @@ public partial class App : Application
                             _monitoringCancellation?.Token ?? CancellationToken.None)
                         : host.UpdateProfileSettingsAsync(id, name, policy,
                             recovery, lockout,
-                            _monitoringCancellation?.Token ?? CancellationToken.None))
+                            _monitoringCancellation?.Token ?? CancellationToken.None),
+                (id, cancellationToken) => host.TestProfileLaunchAsync(id,
+                    cancellationToken))
             {
                 Owner = _dashboard
             };

@@ -282,6 +282,61 @@ public sealed class RecoveryApplicationHostIntegrationTests
 
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Test_launch_reports_discovered_target_and_adopts_it_on_repeat()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-test-launch-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        string ready = Path.Combine(root, "target.ready");
+        int? pid = null;
+        try
+        {
+            await using var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(
+                root, new FakeClock());
+            Guid id = await host.RegisterExecutableAsync("Test target", TestExecutable(),
+                ["--ready-file", ready, "--exit-after-ms", "30000"],
+                Path.GetTempPath());
+
+            TestLaunchReport first = await host.TestProfileLaunchAsync(id)
+                .WaitAsync(TimeSpan.FromSeconds(8));
+            Assert.True(first.LaunchDispatched);
+            Assert.Equal(DetectionKind.Present, first.Detection.Kind);
+            pid = int.Parse((await WaitForFile(ready)).Split('|')[0]);
+            Assert.Contains($"{pid}", first.Detection.Identity);
+            await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
+
+            TestLaunchReport second = await host.TestProfileLaunchAsync(id)
+                .WaitAsync(TimeSpan.FromSeconds(8));
+            Assert.False(second.LaunchDispatched);
+            Assert.Equal(first.Detection.Identity, second.Detection.Identity);
+            Assert.Equal(0, new RecoveryStateStore(root).Load(id)
+                .Checkpoint.ReservedAutomaticAttempts);
+        }
+        finally
+        {
+            if (pid is null && File.Exists(ready))
+            {
+                try { pid = int.Parse((await File.ReadAllTextAsync(ready)).Split('|')[0]); }
+                catch (Exception error) when (error is IOException or FormatException) { }
+            }
+            if (pid is not null)
+            {
+                try
+                {
+                    using Process process = Process.GetProcessById(pid.Value);
+                    if (!process.HasExited)
+                    {
+                        process.Kill();
+                        await process.WaitForExitAsync();
+                    }
+                }
+                catch (ArgumentException) { }
+            }
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Shared_host_registers_and_reopens_fresh_profile_without_legacy_state()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-shared-host-{Guid.NewGuid():N}");

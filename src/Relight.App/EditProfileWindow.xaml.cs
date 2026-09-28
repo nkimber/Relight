@@ -2,6 +2,7 @@ using System;
 using System.ComponentModel;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -9,6 +10,7 @@ using Microsoft.Win32;
 using Relight.Core;
 using Relight.Storage;
 using Relight.ViewModels;
+using Relight.Windows;
 
 namespace Relight;
 
@@ -16,13 +18,18 @@ public partial class EditProfileWindow : Window
 {
     private readonly ProfileConfiguration _profile;
     private readonly Func<Guid, string, TargetConfiguration, RecoveryPolicy, bool, bool, Task> _save;
+    private readonly Func<Guid, System.Threading.CancellationToken, Task<TestLaunchReport>> _testLaunch;
     private bool _saving;
+    private bool _testing;
+    private System.Threading.CancellationTokenSource? _testCancellation;
 
     public EditProfileWindow(ProfileConfiguration profile,
-        Func<Guid, string, TargetConfiguration, RecoveryPolicy, bool, bool, Task> save)
+        Func<Guid, string, TargetConfiguration, RecoveryPolicy, bool, bool, Task> save,
+        Func<Guid, System.Threading.CancellationToken, Task<TestLaunchReport>> testLaunch)
     {
         _profile = profile;
         _save = save;
+        _testLaunch = testLaunch;
         InitializeComponent();
         NameInput.Text = profile.Name;
         IdentityInput.Text = profile.Target.Identity;
@@ -86,6 +93,7 @@ public partial class EditProfileWindow : Window
 
     private async void SaveClick(object sender, RoutedEventArgs e)
     {
+        if (_testing) return;
         RecoveryPolicy policy;
         TargetConfiguration target;
         string name = NameInput.Text.Trim();
@@ -129,6 +137,7 @@ public partial class EditProfileWindow : Window
 
         _saving = true;
         SaveButton.IsEnabled = false;
+        TestLaunchButton.IsEnabled = false;
         SaveButton.Content = "Saving…";
         try
         {
@@ -146,6 +155,65 @@ public partial class EditProfileWindow : Window
         {
             _saving = false;
             SaveButton.Content = "Save changes";
+            SaveButton.IsEnabled = true;
+            TestLaunchButton.IsEnabled = true;
+        }
+    }
+
+    private async void TestLaunchClick(object sender, RoutedEventArgs e)
+    {
+        if (_saving || _testing) return;
+        if (_profile.Target.Kind == TargetKind.Executable &&
+            (!string.Equals(PathInput.Text.Trim(), _profile.Target.Identity,
+                StringComparison.OrdinalIgnoreCase) ||
+             !ArgumentsInput.Text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries |
+                 StringSplitOptions.TrimEntries).SequenceEqual(_profile.Target.Arguments) ||
+             !string.Equals(WorkingDirectoryInput.Text.Trim(),
+                 _profile.Target.WorkingDirectory ?? string.Empty,
+                 StringComparison.OrdinalIgnoreCase)))
+        {
+            MessageBox.Show(this, "Save launch-setting changes before testing. Test launch uses the saved target.",
+                "Save changes first", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        _testing = true;
+        using var cancellation = new System.Threading.CancellationTokenSource();
+        _testCancellation = cancellation;
+        TestLaunchButton.IsEnabled = false;
+        SaveButton.IsEnabled = false;
+        TestLaunchButton.Content = "Checking target…";
+        try
+        {
+            TestLaunchReport report = await _testLaunch(_profile.Id, cancellation.Token);
+            if (!IsLoaded) return;
+            string message = report.Detection.Kind switch
+            {
+                DetectionKind.Present =>
+                    $"Matching application found: {report.Detection.Identity}. " +
+                    (report.LaunchDispatched ? "A test launch was dispatched." :
+                        "No duplicate launch was dispatched."),
+                DetectionKind.Absent => report.LaunchDispatched
+                    ? "The launch was dispatched, but no matching application appeared before the configured timeout."
+                    : "No matching application is currently running; no launch was dispatched.",
+                _ => $"Target identity could not be verified: {report.Detection.Reason}"
+            };
+            MessageBox.Show(this, message, "Test launch result", MessageBoxButton.OK,
+                report.Detection.Kind == DetectionKind.Present
+                    ? MessageBoxImage.Information : MessageBoxImage.Warning);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            if (IsLoaded)
+                MessageBox.Show(this, error.Message, "Test launch failed",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            _testCancellation = null;
+            _testing = false;
+            TestLaunchButton.Content = "Test launch";
+            TestLaunchButton.IsEnabled = true;
             SaveButton.IsEnabled = true;
         }
     }
@@ -173,5 +241,6 @@ public partial class EditProfileWindow : Window
     private void WindowClosing(object? sender, CancelEventArgs e)
     {
         if (_saving) e.Cancel = true;
+        else _testCancellation?.Cancel();
     }
 }
