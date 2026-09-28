@@ -7,7 +7,8 @@ param(
     [switch]$EditSavedExecutable,
     [switch]$TestSavedLaunch,
     [switch]$ExercisePauseResume,
-    [switch]$ExerciseDisableRemove
+    [switch]$ExerciseDisableRemove,
+    [switch]$ExerciseExit
 )
 
 $ErrorActionPreference = 'Stop'
@@ -91,7 +92,8 @@ function Complete-InitialStartWarning($Dashboard, [string]$Choice) {
 if ($VerifyInitialStartConfirmation -and $AcceptInitialStart) {
     throw 'Choose either declining or accepting the initial-start warning for one run.'
 }
-if (($ExercisePauseResume -or $ExerciseDisableRemove) -and -not $AcceptInitialStart) {
+if (($ExercisePauseResume -or $ExerciseDisableRemove -or $ExerciseExit) -and
+    -not $AcceptInitialStart) {
     throw 'Lifecycle acceptance requires an automatically started disposable target.'
 }
 
@@ -513,6 +515,33 @@ try {
             throw 'Saved installed-app profile is not the selected ChatGPT target with initial start off.'
         }
         Write-Output 'PASS: selected ChatGPT was inspected and registered through WPF with the expected package identity and initial automatic start off.'
+    }
+
+    if ($ExerciseExit) {
+        $budgetPath = Join-Path $root ('Budgets\' + $profile.id.Replace('-', '') + '.json')
+        $originalBudget = Wait-For { Read-Configuration $budgetPath } 'budget before exit'
+        Invoke-Button $dashboard 'Exit Relight'
+        $exitWarning = Find-MessageBox $dashboard 'Exit Relight?'
+        Click-NativeMessageChoice $exitWarning 'Cancel'
+        $primary.Refresh()
+        if ($primary.HasExited) { throw 'Canceling exit closed Relight.' }
+        Invoke-Button $dashboard 'Exit Relight'
+        $exitWarning = Find-MessageBox $dashboard 'Exit Relight?'
+        Click-NativeMessageChoice $exitWarning 'OK'
+        Wait-For {
+            $primary.Refresh()
+            $primary.HasExited
+        } 'explicit Relight exit' 20 | Out-Null
+        $finalBudget = Read-Configuration $budgetPath
+        if ($null -eq $finalBudget -or
+            $finalBudget.budget.reservedAutomaticAttempts -ne
+            $originalBudget.budget.reservedAutomaticAttempts) {
+            throw 'Explicit Relight exit changed the charged recovery budget.'
+        }
+        $running = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+        if ($null -eq $running -or $running.HasExited) { throw 'Explicit Relight exit stopped the target.' }
+        $running.Dispose()
+        Write-Output 'PASS: canceling WPF exit kept Relight alive; confirming exit closed Relight while preserving the disposable target and charged budget.'
     }
 }
 finally {
