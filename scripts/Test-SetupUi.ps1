@@ -3,7 +3,8 @@ param(
     [string]$Target = (Join-Path $PSScriptRoot '..\tests\Relight.TestTarget\bin\Release\net10.0-windows\Relight.TestTarget.exe'),
     [switch]$RegisterSelectedChatGpt,
     [switch]$VerifyInitialStartConfirmation,
-    [switch]$AcceptInitialStart
+    [switch]$AcceptInitialStart,
+    [switch]$EditSavedExecutable
 )
 
 $ErrorActionPreference = 'Stop'
@@ -190,6 +191,54 @@ try {
     }
     else {
         Write-Output 'PASS: Add dialog was accessible; detection found absence; saved profile kept automatic initial start off; dashboard showed the new profile.'
+    }
+
+    if ($EditSavedExecutable) {
+        $budgetPath = Join-Path $root ('Budgets\' + $profile.id.Replace('-', '') + '.json')
+        $beforeBudget = Wait-For { Read-Configuration $budgetPath } 'budget before edit'
+        Invoke-Button $dashboard 'Edit policy'
+        $editor = Wait-For {
+            Find-Control $dashboard 'Edit protection · Relight' `
+                ([System.Windows.Automation.ControlType]::Window)
+        } 'profile editor'
+        $editedName = 'Disposable UI target edited'
+        $nameInput = Find-Control $editor 'Application name' ([System.Windows.Automation.ControlType]::Edit)
+        $attemptInput = Find-Control $editor 'Automatic attempt limit' `
+            ([System.Windows.Automation.ControlType]::Edit)
+        if ($null -eq $nameInput -or $null -eq $attemptInput) {
+            throw 'Profile editor does not expose name and attempt limit as accessible fields.'
+        }
+        $nameInput.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($editedName)
+        $attemptInput.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue('2')
+        Wait-For {
+            $nodes = $editor.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition)
+            foreach ($node in $nodes) {
+                if ($node.Current.ControlType -eq [System.Windows.Automation.ControlType]::Text -and
+                    $node.Current.Name.Contains('Try up to 2 per episode')) { return $node }
+            }
+            return $null
+        } 'updated policy preview' | Out-Null
+        Invoke-Button $editor 'Save changes'
+        $edited = Wait-For {
+            $config = Read-Configuration (Join-Path $root 'configuration.json')
+            if ($null -eq $config) { return $null }
+            @($config.configuration.profiles | Where-Object name -eq $editedName) |
+                Select-Object -First 1
+        } 'saved profile edit' 45
+        if ($edited.id -ne $profile.id -or $edited.policy.maximumAutomaticAttempts -ne 2) {
+            throw 'The editor changed the profile ID or did not save its attempt limit.'
+        }
+        $afterBudget = Wait-For { Read-Configuration $budgetPath } 'budget after edit'
+        if ($afterBudget.budget.reservedAutomaticAttempts -ne
+            $beforeBudget.budget.reservedAutomaticAttempts -or
+            $afterBudget.budget.lockedOut -ne $beforeBudget.budget.lockedOut) {
+            throw 'The editor changed the recovery budget or lockout.'
+        }
+        Wait-For {
+            Find-Control $dashboard $editedName ([System.Windows.Automation.ControlType]::Text)
+        } 'edited dashboard row' | Out-Null
+        Write-Output 'PASS: WPF editor saved name and attempt limit with the same profile ID and unchanged recovery budget.'
     }
 
     if ($RegisterSelectedChatGpt) {
