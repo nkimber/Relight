@@ -43,6 +43,11 @@ if (mode == "hold")
     }
     return;
 }
+if (mode == "read")
+{
+    store.Load();
+    return;
+}
 if (mode == "save")
 {
     try
@@ -80,6 +85,8 @@ try
     }
     if (-not (Test-Path -LiteralPath $ready)) { throw 'Lease holder did not become ready.' }
 
+    & dotnet $runner read $data
+    if ($LASTEXITCODE -ne 0) { throw 'Concurrent configuration read did not succeed.' }
     & dotnet $runner save $data
     if ($LASTEXITCODE -ne 3) { throw "Concurrent configuration save returned $LASTEXITCODE; expected lease rejection." }
     New-Item -ItemType File -Path $release | Out-Null
@@ -87,7 +94,7 @@ try
     if ($holder.ExitCode -ne 0) { throw "Lease holder failed with code $($holder.ExitCode)." }
     & dotnet $runner save $data
     if ($LASTEXITCODE -ne 0) { throw 'Configuration save did not succeed after lease release.' }
-    Write-Output 'PASS: a second process cannot save during launch dispatch and can save after release.'
+    Write-Output 'PASS: a second process can read but cannot save during launch dispatch, then can save after release.'
 }
 finally
 {

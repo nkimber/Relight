@@ -94,7 +94,7 @@ public sealed class ConfigurationStore
 
     public StoredConfiguration Load()
     {
-        using FileStream guard = Lock();
+        using FileStream guard = ReadLock();
         try { return Read(_path, fromBackup: false); }
         catch (Exception error) when (error is ConfigurationUnavailableException)
         {
@@ -139,7 +139,7 @@ public sealed class ConfigurationStore
         ArgumentNullException.ThrowIfNull(expected);
         if (!expected.AutomaticActionsAllowed)
             throw new ConfigurationUnavailableException("Configuration is degraded; launch is suspended.");
-        FileStream guard = Lock();
+        FileStream guard = ReadLock();
         try
         {
             // Deny uncoordinated writes or replacement as well as coordinated
@@ -256,6 +256,21 @@ public sealed class ConfigurationStore
         {
             return new FileStream(_path + ".lock", FileMode.OpenOrCreate,
                 FileAccess.ReadWrite, FileShare.None);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            throw new ConfigurationUnavailableException("Configuration is busy or inaccessible.", error);
+        }
+    }
+
+    private FileStream ReadLock()
+    {
+        try
+        {
+            // Readers and launch leases may overlap. An exclusive Save/repair
+            // still cannot open this file until every shared handle closes.
+            return new FileStream(_path + ".lock", FileMode.OpenOrCreate,
+                FileAccess.ReadWrite, FileShare.ReadWrite);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {

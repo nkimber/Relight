@@ -16,6 +16,10 @@ public sealed class ConfigurationStoreTests
         Assert.Throws<StaleConfigurationException>(() => store.AcquireLaunchLease(first));
         using (store.AcquireLaunchLease(second))
         {
+            Assert.Equal(second.ContentHash,
+                new ConfigurationStore(directory.Path).Load().ContentHash);
+            using IDisposable otherProfileLease =
+                new ConfigurationStore(directory.Path).AcquireLaunchLease(second);
             Assert.Throws<ConfigurationUnavailableException>(() =>
                 new ConfigurationStore(directory.Path).Save(second, WithProfile()));
         }
