@@ -6,7 +6,8 @@ param(
     [switch]$AcceptInitialStart,
     [switch]$EditSavedExecutable,
     [switch]$TestSavedLaunch,
-    [switch]$ExercisePauseResume
+    [switch]$ExercisePauseResume,
+    [switch]$ExerciseDisableRemove
 )
 
 $ErrorActionPreference = 'Stop'
@@ -90,8 +91,8 @@ function Complete-InitialStartWarning($Dashboard, [string]$Choice) {
 if ($VerifyInitialStartConfirmation -and $AcceptInitialStart) {
     throw 'Choose either declining or accepting the initial-start warning for one run.'
 }
-if ($ExercisePauseResume -and -not $AcceptInitialStart) {
-    throw 'Pause/resume acceptance requires an automatically started disposable target.'
+if (($ExercisePauseResume -or $ExerciseDisableRemove) -and -not $AcceptInitialStart) {
+    throw 'Lifecycle acceptance requires an automatically started disposable target.'
 }
 
 $executablePath = (Resolve-Path -LiteralPath $Executable).Path
@@ -362,6 +363,101 @@ try {
             throw 'Pause or resume changed the automatic attempt budget.'
         }
         Write-Output 'PASS: WPF pause and resume kept the disposable target alive and its automatic budget unchanged.'
+    }
+
+    if ($ExerciseDisableRemove) {
+        $budgetPath = Join-Path $root ('Budgets\' + $profile.id.Replace('-', '') + '.json')
+        $originalBudget = Wait-For { Read-Configuration $budgetPath } 'budget before disable'
+        Invoke-Button $dashboard 'Disable protection'
+        Wait-For {
+            $config = Read-Configuration (Join-Path $root 'configuration.json')
+            if ($null -eq $config) { return $null }
+            $saved = @($config.configuration.profiles | Where-Object id -eq $profile.id) |
+                Select-Object -First 1
+            if ($null -ne $saved -and $saved.enabled -eq $false) { return $saved }
+            return $null
+        } 'disabled profile configuration' | Out-Null
+        Wait-For {
+            Find-Control $dashboard 'Enable protection' `
+                ([System.Windows.Automation.ControlType]::Button)
+        } 'Enable protection action' | Out-Null
+        $running = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+        if ($null -eq $running -or $running.HasExited) { throw 'Disabling protection stopped the target.' }
+        $running.Dispose()
+        Invoke-Button $dashboard 'Enable protection'
+        $enableWarning = Find-MessageBox $dashboard 'Enable automatic start?'
+        Click-NativeMessageChoice $enableWarning 'No'
+        $declined = Read-Configuration (Join-Path $root 'configuration.json')
+        if (@($declined.configuration.profiles | Where-Object id -eq $profile.id |
+            Where-Object enabled).Count -ne 0) {
+            throw 'Declining the enable warning still enabled protection.'
+        }
+        Wait-For {
+            $button = Find-Control $dashboard 'Enable protection' `
+                ([System.Windows.Automation.ControlType]::Button)
+            if ($null -ne $button -and $button.Current.IsEnabled) { return $button }
+            return $null
+        } 'enable action after declining' | Out-Null
+        Invoke-Button $dashboard 'Enable protection'
+        $enableWarning = Find-MessageBox $dashboard 'Enable automatic start?'
+        Click-NativeMessageChoice $enableWarning 'Yes'
+        Wait-For {
+            $config = Read-Configuration (Join-Path $root 'configuration.json')
+            if ($null -eq $config) { return $null }
+            $saved = @($config.configuration.profiles | Where-Object id -eq $profile.id) |
+                Select-Object -First 1
+            if ($null -ne $saved -and $saved.enabled -eq $true) { return $saved }
+            return $null
+        } 're-enabled profile configuration' | Out-Null
+        Wait-For {
+            $button = Find-Control $dashboard 'Remove profile' `
+                ([System.Windows.Automation.ControlType]::Button)
+            if ($null -ne $button -and $button.Current.IsEnabled) { return $button }
+            return $null
+        } 'Remove profile action' | Out-Null
+        Invoke-Button $dashboard 'Remove profile'
+        $removeWarning = Find-MessageBox $dashboard 'Remove profile?'
+        Click-NativeMessageChoice $removeWarning 'Cancel'
+        $retained = Read-Configuration (Join-Path $root 'configuration.json')
+        if (@($retained.configuration.profiles | Where-Object id -eq $profile.id).Count -ne 1) {
+            throw 'Canceling removal removed the profile.'
+        }
+        Wait-For {
+            $button = Find-Control $dashboard 'Remove profile' `
+                ([System.Windows.Automation.ControlType]::Button)
+            if ($null -ne $button -and $button.Current.IsEnabled) { return $button }
+            return $null
+        } 'Remove profile action after cancel' | Out-Null
+        Invoke-Button $dashboard 'Remove profile'
+        $removeWarning = Find-MessageBox $dashboard 'Remove profile?'
+        Click-NativeMessageChoice $removeWarning 'OK'
+        Wait-For {
+            $config = Read-Configuration (Join-Path $root 'configuration.json')
+            if ($null -eq $config) { return $null }
+            if (@($config.configuration.profiles | Where-Object id -eq $profile.id).Count -eq 0) {
+                return $true
+            }
+            return $false
+        } 'profile removal' | Out-Null
+        $finalBudget = Wait-For { Read-Configuration $budgetPath } 'retained budget after removal'
+        if ($finalBudget.budget.reservedAutomaticAttempts -ne
+            $originalBudget.budget.reservedAutomaticAttempts) {
+            throw 'Disable, enable, or removal changed the charged recovery budget.'
+        }
+        Wait-For {
+            foreach ($log in @(Get-ChildItem -LiteralPath (Join-Path $root 'Logs') -File `
+                -Filter 'events-*.jsonl')) {
+                foreach ($line in @(Get-Content -LiteralPath $log.FullName)) {
+                    if ($line.Contains('"kind":"ProfileRemoved"') -and
+                        $line.Contains($profile.id)) { return $true }
+                }
+            }
+            return $false
+        } 'retained profile-removal history' | Out-Null
+        $running = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+        if ($null -eq $running -or $running.HasExited) { throw 'Removing protection stopped the target.' }
+        $running.Dispose()
+        Write-Output 'PASS: WPF disable, re-enable and remove preserved the running target and charged budget; canceled confirmations made no change.'
     }
 
     if ($RegisterSelectedChatGpt) {
