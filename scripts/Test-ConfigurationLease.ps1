@@ -35,7 +35,7 @@ if (mode == "init")
 if (mode == "hold")
 {
     StoredConfiguration current = store.Load();
-    using (store.AcquireLaunchLease(current))
+    using (store.AcquireTargetActionLease(current))
     {
         File.WriteAllText(args[2], "ready");
         while (!File.Exists(args[3]))

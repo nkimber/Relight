@@ -13,13 +13,13 @@ public sealed class ConfigurationStoreTests
         StoredConfiguration first = store.Initialize(RelightConfiguration.Empty);
         StoredConfiguration second = store.Save(first, WithProfile());
 
-        Assert.Throws<StaleConfigurationException>(() => store.AcquireLaunchLease(first));
-        using (store.AcquireLaunchLease(second))
+        Assert.Throws<StaleConfigurationException>(() => store.AcquireTargetActionLease(first));
+        using (store.AcquireTargetActionLease(second))
         {
             Assert.Equal(second.ContentHash,
                 new ConfigurationStore(directory.Path).Load().ContentHash);
             using IDisposable otherProfileLease =
-                new ConfigurationStore(directory.Path).AcquireLaunchLease(second);
+                new ConfigurationStore(directory.Path).AcquireTargetActionLease(second);
             Assert.Throws<ConfigurationUnavailableException>(() =>
                 new ConfigurationStore(directory.Path).Save(second, WithProfile()));
         }

@@ -14,7 +14,7 @@ internal sealed class ConfigurationGuardedLauncher(
         cancellationToken.ThrowIfCancellationRequested();
         StoredConfiguration expected = activeConfiguration() ??
             throw new ConfigurationUnavailableException("Shared configuration is unavailable.");
-        using (store.AcquireLaunchLease(expected))
+        using (store.AcquireTargetActionLease(expected))
         {
             cancellationToken.ThrowIfCancellationRequested();
             await inner.LaunchAsync(operationId, cancellationToken).ConfigureAwait(false);

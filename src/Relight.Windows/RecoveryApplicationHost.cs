@@ -185,6 +185,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                         GuardDiscovery(packagedDiscovery),
                         GuardLauncher(new PackagedApplicationLauncher(profile.Target.Identity)),
                         _clock, _launchGate, _notificationTap,
+                        stopper: GuardStopper(new ChatGptPackagedStopper()),
                         sharedBudget: _sharedBudgetStore);
                     _scheduler.Add(profile.Id, coordinator, profile.Policy);
                     lock (_statusSync)
@@ -254,7 +255,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(profile.Id,
                     profile.Policy, StateStoreForExisting(profile), GuardDiscovery(discovery),
                     GuardLauncher(new ExecutableLauncher(target)), _clock, _launchGate,
-                    _notificationTap, new ExecutableStopper(target), _sharedBudgetStore);
+                    _notificationTap, GuardStopper(new ExecutableStopper(target)), _sharedBudgetStore);
                 _scheduler.Add(profile.Id, coordinator, profile.Policy);
                 lock (_statusSync)
                 {
@@ -357,6 +358,11 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     private IProcessLauncher GuardLauncher(IProcessLauncher launcher) =>
         _sessionStateStore is null ? launcher :
             new ConfigurationGuardedLauncher(launcher, _configurationStore,
+                () => _sharedConfigurationSuspended ? null : Configuration);
+
+    private IProcessStopper? GuardStopper(IProcessStopper? stopper) =>
+        stopper is null || _sessionStateStore is null ? stopper :
+            new ConfigurationGuardedStopper(stopper, _configurationStore,
                 () => _sharedConfigurationSuspended ? null : Configuration);
 
     private void EnsureSharedConfigurationCurrent()
@@ -535,7 +541,8 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             new(TargetKind.PackagedApplication,
                 ChatGptPackagedDiscovery.ApplicationUserModelId, []), discovery,
             new PackagedApplicationLauncher(
-                ChatGptPackagedDiscovery.ApplicationUserModelId), null, detected,
+                ChatGptPackagedDiscovery.ApplicationUserModelId),
+            new ChatGptPackagedStopper(), detected,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -567,7 +574,8 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             ProfileCoordinator coordinator = await Task.Run(() =>
                 ProfileCoordinator.CreateNew(id, policy, _activeStateStore,
                     GuardDiscovery(discovery),
-                    GuardLauncher(launcher), _clock, _launchGate, _notificationTap, stopper,
+                    GuardLauncher(launcher), _clock, _launchGate, _notificationTap,
+                    GuardStopper(stopper),
                     _sharedBudgetStore),
                 CancellationToken.None).ConfigureAwait(false);
             try
@@ -967,6 +975,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         {
             discovery = new ChatGptPackagedDiscovery();
             launcher = new PackagedApplicationLauncher(profile.Target.Identity);
+            stopper = new ChatGptPackagedStopper();
         }
         else throw new InvalidOperationException(
             "This packaged application does not have a validated adapter.");
@@ -979,7 +988,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 throw new InvalidOperationException("This profile is already scheduled.");
         ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(profile.Id,
             profile.Policy, StateStoreForExisting(profile), GuardDiscovery(discovery), GuardLauncher(launcher),
-            _clock, _launchGate, _notificationTap, stopper, _sharedBudgetStore);
+            _clock, _launchGate, _notificationTap, GuardStopper(stopper), _sharedBudgetStore);
         RecoveryState previousState = coordinator.Snapshot.State;
         bool schedulerOwnsCoordinator = false;
         try

@@ -131,14 +131,14 @@ public sealed class ConfigurationStore
     }
 
     /// <summary>
-    /// Holds the configuration revision stable while a launch is dispatched.
+    /// Holds the configuration revision stable while a target action is dispatched.
     /// Saves using this store's lock cannot commit until the lease is released.
     /// </summary>
-    public IDisposable AcquireLaunchLease(StoredConfiguration expected)
+    public IDisposable AcquireTargetActionLease(StoredConfiguration expected)
     {
         ArgumentNullException.ThrowIfNull(expected);
         if (!expected.AutomaticActionsAllowed)
-            throw new ConfigurationUnavailableException("Configuration is degraded; launch is suspended.");
+            throw new ConfigurationUnavailableException("Configuration is degraded; target action is suspended.");
         FileStream guard = ReadLock();
         try
         {
@@ -151,7 +151,7 @@ public sealed class ConfigurationStore
                 if (current.Revision != expected.Revision ||
                     !string.Equals(current.ContentHash, expected.ContentHash,
                         StringComparison.Ordinal))
-                    throw new StaleConfigurationException("Configuration changed before launch dispatch.");
+                    throw new StaleConfigurationException("Configuration changed before target action dispatch.");
                 return new LaunchLease(guard, pinned);
             }
             catch { pinned.Dispose(); throw; }
@@ -161,7 +161,7 @@ public sealed class ConfigurationStore
             guard.Dispose();
             if (error is IOException or UnauthorizedAccessException)
                 throw new ConfigurationUnavailableException(
-                    "Configuration cannot be pinned for launch dispatch.", error);
+                    "Configuration cannot be pinned for target action dispatch.", error);
             throw;
         }
     }
