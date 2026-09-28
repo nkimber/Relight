@@ -15,7 +15,7 @@ This plan expands PRD Section 14 without changing Version 1 scope. Proposed defa
 |---|---|---|---|---|
 | M0 | Actual target can be identified and activated in a controlled spike | — | In progress: ChatGPT selected; read-only main/helper discovery and activation of its already-running package verified. Activation from absence and job-continuation evidence pending | 0: target validation |
 | M1 | Deterministic recovery model and controllable test application | M0 | In progress: model and controllable test target implemented; full exit coverage pending | 1: recovery engine |
-| M2 | Trustworthy state persistence and restart reconstruction | M1 | In progress: runtime state and configuration stores, coordinator event recording, bounded journal and last-good repair; an isolated shared-budget repository and same-sign-in session identity source are tested but not connected to runtime, full session protocol and no-backup repair path pending | 1: recovery engine |
+| M2 | Trustworthy state persistence and restart reconstruction | M1 | In progress: runtime state and configuration stores, coordinator event recording, bounded journal and last-good repair; isolated shared-budget and session-state repositories plus same-sign-in identity source are tested but not connected to runtime, full session protocol and no-backup repair path pending | 1: recovery engine |
 | M3 | Working executable recovery loop with exact attempt limits | M2 | In progress: coordinator, scheduler, launch gate, executable host and durable Start now/pause/reset commands tested; full acceptance pending | 1: recovery engine |
 | M4 | Production target adapter handles real application identity | M3 | In progress: selected ChatGPT package-family/main-process discovery and AUMID activation integrated with host; live registration/adoption without termination verified. Handoff, absence/recovery, update and job-continuation tests pending | 1 / 2: engine and integration |
 | M5 | Resident WPF tray shell displays live protection status | M3 | In progress: live host status/countdowns, event-backed last-outage/stable-auto-recovery fields, dashboard status filters/sorts, prioritized tray tooltip/icon, current-user sign-in and independent pause/resume-all controls; full acceptance pending | 2: native tray application |
@@ -53,7 +53,7 @@ Trigger this checkpoint when the first buildable WPF/tray shell runs successfull
 
 Work:
 
-- Confirm whether the first target is ChatGPT desktop, Codex desktop or both. Inspect the user's actual installation and record stable launch and running-process identities, package status, handoff behavior and helper/main-process rules.
+- Use the user-confirmed ChatGPT package (`OpenAI.Codex_2p2nqsd0c76g0`) as the only initial installed-app target; exclude ChatGPT Classic. Inspect this installation and record stable launch and running-process identities, package status, handoff behavior and helper/main-process rules.
 - Build a disposable discovery/activation spike. Demonstrate discovery of an already-running instance and activation followed by discovery of the real target, without relying on the launcher's PID or version-specific installation path.
 - Verify application recovery separately from continuation of a disposable representative job. Record unsupported or unknown continuation behavior explicitly; do not add workflow automation.
 - Confirm the Windows support baseline, select a supported .NET LTS/SDK, and review WPF tray/notification dependencies and licenses. WPF/MVVM and tray residency are fixed requirements.

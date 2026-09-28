@@ -443,7 +443,7 @@ These do not prevent reviewing this PRD. Proposed defaults allow implementation 
 | Decision | Current proposal / assumption | When it must be settled |
 |---|---|---|
 | Product name | Relight; repository currently named CodexKeepAlive | Confirmed by the user |
-| Actual first application | User said ChatGPT desktop; do not infer Codex solely from workspace name | Milestone 0 |
+| Actual first application | Confirmed: ChatGPT (`OpenAI.Codex_2p2nqsd0c76g0`) only. ChatGPT Classic (`OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0`) is a distinct unsupported application. The package family's `Codex` text does not make Codex a second target. | Target selected; absent-instance recovery still needs M0/M4 validation |
 | Default first-start policy | Wait for user's first launch, then recover automatically | Before first-run UX is finalized |
 | Stable manual-start requirement | Ten-minute observation before clearing lockout | Before engine acceptance is finalized |
 | Protection schedules | Follow Version 1 rather than delaying the core watchdog | Before implementation scope approval |

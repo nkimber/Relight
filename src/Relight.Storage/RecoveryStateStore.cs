@@ -104,6 +104,7 @@ public sealed class RecoveryStateStore : IRecoveryStateStore
                 !Enum.IsDefined(record.Checkpoint.LastState) ||
                 (record.Checkpoint.HoldReason is { } holdReason && !Enum.IsDefined(holdReason)) ||
                 record.Checkpoint.ReservedAutomaticAttempts is < 0 or > 20 ||
+                record.Checkpoint.SharedBudgetRevision is < 1 ||
                 (record.Checkpoint.LastState == RecoveryState.Starting &&
                  record.Checkpoint.PendingOperationId is null) ||
                 (record.Checkpoint.PendingExplicitStart == true &&

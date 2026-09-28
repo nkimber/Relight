@@ -83,4 +83,6 @@ public sealed record RecoveryCheckpoint(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     bool? PendingExplicitStart = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    RecoveryHoldReason? HoldReason = null);
+    RecoveryHoldReason? HoldReason = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    long? SharedBudgetRevision = null);
