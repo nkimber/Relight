@@ -1214,6 +1214,34 @@ public sealed class ProfileCoordinatorTests
     }
 
     [Fact]
+    public async Task Unavailable_detection_records_native_category_without_dispatch()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var recorder = new CapturingRecorder();
+        var launcher = new CountingLauncher();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id, AutoPolicy, store,
+            new ConstantDiscovery(Detection.Unavailable("candidate could not be read",
+                DetectionFailureKind.PermissionDenied, 5)),
+            launcher, clock, recorder: recorder);
+
+        await TickAt(coordinator, clock, 0);
+        await TickAt(coordinator, clock, 32);
+
+        OperationalEvent unavailable = Assert.Single(recorder.Events, entry =>
+            entry.Kind == OperationalEventKind.DetectionUnavailable);
+        Assert.Equal(OperationalFailureCategory.PermissionDenied,
+            unavailable.FailureCategory);
+        Assert.Equal(5, unavailable.NativeErrorCode);
+        Assert.DoesNotContain("candidate could not be read",
+            JsonSerializer.Serialize(unavailable));
+        Assert.Equal(0, launcher.Dispatches);
+        Assert.Equal(0, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+    }
+
+    [Fact]
     public async Task Full_event_queue_is_visible_but_does_not_prevent_a_reserved_launch()
     {
         using var directory = new TestDirectory();

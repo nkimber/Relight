@@ -25,11 +25,21 @@ public enum RecoveryHoldReason { InterruptedExplicitLaunch }
 
 public enum DetectionKind { Present, Absent, Unavailable }
 
+public enum DetectionFailureKind
+{
+    Unknown,
+    Ambiguous,
+    PermissionDenied,
+    InspectionFailed,
+    ConfigurationChanged
+}
+
 /// <summary>
 /// Identity is an opaque adapter-supplied logical instance key. An adapter must
 /// incorporate current-session identity and a process start time, not just a PID.
 /// </summary>
-public sealed record Detection(DetectionKind Kind, string? Identity = null, string? Reason = null)
+public sealed record Detection(DetectionKind Kind, string? Identity = null, string? Reason = null,
+    DetectionFailureKind? FailureKind = null, int? NativeErrorCode = null)
 {
     public static Detection Present(string identity) =>
         !string.IsNullOrWhiteSpace(identity)
@@ -37,7 +47,10 @@ public sealed record Detection(DetectionKind Kind, string? Identity = null, stri
             : throw new ArgumentException("Target identity must be nonempty.", nameof(identity));
 
     public static Detection Absent() => new(DetectionKind.Absent);
-    public static Detection Unavailable(string reason) => new(DetectionKind.Unavailable, Reason: reason);
+    public static Detection Unavailable(string reason,
+        DetectionFailureKind failureKind = DetectionFailureKind.Unknown,
+        int? nativeErrorCode = null) => new(DetectionKind.Unavailable,
+            Reason: reason, FailureKind: failureKind, NativeErrorCode: nativeErrorCode);
 }
 
 public enum RecoverySignal { None, LaunchDue }

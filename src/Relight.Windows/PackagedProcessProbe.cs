@@ -6,13 +6,15 @@ using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Win32.SafeHandles;
+using Relight.Core;
 
 namespace Relight.Windows;
 
 public sealed record PackagedProcessCandidate(int ProcessId, long StartedUtcTicks,
     bool HasTypeSwitch);
 public sealed record PackagedProcessInspection(
-    IReadOnlyList<PackagedProcessCandidate> Candidates, string? Problem);
+    IReadOnlyList<PackagedProcessCandidate> Candidates, string? Problem,
+    DetectionFailureKind? FailureKind = null, int? NativeErrorCode = null);
 
 /// <summary>
 /// Read-only package-family inspection. Multiple processes are reported as
@@ -55,6 +57,8 @@ public sealed class PackagedProcessProbe
     {
         var candidates = new List<PackagedProcessCandidate>();
         string? problem = null;
+        DetectionFailureKind? failureKind = null;
+        int? nativeErrorCode = null;
         try
         {
             foreach (Process process in Process.GetProcessesByName(_processName))
@@ -93,17 +97,36 @@ public sealed class PackagedProcessProbe
                         UnauthorizedAccessException or ManagementException or
                         InvalidOperationException)
                     {
-                        problem ??= $"A candidate process could not be verified: {error.Message}";
+                        if (problem is null)
+                        {
+                            problem = $"A candidate process could not be verified: {error.Message}";
+                            failureKind = Classify(error);
+                            nativeErrorCode = NativeCode(error);
+                        }
                     }
                 }
             }
         }
         catch (Exception error) when (error is Win32Exception or UnauthorizedAccessException)
         {
-            problem ??= $"Process enumeration failed: {error.Message}";
+            if (problem is null)
+            {
+                problem = $"Process enumeration failed: {error.Message}";
+                failureKind = Classify(error);
+                nativeErrorCode = NativeCode(error);
+            }
         }
-        return new(candidates, problem);
+        return new(candidates, problem, failureKind, nativeErrorCode);
     }
+
+    private static DetectionFailureKind Classify(Exception error) =>
+        error is UnauthorizedAccessException or Win32Exception { NativeErrorCode: 5 } or
+            ManagementException { ErrorCode: ManagementStatus.AccessDenied }
+            ? DetectionFailureKind.PermissionDenied
+            : DetectionFailureKind.InspectionFailed;
+
+    private static int? NativeCode(Exception error) =>
+        error is Win32Exception native ? native.NativeErrorCode : null;
 
     private static string? GetFamilyName(SafeProcessHandle handle)
     {

@@ -17,10 +17,10 @@ internal sealed class ConfigurationGuardedDiscovery(
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (CheckConfiguration(store, activeConfiguration()) is { } before)
-            return Detection.Unavailable(before);
+            return Detection.Unavailable(before, DetectionFailureKind.ConfigurationChanged);
         Detection result = await inner.DetectAsync(cancellationToken).ConfigureAwait(false);
         return CheckConfiguration(store, activeConfiguration()) is { } after
-            ? Detection.Unavailable(after) : result;
+            ? Detection.Unavailable(after, DetectionFailureKind.ConfigurationChanged) : result;
     }
 
     internal static string? CheckConfiguration(ConfigurationStore store,

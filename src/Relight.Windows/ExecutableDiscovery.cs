@@ -44,7 +44,8 @@ public sealed class ExecutableDiscovery : IProcessDiscovery
                         if (process.HasExited || process.SessionId != _sessionId) continue;
                         string? actualPath = process.MainModule?.FileName;
                         if (actualPath is null)
-                            return Detection.Unavailable("A candidate process path could not be read.");
+                            return Detection.Unavailable("A candidate process path could not be read.",
+                                DetectionFailureKind.InspectionFailed);
                         if (!string.Equals(Path.GetFullPath(actualPath), expectedPath,
                                 StringComparison.OrdinalIgnoreCase)) continue;
 
@@ -52,10 +53,12 @@ public sealed class ExecutableDiscovery : IProcessDiscovery
                         if (metadata is null)
                         {
                             if (process.HasExited) continue;
-                            return Detection.Unavailable("A candidate process owner could not be read.");
+                            return Detection.Unavailable("A candidate process owner could not be read.",
+                                DetectionFailureKind.InspectionFailed);
                         }
                         if (metadata.OwnerSid is null)
-                            return Detection.Unavailable("A candidate process owner could not be verified.");
+                            return Detection.Unavailable("A candidate process owner could not be verified.",
+                                DetectionFailureKind.InspectionFailed);
                         if (!string.Equals(metadata.OwnerSid, _userSid, StringComparison.Ordinal))
                             continue;
 
@@ -65,7 +68,8 @@ public sealed class ExecutableDiscovery : IProcessDiscovery
                             if (metadata.CommandLine is null)
                             {
                                 if (process.HasExited) continue;
-                                return Detection.Unavailable("A candidate process command line could not be read.");
+                                return Detection.Unavailable("A candidate process command line could not be read.",
+                                    DetectionFailureKind.InspectionFailed);
                             }
                             IReadOnlyList<string> arguments = SplitWindowsCommandLine(metadata.CommandLine);
                             if (_target.RequiredArgument is { } required &&
@@ -86,7 +90,7 @@ public sealed class ExecutableDiscovery : IProcessDiscovery
                     }
                     catch (Exception error) when (error is Win32Exception or UnauthorizedAccessException or ManagementException)
                     {
-                        return Detection.Unavailable($"Cannot inspect a candidate process: {error.Message}");
+                        return UnavailableFrom(error, "Cannot inspect a candidate process");
                     }
                 }
             }
@@ -94,14 +98,23 @@ public sealed class ExecutableDiscovery : IProcessDiscovery
             {
                 0 => Detection.Absent(),
                 1 => Detection.Present(matches[0]),
-                _ => Detection.Unavailable($"{matches.Count} matching instances; identity is ambiguous.")
+                _ => Detection.Unavailable($"{matches.Count} matching instances; identity is ambiguous.",
+                    DetectionFailureKind.Ambiguous)
             };
         }
         catch (Exception error) when (error is Win32Exception or UnauthorizedAccessException or ManagementException)
         {
-            return Detection.Unavailable($"Process discovery failed: {error.Message}");
+            return UnavailableFrom(error, "Process discovery failed");
         }
     }
+
+    private static Detection UnavailableFrom(Exception error, string context) =>
+        Detection.Unavailable($"{context}: {error.Message}",
+            error is UnauthorizedAccessException or Win32Exception { NativeErrorCode: 5 } or
+                ManagementException { ErrorCode: ManagementStatus.AccessDenied }
+                ? DetectionFailureKind.PermissionDenied
+                : DetectionFailureKind.InspectionFailed,
+            error is Win32Exception native ? native.NativeErrorCode : null);
 
     private sealed record ProcessMetadata(string? CommandLine, string? OwnerSid);
 

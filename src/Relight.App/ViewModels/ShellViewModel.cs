@@ -569,6 +569,12 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
             "Check the target application's own logs for why it stopped before stable observation.",
         OperationalFailureCategory.Canceled =>
             "Review the profile action or identity change that canceled the pending launch.",
+        OperationalFailureCategory.DetectionAmbiguous =>
+            "Check for multiple matching instances; Relight will not choose or close one automatically.",
+        OperationalFailureCategory.DetectionFailed =>
+            "Check that this account can inspect the application's process and try again.",
+        OperationalFailureCategory.ConfigurationChanged =>
+            "Reload shared configuration before allowing automatic recovery in this session.",
         OperationalFailureCategory.Unknown =>
             "Review the native error code and try starting the application manually.",
         _ => "—"

@@ -17,7 +17,10 @@ public enum OperationalFailureCategory
     ActivationFailed,
     AppearanceTimeout,
     EarlyExit,
-    Canceled
+    Canceled,
+    DetectionAmbiguous,
+    DetectionFailed,
+    ConfigurationChanged
 }
 
 public enum OperationalEventKind

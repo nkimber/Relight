@@ -32,7 +32,9 @@ public sealed class ChatGptPackagedDiscovery : IProcessDiscovery
     public static Detection Interpret(PackagedProcessInspection inspection, int sessionId)
     {
         if (inspection.Problem is { } problem)
-            return Detection.Unavailable(problem);
+            return Detection.Unavailable(problem,
+                inspection.FailureKind ?? DetectionFailureKind.Unknown,
+                inspection.NativeErrorCode);
         PackagedProcessCandidate[] main = inspection.Candidates
             .Where(candidate => !candidate.HasTypeSwitch).ToArray();
         return main.Length switch
@@ -41,7 +43,8 @@ public sealed class ChatGptPackagedDiscovery : IProcessDiscovery
             1 => Detection.Present(
                 $"{sessionId}|{PackageFamilyName}|{main[0].ProcessId}|{main[0].StartedUtcTicks}"),
             _ => Detection.Unavailable(
-                $"{main.Length} ChatGPT main-process candidates; identity is ambiguous.")
+                $"{main.Length} ChatGPT main-process candidates; identity is ambiguous.",
+                DetectionFailureKind.Ambiguous)
         };
     }
 }

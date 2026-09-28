@@ -34,6 +34,19 @@ public sealed class ChatGptPackagedDiscoveryTests
 
         Assert.Equal(DetectionKind.Unavailable, ambiguous.Kind);
         Assert.Equal(DetectionKind.Unavailable, unreadable.Kind);
+        Assert.Equal(DetectionFailureKind.Ambiguous, ambiguous.FailureKind);
+    }
+
+    [Fact]
+    public void Packaged_probe_failure_keeps_category_and_native_code()
+    {
+        Detection result = ChatGptPackagedDiscovery.Interpret(new(
+            [new(11, 100, true)], "A candidate could not be inspected.",
+            DetectionFailureKind.PermissionDenied, 5), 3);
+
+        Assert.Equal(DetectionKind.Unavailable, result.Kind);
+        Assert.Equal(DetectionFailureKind.PermissionDenied, result.FailureKind);
+        Assert.Equal(5, result.NativeErrorCode);
     }
 
     [Theory]

@@ -203,7 +203,7 @@ public sealed class ProfileCoordinator : IDisposable
             Detection passive = await Discover(cancellationToken).ConfigureAwait(false);
             RecoverySnapshot prior = _machine.Snapshot;
             RecoveryTransition observed = _machine.Advance(passive, _clock.Elapsed);
-            RecordTransition(prior, _machine.Snapshot);
+            RecordTransition(prior, _machine.Snapshot, passive);
             return Result(new(observed.Before, observed.After, RecoverySignal.None,
                 "Shared recovery state is degraded; launch reconciliation is suspended"));
         }
@@ -223,7 +223,7 @@ public sealed class ProfileCoordinator : IDisposable
             _interruptedLastVerifiedAt = null;
             RecoverySnapshot previous = _machine.Snapshot;
             RecoveryTransition unavailable = _machine.Advance(found, now);
-            RecordTransition(previous, _machine.Snapshot);
+            RecordTransition(previous, _machine.Snapshot, found);
             return Result(unavailable);
         }
         if (found.Kind == DetectionKind.Absent)
@@ -262,7 +262,7 @@ public sealed class ProfileCoordinator : IDisposable
             if (!Persist())
                 return Result(new(before.State, _machine.Snapshot.State,
                     RecoverySignal.None, "Interrupted launch could not be saved"));
-            RecordTransition(before, _machine.Snapshot);
+            RecordTransition(before, _machine.Snapshot, found);
             Record(OperationalEventKind.InterruptedLaunchReconciled,
                 EventSeverity.Information, before, _machine.Snapshot, operation);
             return Result(transition);
@@ -293,7 +293,7 @@ public sealed class ProfileCoordinator : IDisposable
             Detection found = await Discover(cancellationToken).ConfigureAwait(false);
             RecoveryTransition transition = _machine.Advance(found, _clock.Elapsed);
             bool persisted = PersistIfChanged(before);
-            RecordTransition(previous, _machine.Snapshot);
+            RecordTransition(previous, _machine.Snapshot, found);
             if (!persisted || _storageDegraded)
                 return Result(transition);
 
@@ -320,7 +320,7 @@ public sealed class ProfileCoordinator : IDisposable
                 found = await Discover(launchCancellation.Token).ConfigureAwait(false);
                 transition = _machine.Advance(found, _clock.Elapsed);
                 persisted = PersistIfChanged(before);
-                RecordTransition(previous, _machine.Snapshot);
+                RecordTransition(previous, _machine.Snapshot, found);
                 if (!persisted || _storageDegraded ||
                     found.Kind != DetectionKind.Absent ||
                     transition.Signal != RecoverySignal.LaunchDue)
@@ -346,11 +346,11 @@ public sealed class ProfileCoordinator : IDisposable
                     previous = _machine.Snapshot;
                     transition = _machine.Advance(found, _clock.Elapsed);
                     persisted = PersistIfChanged(before);
-                    RecordTransition(previous, _machine.Snapshot);
+                    RecordTransition(previous, _machine.Snapshot, found);
                     Record(OperationalEventKind.LaunchAverted,
                         found.Kind == DetectionKind.Present ? EventSeverity.Information :
                             EventSeverity.Warning, previous, _machine.Snapshot,
-                        operationId);
+                        operationId, DetectionCategory(found), found.NativeErrorCode);
                     return Result(new(RecoveryState.Starting, _machine.Snapshot.State,
                         RecoverySignal.None, persisted
                             ? "Reserved launch averted after final discovery"
@@ -744,7 +744,7 @@ public sealed class ProfileCoordinator : IDisposable
             _machine.Advance(found, _clock.Elapsed);
             if (!Persist())
                 throw new RecoveryStateUnavailableException(_storageError ?? "State write failed.");
-            RecordTransition(previous, _machine.Snapshot);
+            RecordTransition(previous, _machine.Snapshot, found);
             Record(OperationalEventKind.RecoveryReset, EventSeverity.Information,
                 previous, _machine.Snapshot);
         }
@@ -797,7 +797,7 @@ public sealed class ProfileCoordinator : IDisposable
             RecoveryTransition transition = _machine.Advance(found, _clock.Elapsed);
             if (!PersistIfChanged(before))
                 throw new RecoveryStateUnavailableException(_storageError ?? "State write failed.");
-            RecordTransition(previous, _machine.Snapshot);
+            RecordTransition(previous, _machine.Snapshot, found);
             if (found.Kind == DetectionKind.Unavailable)
                 throw new InvalidOperationException(
                     $"Target identity cannot be verified: {found.Reason}");
@@ -829,10 +829,11 @@ public sealed class ProfileCoordinator : IDisposable
                 if (!PersistIfChanged(reserved))
                     throw new RecoveryStateUnavailableException(
                         _storageError ?? "Session state could not be committed.");
-                RecordTransition(previous, _machine.Snapshot);
+                RecordTransition(previous, _machine.Snapshot, found);
                 Record(OperationalEventKind.ExplicitStartAverted,
                     found.Kind == DetectionKind.Present ? EventSeverity.Information :
-                        EventSeverity.Warning, previous, _machine.Snapshot, operationId);
+                        EventSeverity.Warning, previous, _machine.Snapshot, operationId,
+                    DetectionCategory(found), found.NativeErrorCode);
                 return Result(new(finalTransition.Before, finalTransition.After,
                     RecoverySignal.None,
                     "Explicit launch averted after final discovery"));
@@ -881,7 +882,15 @@ public sealed class ProfileCoordinator : IDisposable
     {
         try { return await _discovery.DetectAsync(cancellationToken).ConfigureAwait(false); }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-        catch (Exception error) { return Detection.Unavailable(error.Message); }
+        catch (Exception error)
+        {
+            return Detection.Unavailable(error.Message,
+                error is UnauthorizedAccessException or
+                    Win32Exception { NativeErrorCode: 5 }
+                    ? DetectionFailureKind.PermissionDenied
+                    : DetectionFailureKind.InspectionFailed,
+                NativeErrorCode(error));
+        }
     }
 
     private bool PersistIfChanged(RecoveryCheckpoint before) =>
@@ -1036,14 +1045,20 @@ public sealed class ProfileCoordinator : IDisposable
             Adopt(budgets.EnterLockout(_profileId, current.Revision, lockedEpisode));
     }
 
-    private void RecordTransition(RecoverySnapshot before, RecoverySnapshot after)
+    private void RecordTransition(RecoverySnapshot before, RecoverySnapshot after,
+        Detection? detection = null)
     {
         if (before.State != after.State)
             Record(OperationalEventKind.StateChanged, EventSeverity.Information, before, after);
         if (!before.DetectionUnavailable && after.DetectionUnavailable)
         {
-            Record(OperationalEventKind.DetectionUnavailable, EventSeverity.Warning, before, after);
-            Record(OperationalEventKind.MonitoringGap, EventSeverity.Warning, before, after);
+            OperationalFailureCategory? category = DetectionCategory(detection);
+            Record(OperationalEventKind.DetectionUnavailable, EventSeverity.Warning,
+                before, after, failureCategory: category,
+                nativeErrorCode: detection?.NativeErrorCode);
+            Record(OperationalEventKind.MonitoringGap, EventSeverity.Warning,
+                before, after, failureCategory: category,
+                nativeErrorCode: detection?.NativeErrorCode);
         }
         if (before.DetectionUnavailable && !after.DetectionUnavailable)
             Record(OperationalEventKind.MonitoringRestored, EventSeverity.Information, before, after);
@@ -1074,6 +1089,18 @@ public sealed class ProfileCoordinator : IDisposable
             Record(OperationalEventKind.AppearanceTimedOut, EventSeverity.Warning, before, after,
                 failureCategory: OperationalFailureCategory.AppearanceTimeout);
     }
+
+    private static OperationalFailureCategory? DetectionCategory(Detection? detection) =>
+        detection?.FailureKind switch
+        {
+            DetectionFailureKind.Ambiguous => OperationalFailureCategory.DetectionAmbiguous,
+            DetectionFailureKind.PermissionDenied => OperationalFailureCategory.PermissionDenied,
+            DetectionFailureKind.InspectionFailed => OperationalFailureCategory.DetectionFailed,
+            DetectionFailureKind.ConfigurationChanged =>
+                OperationalFailureCategory.ConfigurationChanged,
+            DetectionFailureKind.Unknown => OperationalFailureCategory.Unknown,
+            _ => null
+        };
 
     private void Record(OperationalEventKind kind, EventSeverity severity,
         RecoverySnapshot before, RecoverySnapshot after, Guid? operationId = null,
