@@ -527,7 +527,8 @@ public sealed class RecoveryWpfPreviewProcessTests
         {
             Guid profileId = await ConfigureProfileAsync(directory, targetExecutable,
                 ["--label", label, "--ready-file", ready], maximumAttempts: 3,
-                initialAutomaticStart: false);
+                initialAutomaticStart: false,
+                normalPollInterval: TimeSpan.FromSeconds(60));
             var budgets = new SharedRecoveryBudgetStore(directory);
             var history = new OperationalEventHistoryReader(directory);
             preview = StartPreview(relightExecutable, directory);
@@ -658,9 +659,134 @@ public sealed class RecoveryWpfPreviewProcessTests
         }
     }
 
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Stable_target_exit_recovers_once_with_complete_event_chain()
+    {
+        string directory = Path.Combine(Path.GetTempPath(),
+            $"relight-wpf-stable-exit-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        string targetExecutable = FindBuiltExecutable("Relight.TestTarget",
+            "Relight.TestTarget.exe");
+        string relightExecutable = FindBuiltExecutable("Relight.App", "Relight.exe");
+        string label = $"wpf-stable-exit-{Guid.NewGuid():N}";
+        string ready = Path.Combine(directory, "target.ready");
+        string attemptsFile = Path.Combine(directory, "attempts.bin");
+        Process? preview = null, existing = null;
+        int? recoveredPid = null;
+        long? recoveredStartedTicks = null;
+        try
+        {
+            var start = new ProcessStartInfo(targetExecutable) { UseShellExecute = false };
+            start.ArgumentList.Add("--label");
+            start.ArgumentList.Add(label);
+            start.ArgumentList.Add("--ready-file");
+            start.ArgumentList.Add(ready);
+            existing = Process.Start(start) ??
+                throw new InvalidOperationException("Initial test target did not start.");
+            await WaitUntilAsync(() => File.Exists(ready), TimeSpan.FromSeconds(5));
+            int initialPid = existing.Id;
+
+            Guid profileId = await ConfigureProfileAsync(directory, targetExecutable,
+                ["--label", label, "--ready-file", ready,
+                    "--attempt-file", attemptsFile], maximumAttempts: 3,
+                normalPollInterval: TimeSpan.FromSeconds(60));
+            var budgets = new SharedRecoveryBudgetStore(directory);
+            var history = new OperationalEventHistoryReader(directory);
+            preview = StartPreview(relightExecutable, directory);
+            await WaitForEventCountAsync(history, profileId,
+                OperationalEventKind.ObservationCompleted, 1,
+                TimeSpan.FromSeconds(75));
+            Assert.False(File.Exists(attemptsFile));
+            Assert.Equal(0, budgets.Load(profileId).ReservedAutomaticAttempts);
+
+            StopStartedProcess(existing);
+            existing = null;
+            File.Delete(ready);
+            await WaitForEventCountAsync(history, profileId,
+                OperationalEventKind.TargetDisappeared, 1,
+                TimeSpan.FromSeconds(75));
+            await WaitForEventCountAsync(history, profileId,
+                OperationalEventKind.LaunchDispatched, 1,
+                TimeSpan.FromSeconds(20));
+            await WaitUntilAsync(() =>
+            {
+                if (!File.Exists(ready) || !File.Exists(attemptsFile)) return false;
+                try
+                {
+                    string[] fields = File.ReadAllText(ready).Split('|');
+                    return int.Parse(fields[0], CultureInfo.InvariantCulture) != initialPid &&
+                        BitConverter.ToInt32(File.ReadAllBytes(attemptsFile)) == 1;
+                }
+                catch (Exception error) when (error is IOException or FormatException or
+                    IndexOutOfRangeException or ArgumentException) { return false; }
+            }, TimeSpan.FromSeconds(15));
+            string[] identity = (await File.ReadAllTextAsync(ready)).Split('|');
+            recoveredPid = int.Parse(identity[0], CultureInfo.InvariantCulture);
+            recoveredStartedTicks = DateTimeOffset.Parse(identity[1],
+                CultureInfo.InvariantCulture).UtcTicks;
+            Assert.True(IsSameTargetAlive(recoveredPid.Value, recoveredStartedTicks.Value,
+                targetExecutable));
+            Assert.Equal(1, budgets.Load(profileId).ReservedAutomaticAttempts);
+
+            await WaitForEventCountAsync(history, profileId,
+                OperationalEventKind.ObservationCompleted, 2,
+                TimeSpan.FromSeconds(75));
+            Assert.True(IsSameTargetAlive(recoveredPid.Value, recoveredStartedTicks.Value,
+                targetExecutable));
+            Assert.False(preview.HasExited);
+            Assert.Equal(0, budgets.Load(profileId).ReservedAutomaticAttempts);
+
+            EventHistoryResult events = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Limit: 100));
+            OperationalEvent disappearance = Assert.Single(events.Events, entry =>
+                entry.Kind == OperationalEventKind.TargetDisappeared);
+            OperationalEvent retry = Assert.Single(events.Events, entry =>
+                entry.Kind == OperationalEventKind.StateChanged &&
+                entry.NewState == RecoveryState.RetryWaiting);
+            OperationalEvent reservation = Assert.Single(events.Events, entry =>
+                entry.Kind == OperationalEventKind.LaunchReserved);
+            OperationalEvent dispatch = Assert.Single(events.Events, entry =>
+                entry.Kind == OperationalEventKind.LaunchDispatched);
+            OperationalEvent observed = Assert.Single(events.Events, entry =>
+                entry.Kind == OperationalEventKind.TargetObserved &&
+                entry.ProcessIdentity?.Split('|').ElementAtOrDefault(2) ==
+                    recoveredPid.Value.ToString(CultureInfo.InvariantCulture));
+            OperationalEvent observing = Assert.Single(events.Events, entry =>
+                entry.Kind == OperationalEventKind.ObservationStarted &&
+                entry.Origin == ObservationOrigin.AutomaticLaunch);
+            OperationalEvent recovered = Assert.Single(events.Events, entry =>
+                entry.Kind == OperationalEventKind.ObservationCompleted &&
+                entry.Origin == ObservationOrigin.AutomaticLaunch);
+            Assert.Equal(reservation.OperationId, dispatch.OperationId);
+            Assert.Equal(disappearance.EpisodeId, reservation.EpisodeId);
+            Assert.True(disappearance.OccurredUtc <= reservation.OccurredUtc);
+            Assert.True(dispatch.OccurredUtc >= retry.OccurredUtc +
+                TimeSpan.FromSeconds(5));
+            Assert.True(dispatch.OccurredUtc <= observed.OccurredUtc);
+            Assert.True(observed.OccurredUtc <= observing.OccurredUtc);
+            Assert.True(observing.OccurredUtc <= recovered.OccurredUtc);
+            Assert.Equal(1, BitConverter.ToInt32(File.ReadAllBytes(attemptsFile)));
+        }
+        finally
+        {
+            StopStartedProcess(preview);
+            StopStartedProcess(existing);
+            if (recoveredPid is { } pid && recoveredStartedTicks is { } started &&
+                IsSameTargetAlive(pid, started, targetExecutable))
+            {
+                using Process target = Process.GetProcessById(pid);
+                target.Kill(entireProcessTree: false);
+                target.WaitForExit(5000);
+            }
+            DeleteTemporaryDirectory(directory);
+        }
+    }
+
     private static async Task<Guid> ConfigureProfileAsync(string directory,
         string targetExecutable, IReadOnlyList<string> arguments, int maximumAttempts,
-        TimeSpan? retryDelay = null, bool initialAutomaticStart = true)
+        TimeSpan? retryDelay = null, bool initialAutomaticStart = true,
+        TimeSpan? normalPollInterval = null)
     {
         await using var setup = await RecoveryApplicationHost
             .OpenSharedSessionPreviewAsync(directory);
@@ -669,8 +795,7 @@ public sealed class RecoveryWpfPreviewProcessTests
         RecoveryPolicy policy = setup.GetProfileForEdit(profileId).Policy with
         {
             StartAutomaticallyWhenInitiallyAbsent = initialAutomaticStart,
-            NormalPollInterval = initialAutomaticStart
-                ? RecoveryPolicy.Default.NormalPollInterval : TimeSpan.FromSeconds(60),
+            NormalPollInterval = normalPollInterval ?? RecoveryPolicy.Default.NormalPollInterval,
             MaximumAutomaticAttempts = maximumAttempts,
             RetryDelay = retryDelay ?? TimeSpan.FromSeconds(5),
             AppearanceTimeout = TimeSpan.FromSeconds(5),
