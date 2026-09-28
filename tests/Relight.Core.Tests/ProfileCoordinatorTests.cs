@@ -1010,6 +1010,42 @@ public sealed class ProfileCoordinatorTests
     }
 
     [Fact]
+    public async Task Windows_interruption_discards_observation_credit_then_requires_fresh_discovery()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var recorder = new CapturingRecorder();
+        Guid id = Guid.NewGuid();
+        RecoveryPolicy policy = RecoveryPolicy.Default with
+        {
+            ObservationPeriod = TimeSpan.FromSeconds(60)
+        };
+        using var coordinator = ProfileCoordinator.CreateNew(id, policy, store,
+            new ConstantDiscovery(Detection.Present("session|app|100|start")),
+            new CountingLauncher(), clock, recorder: recorder);
+
+        await TickAt(coordinator, clock, 0);
+        await TickAt(coordinator, clock, 5);
+        clock.Elapsed = TimeSpan.FromSeconds(10);
+        CoordinatorResult interrupted = await coordinator.MarkMonitoringInterruptedAsync();
+        Assert.True(interrupted.Snapshot.DetectionUnavailable);
+        Assert.Null(interrupted.Snapshot.ObservationStartedAt);
+        Assert.Equal(0, interrupted.Snapshot.ReservedAutomaticAttempts);
+
+        await TickAt(coordinator, clock, 10);
+        Assert.Equal(TimeSpan.FromSeconds(10), coordinator.Snapshot.ObservationStartedAt);
+        for (int second = 15; second <= 70; second += 5)
+            await TickAt(coordinator, clock, second);
+        Assert.Equal(RecoveryState.Healthy, coordinator.Snapshot.State);
+        Assert.Single(recorder.Events, entry =>
+            entry.Kind == OperationalEventKind.MonitoringGap);
+        Assert.Single(recorder.Events, entry =>
+            entry.Kind == OperationalEventKind.MonitoringRestored);
+        Assert.Equal(0, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+    }
+
+    [Fact]
     public async Task Explicit_start_dispatches_without_charging_budget_and_observes_appearance()
     {
         using var directory = new TestDirectory();

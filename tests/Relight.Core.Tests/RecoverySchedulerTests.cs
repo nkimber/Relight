@@ -173,6 +173,25 @@ public sealed class RecoverySchedulerTests
     }
 
     [Fact]
+    public async Task Windows_interruption_wakes_passive_profiles_before_their_next_poll()
+    {
+        var clock = new FakeClock();
+        var discovery = new MutableDiscovery(Detection.Absent());
+        Guid id = Guid.NewGuid();
+        await using var scheduler = new RecoveryScheduler(clock);
+        scheduler.AddPassive(id, discovery, TimeSpan.FromSeconds(30), Detection.Absent());
+        clock.Elapsed = TimeSpan.FromSeconds(1);
+        discovery.Result = Detection.Present("session|target|1|started");
+
+        Assert.Empty(scheduler.Pulse());
+        scheduler.RequestImmediatePassive();
+        await Assert.Single(scheduler.Pulse()).Value;
+
+        Assert.Equal(DetectionKind.Present, scheduler.GetPassiveLast(id)?.Kind);
+        Assert.Empty(scheduler.Pulse());
+    }
+
+    [Fact]
     public async Task Policy_update_schedules_an_immediate_reconciliation()
     {
         using var directory = new TestDirectory();

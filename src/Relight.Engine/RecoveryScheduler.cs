@@ -99,6 +99,20 @@ public sealed class RecoveryScheduler : IAsyncDisposable
         }
     }
 
+    public void RequestImmediatePassive()
+    {
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            TimeSpan now = _clock.Elapsed;
+            foreach (PassiveProfile profile in _passive.Values)
+            {
+                if (profile.InFlight is null) profile.NextDue = now;
+                else profile.ImmediateRequested = true;
+            }
+        }
+    }
+
     public void UpdatePolicy(Guid id, RecoveryPolicy policy)
     {
         ArgumentNullException.ThrowIfNull(policy);

@@ -12,6 +12,36 @@ public sealed class RecoveryApplicationHostIntegrationTests
 {
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Windows_interruption_marks_profiles_unknown_then_reconciles_immediately()
+    {
+        string root = Path.Combine(Path.GetTempPath(),
+            $"relight-resume-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var clock = new FakeClock();
+            await using var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(
+                root, clock);
+            Guid id = await host.RegisterExecutableAsync("Disposable target", TestExecutable());
+            await Task.WhenAll(host.Pulse().Values);
+            clock.Elapsed = TimeSpan.FromSeconds(1);
+            Assert.Empty(host.Pulse());
+
+            await host.ReconcileAfterWindowsInterruptionAsync();
+            Assert.True(host.GetProfiles().Single(profile => profile.Id == id)
+                .Recovery?.DetectionUnavailable);
+            await Assert.Single(host.Pulse()).Value;
+            Assert.False(host.GetProfiles().Single(profile => profile.Id == id)
+                .Recovery?.DetectionUnavailable);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Editing_executable_identity_preserves_budget_and_rebinds_profile()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-identity-{Guid.NewGuid():N}");

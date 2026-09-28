@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
+using Microsoft.Win32;
 using Relight.Engine;
 using Relight.Services;
 using Relight.Storage;
@@ -29,6 +30,7 @@ public partial class App : Application
     private bool _repairingConfiguration;
     private bool _changingStartup;
     private bool _changingAllPause;
+    private int _reconcilingWindows;
     private CurrentUserStartupRegistration? _startupRegistration;
     private string? _startupUnavailable;
     private CancellationTokenSource? _historyCancellation;
@@ -124,6 +126,8 @@ public partial class App : Application
                 };
                 _statusTimer.Tick += OnStatusTick;
                 _statusTimer.Start();
+                SystemEvents.PowerModeChanged += OnPowerModeChanged;
+                SystemEvents.SessionSwitch += OnSessionSwitch;
             }
 
             if (Array.IndexOf(e.Args, "--tray") < 0)
@@ -682,6 +686,41 @@ public partial class App : Application
         }
     }
 
+    private void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == PowerModes.Resume) ReconcileAfterWindowsInterruption();
+    }
+
+    private void OnSessionSwitch(object? sender, SessionSwitchEventArgs e)
+    {
+        if (e.Reason == SessionSwitchReason.SessionUnlock)
+            ReconcileAfterWindowsInterruption();
+    }
+
+    private void ReconcileAfterWindowsInterruption()
+    {
+        RecoveryApplicationHost? host = Volatile.Read(ref _host);
+        if (_exiting || host is null ||
+            Interlocked.Exchange(ref _reconcilingWindows, 1) != 0) return;
+        CancellationToken cancellationToken = _monitoringCancellation?.Token ??
+            CancellationToken.None;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await host.ReconcileAfterWindowsInterruptionAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+            catch (Exception error)
+            {
+                if (!_exiting)
+                    await Dispatcher.InvokeAsync(() => SetMonitoringProblem(error.Message));
+            }
+            finally { Interlocked.Exchange(ref _reconcilingWindows, 0); }
+        });
+    }
+
     private void ApplyAccessibilityColors()
     {
         // Local overrides preserve native contrast preferences without custom control templates.
@@ -714,6 +753,8 @@ public partial class App : Application
             _ = task.ContinueWith(_ => cancellation?.Dispose(), TaskScheduler.Default);
         else cancellation?.Dispose();
         SystemParameters.StaticPropertyChanged -= OnSystemParametersChanged;
+        SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        SystemEvents.SessionSwitch -= OnSessionSwitch;
         _tray?.Dispose();
         _instance?.Dispose();
         base.OnExit(e);

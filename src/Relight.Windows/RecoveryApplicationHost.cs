@@ -1551,6 +1551,26 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
 
     public void RequestImmediate(Guid profileId) => _scheduler.RequestImmediate(profileId);
 
+    public async Task ReconcileAfterWindowsInterruptionAsync(
+        CancellationToken cancellationToken = default)
+    {
+        KeyValuePair<Guid, ProfileCoordinator>[] coordinators;
+        lock (_statusSync) coordinators = _coordinators.ToArray();
+        _scheduler.RequestImmediatePassive();
+        await Task.WhenAll(coordinators.Select(async entry =>
+        {
+            try
+            {
+                await entry.Value.MarkMonitoringInterruptedAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                if (!_disposed) _scheduler.RequestImmediate(entry.Key);
+            }
+        })).ConfigureAwait(false);
+    }
+
     public Task<EventRecorderStatus?> GetLoggingStatusAsync(
         CancellationToken cancellationToken = default) =>
         _recorder is null

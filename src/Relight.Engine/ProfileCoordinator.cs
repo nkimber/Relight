@@ -414,6 +414,27 @@ public sealed class ProfileCoordinator : IDisposable
         }
     }
 
+    public async Task<CoordinatorResult> MarkMonitoringInterruptedAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_identityRetired)
+                return Result(new(_machine.Snapshot.State, _machine.Snapshot.State,
+                    RecoverySignal.None, "This target identity was replaced"));
+            RecoveryCheckpoint before = _machine.ExportCheckpoint();
+            RecoverySnapshot previous = _machine.Snapshot;
+            Detection interruption = Detection.Unavailable(
+                "Windows monitoring was interrupted; target presence must be checked again.");
+            RecoveryTransition transition = _machine.Advance(interruption, _clock.Elapsed);
+            PersistIfChanged(before);
+            RecordTransition(previous, _machine.Snapshot, interruption);
+            return Result(transition);
+        }
+        finally { _gate.Release(); }
+    }
+
     public async Task SetPausedAsync(bool paused, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
