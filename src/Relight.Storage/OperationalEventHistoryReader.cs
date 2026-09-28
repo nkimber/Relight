@@ -324,7 +324,12 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
                 throw new IOException("A retained log file disappeared during export; try again.",
                     error);
             }
-            if ((attributes & FileAttributes.ReparsePoint) != 0) continue;
+            if ((attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                if (requireCompleteFiles)
+                    throw new IOException("A retained log file became a reparse point during export; try again.");
+                continue;
+            }
             FileStream stream;
             try
             {
