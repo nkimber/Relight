@@ -1,0 +1,41 @@
+<Window x:Class="Relight.RunningExecutableWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Choose a running executable · Relight" Width="760" Height="510"
+        MinWidth="560" MinHeight="390" WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False" UseLayoutRounding="True" Loaded="WindowLoaded">
+    <Grid Margin="22">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <TextBlock Text="Choose a running executable" FontSize="22" FontWeight="SemiBold" />
+        <TextBlock Grid.Row="1" Margin="0,8,0,14" TextWrapping="Wrap"
+                   Text="Only unpackaged programs owned by this Windows user in this sign-in are listed. The selected path is checked again before protection is enabled. Add launch arguments manually if the program needs them." />
+        <DockPanel Grid.Row="2" Margin="0,0,0,10">
+            <Button x:Name="RefreshButton" DockPanel.Dock="Right" Content="Refresh" Click="RefreshClick"
+                    Margin="10,0,0,0" />
+            <TextBox x:Name="SearchInput" MinHeight="30" TextChanged="SearchChanged"
+                     AutomationProperties.Name="Filter running executables" />
+        </DockPanel>
+        <ListBox x:Name="Candidates" Grid.Row="3" DisplayMemberPath="Display"
+                 SelectionChanged="SelectionChanged" MouseDoubleClick="CandidatesDoubleClick"
+                 AutomationProperties.Name="Running executables" />
+        <Grid Grid.Row="4" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock x:Name="StatusText" VerticalAlignment="Center" TextWrapping="Wrap"
+                       AutomationProperties.LiveSetting="Polite" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="12,0,0,0">
+                <Button Content="Cancel" IsCancel="True" Margin="0,0,10,0" />
+                <Button x:Name="ChooseButton" Content="Use selected executable" Click="ChooseClick"
+                        IsEnabled="False" IsDefault="True" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

@@ -14,6 +14,40 @@ public sealed class ExecutableAdapterTests
     {
         Assert.Throws<ArgumentException>(() =>
             new ExecutableTarget(@"tools\app.exe", []).Validate());
+        string packagedPath = Path.Combine(Path.GetPathRoot(AppContext.BaseDirectory)!,
+            "WindowsApps", "Versioned", "App.exe");
+        Assert.Throws<ArgumentException>(() =>
+            new ExecutableTarget(packagedPath, []).Validate());
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Running_executable_catalog_lists_owned_unpacked_test_target()
+    {
+        string ready = Path.Combine(Path.GetTempPath(),
+            $"relight-picker-{Guid.NewGuid():N}.ready");
+        using Process? target = Process.Start(new ProcessStartInfo(TestExecutable())
+        {
+            UseShellExecute = false,
+            ArgumentList = { "--ready-file", ready, "--exit-after-ms", "30000" }
+        });
+        Assert.NotNull(target);
+        try
+        {
+            await WaitForFile(ready);
+            RunningExecutableCatalogResult result = await new RunningExecutableCatalog()
+                .ListAsync();
+            RunningExecutableCandidate selected = Assert.Single(result.Candidates,
+                candidate => candidate.ProcessId == target.Id);
+            Assert.Equal(Path.GetFullPath(TestExecutable()), selected.ExecutablePath,
+                ignoreCase: true);
+            Assert.True(selected.StartedUtcTicks > 0);
+        }
+        finally
+        {
+            KillTestProcess(target.Id);
+            File.Delete(ready);
+        }
     }
 
     [Fact]

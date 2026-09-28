@@ -1,6 +1,7 @@
 using System;
 using System.ComponentModel;
 using System.IO;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
@@ -34,9 +35,63 @@ public partial class AddApplicationWindow : Window
             Multiselect = false
         };
         if (picker.ShowDialog(this) != true) return;
-        PathInput.Text = picker.FileName;
-        if (string.IsNullOrWhiteSpace(NameInput.Text))
-            NameInput.Text = Path.GetFileNameWithoutExtension(picker.FileName);
+        UseExecutablePath(picker.FileName,
+            Path.GetFileNameWithoutExtension(picker.FileName));
+    }
+
+    private async void ChooseRunningClick(object sender, RoutedEventArgs e)
+    {
+        if (_busy) return;
+        var picker = new RunningExecutableWindow { Owner = this };
+        if (picker.ShowDialog() != true || picker.SelectedExecutable is not { } selected)
+            return;
+        UseExecutablePath(selected.ExecutablePath, selected.Name);
+        await InspectSelectedAsync();
+    }
+
+    private void WindowDragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = !_busy && DroppedExecutable(e.Data) is not null
+            ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private async void WindowDrop(object sender, DragEventArgs e)
+    {
+        e.Handled = true;
+        if (_busy) return;
+        string? path = DroppedExecutable(e.Data);
+        if (path is null)
+        {
+            DetectionText.Text = "Drop one accessible, unpackaged .exe file.";
+            return;
+        }
+        UseExecutablePath(path, Path.GetFileNameWithoutExtension(path));
+        await InspectSelectedAsync();
+    }
+
+    private void UseExecutablePath(string path, string suggestedName)
+    {
+        bool replaceSuggestedName = string.IsNullOrWhiteSpace(NameInput.Text) ||
+            ChatGptOption.IsChecked == true && NameInput.Text == "ChatGPT";
+        ExecutableOption.IsChecked = true;
+        PathInput.Text = path;
+        if (replaceSuggestedName) NameInput.Text = suggestedName;
+    }
+
+    private static string? DroppedExecutable(IDataObject data)
+    {
+        if (!data.GetDataPresent(DataFormats.FileDrop) ||
+            data.GetData(DataFormats.FileDrop) is not string[] { Length: 1 } files)
+            return null;
+        string path = files.Single();
+        try
+        {
+            new ExecutableTarget(path, []).Validate();
+            return File.Exists(path) ? path : null;
+        }
+        catch (Exception error) when (error is ArgumentException or IOException or
+            UnauthorizedAccessException) { return null; }
     }
 
     private void PathChanged(object sender, TextChangedEventArgs e)
@@ -69,7 +124,10 @@ public partial class AddApplicationWindow : Window
         UpdateAddState();
     }
 
-    private async void DetectClick(object sender, RoutedEventArgs e)
+    private async void DetectClick(object sender, RoutedEventArgs e) =>
+        await InspectSelectedAsync();
+
+    private async System.Threading.Tasks.Task InspectSelectedAsync()
     {
         if (_busy) return;
         _inspectedPath = null;
@@ -143,6 +201,7 @@ public partial class AddApplicationWindow : Window
         ArgumentsInput.IsEnabled = !busy;
         WorkingDirectoryInput.IsEnabled = !busy;
         BrowseButton.IsEnabled = !busy;
+        ChooseRunningButton.IsEnabled = !busy;
         ExecutableOption.IsEnabled = !busy;
         ChatGptOption.IsEnabled = !busy;
         CancelButton.IsEnabled = !busy;

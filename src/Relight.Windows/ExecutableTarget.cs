@@ -21,6 +21,11 @@ public sealed record ExecutableTarget(
         if (!Path.IsPathFullyQualified(Environment.ExpandEnvironmentVariables(ExecutablePath)) ||
             !string.Equals(Path.GetExtension(CanonicalPath), ".exe", StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("A fully qualified executable path is required.");
+        if (CanonicalPath.Split(Path.DirectorySeparatorChar,
+                StringSplitOptions.RemoveEmptyEntries).Any(segment =>
+                string.Equals(segment, "WindowsApps", StringComparison.OrdinalIgnoreCase)))
+            throw new ArgumentException(
+                "Packaged applications require an installed-app adapter; a versioned WindowsApps executable path is not a durable launch identity.");
         if (Arguments is null || Arguments.Any(value => value is null || value.Contains('\0')))
             throw new ArgumentException("Launch arguments are invalid.");
         if (WorkingDirectory is { Length: > 0 } directory &&

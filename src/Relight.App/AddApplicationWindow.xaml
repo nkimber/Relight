@@ -3,7 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Add application · Relight" Width="650" Height="650"
         MinWidth="520" MinHeight="500" WindowStartupLocation="CenterOwner"
-        ShowInTaskbar="False" UseLayoutRounding="True" Closing="WindowClosing">
+        ShowInTaskbar="False" UseLayoutRounding="True" Closing="WindowClosing"
+        AllowDrop="True" PreviewDragOver="WindowDragOver" PreviewDrop="WindowDrop">
     <Grid Margin="24">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -34,9 +35,13 @@
                         <TextBlock Text="Executable file" FontWeight="SemiBold" Margin="0,0,0,6" />
                         <DockPanel>
                             <Button x:Name="BrowseButton" DockPanel.Dock="Right" Content="Browse…" Click="BrowseClick" Margin="8,0,0,0" />
+                            <Button x:Name="ChooseRunningButton" DockPanel.Dock="Right" Content="Choose running…"
+                                    Click="ChooseRunningClick" Margin="8,0,0,0" />
                             <TextBox x:Name="PathInput" MinHeight="32" TextChanged="PathChanged"
                                      AutomationProperties.Name="Executable file path" />
                         </DockPanel>
+                        <TextBlock Text="You can also drop one .exe file here. Packaged apps require an installed-app adapter."
+                                   Margin="0,6,0,0" TextWrapping="Wrap" Style="{StaticResource Muted}" />
                         <TextBlock Text="Launch arguments · one argument per line (optional; outer spaces trimmed)"
                                    FontWeight="SemiBold" Margin="0,16,0,6" />
                         <TextBox x:Name="ArgumentsInput" MinHeight="62" MaxHeight="110"
