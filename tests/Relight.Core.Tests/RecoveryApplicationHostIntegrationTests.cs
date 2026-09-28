@@ -22,7 +22,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
             string replacement = Path.Combine(root, "Replacement.exe");
             string ready = Path.Combine(root, "original.ready");
             File.Copy(TestExecutable(), replacement);
-            await using var host = await RecoveryApplicationHost.OpenAsync(root, new FakeClock());
+            await using var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root, new FakeClock());
             Guid id = await host.RegisterExecutableAsync("Original", original);
             await new ExecutableLauncher(new ExecutableTarget(original,
                 ["--ready-file", ready, "--exit-after-ms", "30000"]))
@@ -84,7 +84,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
         {
             var registry = new FakeStartupRegistry();
             var startup = new CurrentUserStartupRegistration(@"C:\Relight\Relight.exe", registry);
-            await using (var host = await RecoveryApplicationHost.OpenAsync(root,
+            await using (var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root,
                 new FakeClock()))
             {
                 await host.SetStartAtSignInAsync(true, startup);
@@ -102,7 +102,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
                 Assert.True(startup.Inspect().EnabledForThisExecutable);
                 Assert.True(host.Configuration?.Configuration.Settings.StartAtSignIn);
             }
-            await using var reopened = await RecoveryApplicationHost.OpenAsync(root,
+            await using var reopened = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root,
                 new FakeClock());
             Assert.True(reopened.Configuration?.Configuration.Settings.StartAtSignIn);
         }
@@ -122,7 +122,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
         {
             string secondExecutable = Path.Combine(root, "SecondTarget.exe");
             File.Copy(TestExecutable(), secondExecutable);
-            await using var host = await RecoveryApplicationHost.OpenAsync(root,
+            await using var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root,
                 new FakeClock());
             Guid first = await host.RegisterExecutableAsync("First target", TestExecutable());
             Guid second = await host.RegisterExecutableAsync("Second target", secondExecutable);
@@ -163,7 +163,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
         try
         {
             Guid id;
-            await using (var configured = await RecoveryApplicationHost.OpenAsync(root,
+            await using (var configured = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root,
                 new FakeClock()))
                 id = await configured.RegisterExecutableAsync("Disposable target", TestExecutable());
             var stateStore = new RecoveryStateStore(root);
@@ -176,7 +176,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
             string file = Path.Combine(root, "configuration.json");
             File.WriteAllText(file, "{ invalid external edit");
             string? archived;
-            await using (var degraded = await RecoveryApplicationHost.OpenAsync(root,
+            await using (var degraded = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root,
                 new FakeClock()))
             {
                 Assert.True(degraded.Configuration?.FromLastGoodBackup);
@@ -185,7 +185,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
             }
             Assert.NotNull(archived);
             Assert.Equal("{ invalid external edit", File.ReadAllText(archived));
-            await using var reopened = await RecoveryApplicationHost.OpenAsync(root,
+            await using var reopened = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root,
                 new FakeClock());
             Assert.False(reopened.Configuration?.FromLastGoodBackup);
             Assert.Null(reopened.ConfigurationProblem);
@@ -207,7 +207,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
         Directory.CreateDirectory(root);
         try
         {
-            await using (var host = await RecoveryApplicationHost.OpenAsync(root, new FakeClock()))
+            await using (var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root, new FakeClock()))
             {
                 string executable = TestExecutable();
                 Detection detection = await RecoveryApplicationHost.InspectExecutableAsync(executable);
@@ -240,7 +240,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
                     host.RegisterExecutableAsync("Duplicate", executable));
             }
 
-            await using var reopened = await RecoveryApplicationHost.OpenAsync(root, new FakeClock());
+            await using var reopened = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root, new FakeClock());
             Assert.True(Assert.Single(reopened.GetProfiles()).AutomaticActionsAllowed);
             Assert.Single(new ConfigurationStore(root).Load().Configuration.Profiles);
         }
@@ -662,6 +662,39 @@ public sealed class RecoveryApplicationHostIntegrationTests
 
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Ordinary_host_creates_shared_budget_and_session_state_for_new_profile()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-production-open-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            Guid profileId;
+            await using (var host = await RecoveryApplicationHost.OpenAsync(root,
+                             new FakeClock()))
+                profileId = await host.RegisterExecutableAsync("Disposable target",
+                    TestExecutable());
+
+            SharedRecoveryBudget budget = new SharedRecoveryBudgetStore(root).Load(profileId);
+            var session = new RecoverySessionStateStore(root,
+                WindowsLogonSessionIdentity.Current().StorageKey,
+                new SharedRecoveryBudgetStore(root));
+            Assert.Equal(0, budget.ReservedAutomaticAttempts);
+            Assert.True(session.Load(profileId).Checkpoint.Enabled);
+            Assert.False(File.Exists(Path.Combine(root, "State", $"{profileId:N}.json")));
+
+            await using var reopened = await RecoveryApplicationHost.OpenAsync(root,
+                new FakeClock());
+            Assert.True(Assert.Single(reopened.GetProfiles()).AutomaticActionsAllowed);
+            Assert.Equal(budget, new SharedRecoveryBudgetStore(root).Load(profileId));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Shared_host_requires_guarded_legacy_migration_and_preserves_original()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-host-migrate-{Guid.NewGuid():N}");
@@ -669,7 +702,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
         try
         {
             Guid id;
-            await using (var legacy = await RecoveryApplicationHost.OpenAsync(root,
+            await using (var legacy = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root,
                              new FakeClock()))
             {
                 id = await legacy.RegisterExecutableAsync("Disposable target", TestExecutable());
@@ -686,8 +719,8 @@ public sealed class RecoveryApplicationHostIntegrationTests
                 Assert.False(new SharedRecoveryBudgetStore(root).HasBudgetEvidence(id));
             }
 
-            await using (var migrated = await RecoveryApplicationHost.OpenSharedSessionAsync(
-                             root, new FakeClock(), allowLegacyMigration: true))
+            await using (var migrated = await RecoveryApplicationHost.OpenAsync(
+                             root, new FakeClock()))
             {
                 HostedProfileStatus ready = Assert.Single(migrated.GetProfiles());
                 Assert.True(ready.AutomaticActionsAllowed, ready.Problem);
@@ -701,7 +734,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
             Assert.Equal(LegacyStateOwnership.SessionOwner,
                 new RecoveryStateStore(root).GetOwnership(id));
 
-            await using var reopened = await RecoveryApplicationHost.OpenSharedSessionAsync(
+            await using var reopened = await RecoveryApplicationHost.OpenAsync(
                 root, new FakeClock());
             Assert.True(Assert.Single(reopened.GetProfiles()).AutomaticActionsAllowed);
         }
@@ -758,7 +791,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
         try
         {
             Guid id;
-            await using (var legacy = await RecoveryApplicationHost.OpenAsync(migrationRoot,
+            await using (var legacy = await RecoveryApplicationHost.OpenLegacyForTestsAsync(migrationRoot,
                              new FakeClock()))
                 id = await legacy.RegisterExecutableAsync("Disposable target", TestExecutable());
             var old = new RecoveryStateStore(migrationRoot);
@@ -770,8 +803,8 @@ public sealed class RecoveryApplicationHostIntegrationTests
             Assert.Throws<InvalidOperationException>(() =>
                 old.MigrateToSession(id, budgets, session));
 
-            await using var reopened = await RecoveryApplicationHost.OpenSharedSessionAsync(
-                migrationRoot, new FakeClock(), allowLegacyMigration: true);
+            await using var reopened = await RecoveryApplicationHost.OpenAsync(
+                migrationRoot, new FakeClock());
             HostedProfileStatus blocked = Assert.Single(reopened.GetProfiles());
             Assert.False(blocked.AutomaticActionsAllowed);
             Assert.Contains("differs", blocked.Problem, StringComparison.OrdinalIgnoreCase);
@@ -792,7 +825,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
         Directory.CreateDirectory(root);
         try
         {
-            await using var host = await RecoveryApplicationHost.OpenAsync(root, new FakeClock());
+            await using var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root, new FakeClock());
             var store = new ConfigurationStore(root);
             StoredConfiguration current = store.Load();
             store.Save(current, current.Configuration);
@@ -817,7 +850,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
         Directory.CreateDirectory(root);
         try
         {
-            await using var host = await RecoveryApplicationHost.OpenAsync(root, new FakeClock());
+            await using var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root, new FakeClock());
             Guid id = await host.RegisterExecutableAsync("Disposable target", TestExecutable());
             var configuration = new ConfigurationStore(root);
             StoredConfiguration current = configuration.Load();
@@ -843,7 +876,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
         Directory.CreateDirectory(root);
         try
         {
-            await using var host = await RecoveryApplicationHost.OpenAsync(root, new FakeClock());
+            await using var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root, new FakeClock());
             Guid id = await host.RegisterExecutableAsync("Disposable target", TestExecutable());
             RecoveryPolicy original = host.GetProfileForEdit(id).Policy;
             var configuration = new ConfigurationStore(root);
@@ -875,7 +908,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
         try
         {
             Guid id;
-            await using (var host = await RecoveryApplicationHost.OpenAsync(root,
+            await using (var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root,
                              new FakeClock()))
             {
                 id = await host.RegisterExecutableAsync("Disposable target", TestExecutable());
@@ -889,7 +922,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
                     .Checkpoint.ReservedAutomaticAttempts);
             }
 
-            await using var reopened = await RecoveryApplicationHost.OpenAsync(root,
+            await using var reopened = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root,
                 new FakeClock());
             ProfileConfiguration saved = reopened.GetProfileForEdit(id);
             Assert.False(saved.NotifyOnRecovery);
@@ -910,14 +943,14 @@ public sealed class RecoveryApplicationHostIntegrationTests
         try
         {
             Guid id;
-            await using (var host = await RecoveryApplicationHost.OpenAsync(root, new FakeClock()))
+            await using (var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root, new FakeClock()))
             {
                 id = await host.RegisterExecutableAsync("Disposable target", TestExecutable());
                 await host.SetProfileEnabledAsync(id, false);
                 Assert.False(Assert.Single(host.GetProfiles()).ConfiguredEnabled);
             }
 
-            await using (var reopened = await RecoveryApplicationHost.OpenAsync(root,
+            await using (var reopened = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root,
                              new FakeClock()))
             {
                 HostedProfileStatus disabled = Assert.Single(reopened.GetProfiles());
@@ -971,7 +1004,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
             new RecoveryStateStore(root).Create(id, new RecoveryMachine(policy).ExportCheckpoint());
             var clock = new FakeClock();
 
-            await using (var host = await RecoveryApplicationHost.OpenAsync(root, clock))
+            await using (var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root, clock))
             {
                 HostedProfileStatus status = Assert.Single(host.GetProfiles());
                 Assert.True(status.Monitoring);
@@ -1089,7 +1122,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
                 CancellationToken.None);
             pid = int.Parse((await WaitForFile(ready)).Split('|')[0]);
 
-            await using var host = await RecoveryApplicationHost.OpenAsync(root,
+            await using var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root,
                 new FakeClock());
             await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.NotNull(Assert.Single(host.GetProfiles()).Recovery?.TargetIdentity);
@@ -1155,7 +1188,7 @@ public sealed class RecoveryApplicationHostIntegrationTests
                 CancellationToken.None);
             firstPid = int.Parse((await WaitForFile(ready)).Split('|')[0]);
 
-            await using var host = await RecoveryApplicationHost.OpenAsync(root,
+            await using var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root,
                 new FakeClock());
             await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
             StopCommandResult stopped = await host.StopProfileForRestartAsync(id,

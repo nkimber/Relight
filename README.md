@@ -18,7 +18,7 @@ dotnet run --project src/Relight.App --configuration Release --no-build
 
 Or run `src\Relight.App\bin\Release\net10.0-windows\Relight.exe` after building. That output needs the .NET 10 Desktop Runtime. Start with `--tray` to leave the dashboard hidden initially.
 
-For controlled shared-session testing, start the executable with `--shared-session-preview <absolute-data-directory> --tray`. The directory must differ from normal `%LOCALAPPDATA%\Relight`; the preview does not migrate legacy recovery state and disables sign-in startup controls. Use a disposable directory and session. `pwsh -File scripts/Test-SharedSessionPreview.ps1` checks isolated WPF startup and second-instance activation without configuring or closing a target. Ordinary launch still uses the legacy state path until cross-sign-in acceptance is complete.
+Ordinary launch now uses per-logon-session live state and a shared durable attempt budget. An existing legacy profile is migrated under a guarded ownership transfer; damaged or conflicting evidence suspends its automatic actions. For controlled shared-session testing, start the executable with `--shared-session-preview <absolute-data-directory> --tray`. The directory must differ from normal `%LOCALAPPDATA%\Relight`; the preview does not migrate legacy recovery state and disables sign-in startup controls. Use a disposable directory and session. `pwsh -File scripts/Test-SharedSessionPreview.ps1` checks isolated WPF startup and second-instance activation without configuring or closing a target. Real two-sign-in acceptance remains open.
 
 ## Use the preview
 

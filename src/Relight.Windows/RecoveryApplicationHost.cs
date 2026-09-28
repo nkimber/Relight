@@ -82,8 +82,16 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         string? dataDirectory = null, IMonotonicClock? clock = null,
         CancellationToken cancellationToken = default)
         => await OpenCoreAsync(dataDirectory, clock, cancellationToken,
-            useSharedSessionState: false, allowLegacyMigration: false)
+            useSharedSessionState: true, allowLegacyMigration: true)
             .ConfigureAwait(false);
+
+    // Only upgrade tests open the former single-state host to create genuine
+    // legacy snapshots. The ordinary application must use shared budgets.
+    internal static Task<RecoveryApplicationHost> OpenLegacyForTestsAsync(
+        string? dataDirectory = null, IMonotonicClock? clock = null,
+        CancellationToken cancellationToken = default) =>
+        OpenCoreAsync(dataDirectory, clock, cancellationToken,
+            useSharedSessionState: false, allowLegacyMigration: false);
 
     internal static Task<RecoveryApplicationHost> OpenSharedSessionAsync(
         string? dataDirectory = null, IMonotonicClock? clock = null,

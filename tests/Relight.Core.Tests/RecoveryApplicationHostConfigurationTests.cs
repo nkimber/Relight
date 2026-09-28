@@ -11,7 +11,7 @@ public sealed class RecoveryApplicationHostConfigurationTests
     public async Task First_run_creates_only_empty_configuration()
     {
         using var directory = new TestDirectory();
-        await using var host = await RecoveryApplicationHost.OpenAsync(directory.Path, new FakeClock());
+        await using var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(directory.Path, new FakeClock());
         Assert.NotNull(host.Configuration);
         Assert.Empty(host.GetProfiles());
         Assert.Null(host.ConfigurationProblem);
@@ -31,7 +31,7 @@ public sealed class RecoveryApplicationHostConfigurationTests
         new ConfigurationStore(directory.Path).Initialize(configuration);
 
         var clock = new FakeClock();
-        await using var host = await RecoveryApplicationHost.OpenAsync(directory.Path, clock);
+        await using var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(directory.Path, clock);
         HostedProfileStatus status = Assert.Single(host.GetProfiles());
         Assert.True(status.Monitoring);
         Assert.False(status.AutomaticActionsAllowed);
@@ -58,7 +58,7 @@ public sealed class RecoveryApplicationHostConfigurationTests
         string path = Path.Combine(directory.Path, "configuration.json");
         File.WriteAllText(path, "{ damaged");
 
-        await using var host = await RecoveryApplicationHost.OpenAsync(directory.Path, new FakeClock());
+        await using var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(directory.Path, new FakeClock());
         Assert.True(host.Configuration?.FromLastGoodBackup);
         Assert.NotNull(host.ConfigurationProblem);
         HostedProfileStatus status = Assert.Single(host.GetProfiles());
@@ -84,7 +84,7 @@ public sealed class RecoveryApplicationHostConfigurationTests
         state.Create(sourceId, sourceCheckpoint);
 
         Guid duplicateId;
-        await using (var host = await RecoveryApplicationHost.OpenAsync(directory.Path,
+        await using (var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(directory.Path,
                          new FakeClock()))
         {
             duplicateId = await host.DuplicateProfileAsync(sourceId);
