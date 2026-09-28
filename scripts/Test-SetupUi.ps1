@@ -11,6 +11,7 @@ param(
     [switch]$ExerciseExit,
     [switch]$ExerciseResetDuplicate,
     [switch]$ExerciseStartNow,
+    [switch]$ExerciseHistoryNavigation,
     [ValidateSet('Pause', 'Disable', 'Remove', 'Exit')]
     [string]$CancelPendingAction = '',
     [ValidateSet('StopGraceful', 'StopForceDecline', 'StopForceAccept',
@@ -115,20 +116,21 @@ if ($VerifyInitialStartConfirmation -and $AcceptInitialStart) {
     throw 'Choose either declining or accepting the initial-start warning for one run.'
 }
 if (($ExercisePauseResume -or $ExerciseDisableRemove -or $ExerciseExit -or
-    $ExerciseResetDuplicate) -and
+    $ExerciseResetDuplicate -or $ExerciseHistoryNavigation) -and
     -not $AcceptInitialStart) {
     throw 'Lifecycle acceptance requires an automatically started disposable target.'
 }
 if ($ExplicitAction -and (-not $AcceptInitialStart -or $ExercisePauseResume -or
     $ExerciseDisableRemove -or $ExerciseExit -or $ExerciseResetDuplicate -or
-    $ExerciseStartNow -or
+    $ExerciseStartNow -or $ExerciseHistoryNavigation -or
     $CancelPendingAction -or
     $EditSavedExecutable -or $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
     throw 'Explicit-control acceptance uses only accepted initial start and one control action.'
 }
 if ($CancelPendingAction -and (-not $AcceptInitialStart -or $ExercisePauseResume -or
     $ExerciseDisableRemove -or $ExerciseExit -or $ExerciseStartNow -or
-    $ExerciseResetDuplicate -or $EditSavedExecutable -or
+    $ExerciseResetDuplicate -or $ExerciseHistoryNavigation -or
+    $EditSavedExecutable -or
     $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
     throw 'Pending-dispatch acceptance uses only accepted initial start and one cancellation action.'
 }
@@ -136,6 +138,11 @@ if ($ExerciseStartNow -and ($AcceptInitialStart -or $ExercisePauseResume -or
     $ExerciseDisableRemove -or $ExerciseExit -or $ExerciseResetDuplicate -or
     $EditSavedExecutable -or $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
     throw 'Start now acceptance uses a saved initially absent disposable target with automatic initial start off.'
+}
+if ($ExerciseHistoryNavigation -and ($ExercisePauseResume -or $ExerciseDisableRemove -or
+    $ExerciseExit -or $ExerciseResetDuplicate -or $EditSavedExecutable -or
+    $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
+    throw 'History navigation acceptance uses one automatically started disposable profile.'
 }
 
 $executablePath = (Resolve-Path -LiteralPath $Executable).Path
@@ -347,6 +354,52 @@ try {
             return $false
         } 'explicit-start history event' | Out-Null
         Write-Output 'PASS: WPF Start now launched the absent disposable target once, disabled duplicate start while present, logged an explicit dispatch and left the automatic budget at zero.'
+    }
+
+    if ($ExerciseHistoryNavigation) {
+        Wait-For {
+            foreach ($log in @(Get-ChildItem -LiteralPath (Join-Path $root 'Logs') -File `
+                -Filter 'events-*.jsonl')) {
+                foreach ($line in @(Get-Content -LiteralPath $log.FullName)) {
+                    if ($line.Contains('"kind":"LaunchDispatched"') -and
+                        $line.Contains($profile.id)) { return $true }
+                }
+            }
+            return $false
+        } 'durable launch event before History navigation' | Out-Null
+        Invoke-Button $dashboard 'View history'
+        Wait-For {
+            Find-Control $dashboard 'Event history' `
+                ([System.Windows.Automation.ControlType]::Text)
+        } 'visible History page' | Out-Null
+        $profileFilter = Wait-For {
+            Find-Control $dashboard 'Filter history by application' `
+                ([System.Windows.Automation.ControlType]::ComboBox)
+        } 'history application filter'
+        Wait-For {
+            $selection = $profileFilter.GetCurrentPattern(
+                [System.Windows.Automation.SelectionPattern]::Pattern).Current.GetSelection()
+            if ($selection.Length -eq 1 -and
+                $selection[0].Current.Name -eq 'Disposable UI target') { return $true }
+            return $false
+        } 'selected source profile in History' | Out-Null
+        Wait-For {
+            $allTexts = $dashboard.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.PropertyCondition]::new(
+                    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                    [System.Windows.Automation.ControlType]::Text))
+            $hasCount = $false
+            $hasDispatch = $false
+            foreach ($item in $allTexts) {
+                if ($item.Current.Name -match '^Showing [1-9][0-9]* matching event') {
+                    $hasCount = $true
+                }
+                if ($item.Current.Name.StartsWith('Launch Dispatched',
+                    [StringComparison]::OrdinalIgnoreCase)) { $hasDispatch = $true }
+            }
+            return $hasCount -and $hasDispatch
+        } 'loaded profile dispatch history' 20 | Out-Null
+        Write-Output 'PASS: WPF View history opened the History page, selected the source profile and displayed its retained launch event.'
     }
 
     if ($ExplicitAction) {

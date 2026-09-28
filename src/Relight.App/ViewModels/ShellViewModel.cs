@@ -12,8 +12,14 @@ namespace Relight.ViewModels;
 internal enum ShellPage { Applications, History, Settings }
 internal enum ApplicationStatusCategory { Attention, Recovering, Protected, PausedOrDisabled }
 internal enum ApplicationSortMode { Name, Status, Attempts }
-internal sealed record ApplicationFilterOption(string Label, ApplicationStatusCategory? Category);
-internal sealed record ApplicationSortOption(string Label, ApplicationSortMode Mode);
+internal sealed record ApplicationFilterOption(string Label, ApplicationStatusCategory? Category)
+{
+    public override string ToString() => Label;
+}
+internal sealed record ApplicationSortOption(string Label, ApplicationSortMode Mode)
+{
+    public override string ToString() => Label;
+}
 
 internal sealed class ApplicationStatusRow(
     Guid id, string name, string state, string detail,
@@ -107,10 +113,22 @@ internal sealed class ApplicationStatusRow(
     public event PropertyChangedEventHandler? PropertyChanged;
 }
 
-internal sealed record HistoryProfileOption(string Label, Guid? Id);
-internal sealed record HistorySeverityOption(string Label, EventSeverity? Minimum);
-internal sealed record HistoryKindOption(string Label, OperationalEventKind? Kind);
-internal sealed record HistoryRangeOption(string Label, TimeSpan? Lookback);
+internal sealed record HistoryProfileOption(string Label, Guid? Id)
+{
+    public override string ToString() => Label;
+}
+internal sealed record HistorySeverityOption(string Label, EventSeverity? Minimum)
+{
+    public override string ToString() => Label;
+}
+internal sealed record HistoryKindOption(string Label, OperationalEventKind? Kind)
+{
+    public override string ToString() => Label;
+}
+internal sealed record HistoryRangeOption(string Label, TimeSpan? Lookback)
+{
+    public override string ToString() => Label;
+}
 internal sealed record HistoryRow(string LocalTime, string UtcTime, string Profile,
     string Severity, string Kind, string Summary, string Details);
 
