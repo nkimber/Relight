@@ -373,6 +373,96 @@ public sealed class RecoveryApplicationHostIntegrationTests
 
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Shared_host_run_loop_reloads_external_configuration_without_manual_call()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-config-watch-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            await using var host = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                root, new FakeClock());
+            Guid id = await host.RegisterExecutableAsync("Original", TestExecutable());
+            using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            Task running = host.RunAsync(stop.Token);
+            try
+            {
+                var store = new ConfigurationStore(root);
+                StoredConfiguration current = store.Load();
+                ProfileConfiguration original = Assert.Single(current.Configuration.Profiles);
+                store.Save(current, current.Configuration with
+                {
+                    Profiles = [original with { Name = "From another session" }]
+                });
+
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(7));
+                while (host.GetProfiles().SingleOrDefault()?.Name != "From another session")
+                    await Task.Delay(50, timeout.Token);
+
+                HostedProfileStatus updated = Assert.Single(host.GetProfiles());
+                Assert.Equal(id, updated.Id);
+                Assert.True(updated.AutomaticActionsAllowed, updated.Problem);
+                Assert.Equal(0, new SharedRecoveryBudgetStore(root).Load(id)
+                    .ReservedAutomaticAttempts);
+            }
+            finally
+            {
+                stop.Cancel();
+                await running.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Shared_host_watcher_suspends_on_invalid_configuration_then_recovers_after_repair()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"relight-config-watch-repair-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            await using var host = await RecoveryApplicationHost.OpenSharedSessionAsync(
+                root, new FakeClock());
+            Guid id = await host.RegisterExecutableAsync("Disposable target", TestExecutable());
+            var store = new ConfigurationStore(root);
+            StoredConfiguration current = store.Load();
+            store.Save(current, current.Configuration);
+            using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            Task running = host.RunAsync(stop.Token);
+            try
+            {
+                File.WriteAllText(Path.Combine(root, "configuration.json"), "invalid configuration");
+                using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(7)))
+                    while (host.ConfigurationProblem is null)
+                        await Task.Delay(50, timeout.Token);
+                await Assert.ThrowsAsync<ConfigurationUnavailableException>(() =>
+                    host.StartProfileNowAsync(id));
+
+                StoredConfiguration backup = store.Load();
+                Assert.True(backup.FromLastGoodBackup);
+                store.RepairFromLastGood(backup);
+                using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(7)))
+                    while (host.ConfigurationProblem is not null)
+                        await Task.Delay(50, timeout.Token);
+                Assert.True(Assert.Single(host.GetProfiles()).AutomaticActionsAllowed);
+            }
+            finally
+            {
+                stop.Cancel();
+                await running.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Shared_host_duplicate_and_enable_keep_separate_budgets()
     {
         string root = Path.Combine(Path.GetTempPath(), $"relight-shared-copy-{Guid.NewGuid():N}");

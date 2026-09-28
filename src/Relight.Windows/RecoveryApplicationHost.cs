@@ -45,6 +45,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     private readonly HashSet<Guid> _closingProfiles = [];
     private readonly object _statusSync = new();
     private readonly SemaphoreSlim _changes = new(1, 1);
+    private volatile bool _sharedConfigurationSuspended;
     private bool _disposed;
 
     private RecoveryApplicationHost(string dataDirectory, IMonotonicClock clock,
@@ -286,10 +287,14 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 throw new ConfigurationUnavailableException(
                     "Repair the invalid shared configuration before reconciliation.");
             StoredConfiguration? active = Configuration;
-            if (active is not null && current.Revision == active.Revision &&
+            if (!_sharedConfigurationSuspended && active is not null &&
+                current.Revision == active.Revision &&
                 string.Equals(current.ContentHash, active.ContentHash,
                     StringComparison.Ordinal))
+            {
+                ConfigurationProblem = null;
                 return false;
+            }
             cancellationToken.ThrowIfCancellationRequested();
 
             Guid[] previous;
@@ -312,11 +317,12 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                     _statuses.Clear();
                 }
                 Configuration = current;
-                ConfigurationProblem = current.Diagnostic;
                 // Once old coordinators are removed, finish rebuilding even if
                 // the caller closes its dialog or cancels its request.
                 await LoadProfilesAsync(current, CancellationToken.None)
                     .ConfigureAwait(false);
+                _sharedConfigurationSuspended = false;
+                ConfigurationProblem = current.Diagnostic;
                 return true;
             }
             finally
@@ -324,6 +330,14 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 lock (_statusSync)
                     foreach (Guid id in previous) _closingProfiles.Remove(id);
             }
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or
+            ArgumentException)
+        {
+            _sharedConfigurationSuspended = true;
+            ConfigurationProblem =
+                $"Shared configuration cannot be reconciled: {error.Message}";
+            throw;
         }
         finally { _changes.Release(); }
     }
@@ -338,13 +352,13 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     private IProcessDiscovery GuardDiscovery(IProcessDiscovery discovery) =>
         _sessionStateStore is null ? discovery :
             new ConfigurationGuardedDiscovery(discovery, _configurationStore,
-                () => Configuration);
+                () => _sharedConfigurationSuspended ? null : Configuration);
 
     private void EnsureSharedConfigurationCurrent()
     {
         if (_sessionStateStore is null) return;
         if (ConfigurationGuardedDiscovery.CheckConfiguration(_configurationStore,
-                Configuration) is { } problem)
+                _sharedConfigurationSuspended ? null : Configuration) is { } problem)
             throw new ConfigurationUnavailableException(problem);
     }
 
@@ -1163,7 +1177,46 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         await recorder.GetStatusAsync(cancellationToken).ConfigureAwait(false);
 
     public Task RunAsync(CancellationToken cancellationToken = default) =>
-        _scheduler.RunAsync(cancellationToken);
+        _sessionStateStore is null ? _scheduler.RunAsync(cancellationToken) :
+            RunSharedSessionAsync(cancellationToken);
+
+    private async Task RunSharedSessionAsync(CancellationToken cancellationToken)
+    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task scheduler = _scheduler.RunAsync(linked.Token);
+        Task watcher = WatchSharedConfigurationAsync(linked.Token);
+        await Task.WhenAny(scheduler, watcher).ConfigureAwait(false);
+        linked.Cancel();
+        await Task.WhenAll(scheduler, watcher).ConfigureAwait(false);
+    }
+
+    private async Task WatchSharedConfigurationAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cancellationToken)
+                       .ConfigureAwait(false))
+            {
+                try
+                {
+                    await ReconcileSharedConfigurationAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception error) when (error is IOException or InvalidOperationException or
+                    ArgumentException)
+                {
+                    ConfigurationProblem =
+                        $"Shared configuration cannot be reconciled: {error.Message}";
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+    }
 
     public async ValueTask DisposeAsync()
     {
