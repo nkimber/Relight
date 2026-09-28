@@ -11,7 +11,8 @@ param(
     [switch]$ExerciseExit,
     [ValidateSet('Pause', 'Disable', 'Remove', 'Exit')]
     [string]$CancelPendingAction = '',
-    [ValidateSet('StopGraceful', 'StopForceDecline', 'StopForceAccept', 'RestartGraceful')]
+    [ValidateSet('StopGraceful', 'StopForceDecline', 'StopForceAccept',
+        'RestartGraceful', 'RestartForceDecline', 'RestartForceAccept')]
     [string]$ExplicitAction = ''
 )
 
@@ -155,7 +156,7 @@ try {
     $targetArguments = @('--label', $label, '--ready-file', $ready,
         '--exit-after-ms', '180000')
     if (-not $ExplicitAction) { $targetArguments += '--hidden' }
-    if ($ExplicitAction -like 'StopForce*') { $targetArguments += '--block-close' }
+    if ($ExplicitAction -like '*Force*') { $targetArguments += '--block-close' }
     $argumentsInput.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue(
         ($targetArguments -join "`n"))
     Invoke-Button $dialog 'Detect now'
@@ -281,7 +282,7 @@ try {
         $budgetPath = Join-Path $root ('Budgets\' + $profile.id.Replace('-', '') + '.json')
         $beforeBudget = Wait-For { Read-Configuration $budgetPath } 'budget before explicit control'
         $selectedPid = $targetPid
-        $isRestart = $ExplicitAction -eq 'RestartGraceful'
+        $isRestart = $ExplicitAction -like 'Restart*'
         $actionName = $(if ($isRestart) { 'Restart now' } else { 'Stop and pause' })
         Wait-For {
             $button = Find-Control $dashboard $actionName `
@@ -309,12 +310,14 @@ try {
         $confirmation = Find-MessageBox $dashboard $(if ($isRestart) {
             'Restart now?' } else { 'Stop and pause?' })
         Click-NativeMessageChoice $confirmation 'OK'
-        if ($ExplicitAction -like 'StopForce*') {
-            $forceChoice = Find-MessageBox $dashboard 'Force close this application?' 25
-            Click-NativeMessageChoice $forceChoice $(if ($ExplicitAction -eq 'StopForceAccept') {
+        if ($ExplicitAction -like '*Force*') {
+            $forceTitle = $(if ($isRestart) { 'Force close before restart?' } else {
+                'Force close this application?' })
+            $forceChoice = Find-MessageBox $dashboard $forceTitle 25
+            Click-NativeMessageChoice $forceChoice $(if ($ExplicitAction -like '*Accept') {
                 'Yes' } else { 'No' })
         }
-        if ($ExplicitAction -eq 'StopForceDecline') {
+        if ($ExplicitAction -like '*Decline') {
             Wait-For {
                 $button = Find-Control $dashboard 'Resume protection' `
                     ([System.Windows.Automation.ControlType]::Button)
