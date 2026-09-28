@@ -10,7 +10,9 @@ param(
     [switch]$ExerciseDisableRemove,
     [switch]$ExerciseExit,
     [ValidateSet('Pause', 'Disable', 'Remove', 'Exit')]
-    [string]$CancelPendingAction = ''
+    [string]$CancelPendingAction = '',
+    [ValidateSet('StopGraceful', 'StopForceDecline', 'StopForceAccept', 'RestartGraceful')]
+    [string]$ExplicitAction = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -98,6 +100,11 @@ if (($ExercisePauseResume -or $ExerciseDisableRemove -or $ExerciseExit) -and
     -not $AcceptInitialStart) {
     throw 'Lifecycle acceptance requires an automatically started disposable target.'
 }
+if ($ExplicitAction -and (-not $AcceptInitialStart -or $ExercisePauseResume -or
+    $ExerciseDisableRemove -or $ExerciseExit -or $CancelPendingAction -or
+    $EditSavedExecutable -or $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
+    throw 'Explicit-control acceptance uses only accepted initial start and one control action.'
+}
 if ($CancelPendingAction -and (-not $AcceptInitialStart -or $ExercisePauseResume -or
     $ExerciseDisableRemove -or $ExerciseExit -or $EditSavedExecutable -or
     $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
@@ -145,9 +152,12 @@ try {
     $argumentsInput = Find-Control $dialog 'Launch arguments, one per line' `
         ([System.Windows.Automation.ControlType]::Edit)
     if ($null -eq $argumentsInput) { throw 'Launch arguments field is unavailable.' }
+    $targetArguments = @('--label', $label, '--ready-file', $ready,
+        '--exit-after-ms', '180000')
+    if (-not $ExplicitAction) { $targetArguments += '--hidden' }
+    if ($ExplicitAction -like 'StopForce*') { $targetArguments += '--block-close' }
     $argumentsInput.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue(
-        (@('--label', $label, '--hidden', '--ready-file', $ready,
-            '--exit-after-ms', '180000') -join "`n"))
+        ($targetArguments -join "`n"))
     Invoke-Button $dialog 'Detect now'
     $result = Wait-For {
         $condition = [System.Windows.Automation.PropertyCondition]::new(
@@ -265,6 +275,108 @@ try {
     }
     else {
         Write-Output 'PASS: Add dialog was accessible; detection found absence; saved profile kept automatic initial start off; dashboard showed the new profile.'
+    }
+
+    if ($ExplicitAction) {
+        $budgetPath = Join-Path $root ('Budgets\' + $profile.id.Replace('-', '') + '.json')
+        $beforeBudget = Wait-For { Read-Configuration $budgetPath } 'budget before explicit control'
+        $selectedPid = $targetPid
+        $isRestart = $ExplicitAction -eq 'RestartGraceful'
+        $actionName = $(if ($isRestart) { 'Restart now' } else { 'Stop and pause' })
+        Wait-For {
+            $button = Find-Control $dashboard $actionName `
+                ([System.Windows.Automation.ControlType]::Button)
+            if ($null -ne $button -and $button.Current.IsEnabled) { return $button }
+            return $null
+        } 'enabled explicit control after target discovery' 20 | Out-Null
+        Invoke-Button $dashboard $actionName
+        $confirmation = Find-MessageBox $dashboard $(if ($isRestart) {
+            'Restart now?' } else { 'Stop and pause?' })
+        Click-NativeMessageChoice $confirmation 'Cancel'
+        $stillRunning = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+        if ($null -eq $stillRunning -or $stillRunning.HasExited) {
+            throw 'Canceling explicit control closed the disposable target.'
+        }
+        $stillRunning.Dispose()
+        Start-Sleep -Milliseconds 500
+        Wait-For {
+            $button = Find-Control $dashboard $actionName `
+                ([System.Windows.Automation.ControlType]::Button)
+            if ($null -ne $button -and $button.Current.IsEnabled) { return $button }
+            return $null
+        } 'explicit control after canceled confirmation' | Out-Null
+        Invoke-Button $dashboard $actionName
+        $confirmation = Find-MessageBox $dashboard $(if ($isRestart) {
+            'Restart now?' } else { 'Stop and pause?' })
+        Click-NativeMessageChoice $confirmation 'OK'
+        if ($ExplicitAction -like 'StopForce*') {
+            $forceChoice = Find-MessageBox $dashboard 'Force close this application?' 25
+            Click-NativeMessageChoice $forceChoice $(if ($ExplicitAction -eq 'StopForceAccept') {
+                'Yes' } else { 'No' })
+        }
+        if ($ExplicitAction -eq 'StopForceDecline') {
+            Wait-For {
+                $button = Find-Control $dashboard 'Resume protection' `
+                    ([System.Windows.Automation.ControlType]::Button)
+                $null -ne $button -and $button.Current.IsEnabled
+            } 'paused protection after declined force close' | Out-Null
+            $running = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+            if ($null -eq $running -or $running.HasExited) {
+                throw 'Declining force close still stopped the target.'
+            }
+            $running.Dispose()
+        }
+        else {
+            if ($isRestart) {
+                $result = Find-MessageBox $dashboard 'Restart now' 25
+                Click-NativeMessageChoice $result 'OK'
+                $replacementPid = Wait-For {
+                    if (-not (Test-Path -LiteralPath $ready)) { return $null }
+                    $candidate = [int](Get-Content -LiteralPath $ready -Raw).Split('|')[0]
+                    if ($candidate -ne $targetPid) { return $candidate }
+                    return $null
+                } 'replacement target after manual restart' 20
+                $oldProcess = Get-Process -Id $selectedPid -ErrorAction SilentlyContinue
+                if ($null -ne $oldProcess) {
+                    try {
+                        if (-not $oldProcess.HasExited) {
+                            throw 'Manual restart left the originally selected target running.'
+                        }
+                    }
+                    finally { $oldProcess.Dispose() }
+                }
+                $newProcess = Get-Process -Id $replacementPid -ErrorAction SilentlyContinue
+                if ($null -eq $newProcess) { throw 'Manual restart replacement already exited.' }
+                try {
+                    if ($newProcess.HasExited -or -not [string]::Equals(
+                        $newProcess.Path, $targetPath,
+                        [StringComparison]::OrdinalIgnoreCase)) {
+                        throw 'Manual restart replacement is not the selected disposable target.'
+                    }
+                }
+                finally { $newProcess.Dispose() }
+                $targetPid = $replacementPid
+            }
+            else {
+                $result = Find-MessageBox $dashboard 'Stop and pause' 25
+                Click-NativeMessageChoice $result 'OK'
+                Wait-For {
+                    $process = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+                    if ($null -eq $process) { return $true }
+                    $exited = $process.HasExited
+                    $process.Dispose()
+                    return $exited
+                } 'selected target exit after explicit stop' 20 | Out-Null
+                $targetPid = $null
+            }
+        }
+        $afterBudget = Read-Configuration $budgetPath
+        if ($null -eq $afterBudget -or
+            $afterBudget.budget.reservedAutomaticAttempts -ne
+            $beforeBudget.budget.reservedAutomaticAttempts) {
+            throw 'Explicit control changed the automatic recovery budget.'
+        }
+        Write-Output "PASS: $ExplicitAction honored WPF confirmations, selected-target control, and the unchanged automatic budget."
     }
 
     if ($EditSavedExecutable) {
