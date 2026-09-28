@@ -21,8 +21,10 @@ public sealed class DiagnosticBundleExporterTests
         using (var journal = new OperationalEventJournal(data.Path,
                    GlobalConfiguration.Default))
             await journal.AppendAsync(new(DateTimeOffset.UtcNow, Guid.NewGuid(),
-                EventSeverity.Warning, OperationalEventKind.TargetDisappeared,
-                ProfileId: profileId, ProcessIdentity: "path-secret"));
+                EventSeverity.Warning, OperationalEventKind.LaunchFailed,
+                ProfileId: profileId, ProcessIdentity: "path-secret",
+                NativeErrorCode: 5,
+                FailureCategory: OperationalFailureCategory.PermissionDenied));
         string destination = Path.Combine(exports.Path, "diagnostics.zip");
 
         DiagnosticBundleResult result = await new DiagnosticBundleExporter(data.Path)
@@ -45,7 +47,9 @@ public sealed class DiagnosticBundleExporterTests
         Assert.Contains("AwaitingIntervention", metadata);
         Assert.Contains("hasProblem", metadata);
         Assert.DoesNotContain("app.exe", metadata);
-        Assert.Contains("TargetDisappeared", events);
+        Assert.Contains("LaunchFailed", events);
+        Assert.Contains("PermissionDenied", events);
+        Assert.Contains("nativeErrorCode\":5", events);
         foreach (string secret in new[] { "folder-secret", "working-secret",
                      "argument-secret", "required-secret", "excluded-secret", "path-secret" })
         {

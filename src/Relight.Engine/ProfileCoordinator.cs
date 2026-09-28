@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using Relight.Core;
 using Relight.Storage;
 
@@ -376,7 +378,8 @@ public sealed class ProfileCoordinator : IDisposable
                     Persist();
                     RecordTransition(previous, _machine.Snapshot);
                     Record(OperationalEventKind.LaunchFailed, EventSeverity.Warning,
-                        previous, _machine.Snapshot, reserved);
+                        previous, _machine.Snapshot, reserved,
+                        OperationalFailureCategory.Canceled);
                     return Result(new(RecoveryState.Starting, _machine.Snapshot.State,
                         RecoverySignal.None, "Launch canceled by profile command; reservation remains consumed"));
                 }
@@ -392,7 +395,8 @@ public sealed class ProfileCoordinator : IDisposable
                     Persist();
                     RecordTransition(previous, _machine.Snapshot);
                     Record(OperationalEventKind.LaunchFailed, EventSeverity.Error,
-                        previous, _machine.Snapshot, reserved);
+                        previous, _machine.Snapshot, reserved,
+                        ClassifyLaunchFailure(error), NativeErrorCode(error));
                     return Result(new(RecoveryState.Starting, _machine.Snapshot.State,
                         RecoverySignal.None, $"Launch dispatch failed: {error.Message}"));
                 }
@@ -856,13 +860,14 @@ public sealed class ProfileCoordinator : IDisposable
                 RecordTransition(previous, _machine.Snapshot);
                 throw;
             }
-            catch (Exception)
+            catch (Exception error)
             {
                 // The adapter may have dispatched before reporting failure.
                 // Keep Starting until discovery or the full appearance timeout
                 // resolves the uncertainty; do not authorize a duplicate now.
                 Record(OperationalEventKind.ExplicitStartUncertain, EventSeverity.Warning,
-                    _machine.Snapshot, _machine.Snapshot, operationId);
+                    _machine.Snapshot, _machine.Snapshot, operationId,
+                    ClassifyLaunchFailure(error), NativeErrorCode(error));
                 throw;
             }
         }
@@ -1057,18 +1062,22 @@ public sealed class ProfileCoordinator : IDisposable
             Record(OperationalEventKind.TargetDisappeared, EventSeverity.Warning, before, after);
         if (before.State == RecoveryState.Observing &&
             (after.State != RecoveryState.Observing || after.ObservationStartedAt is null))
-            Record(OperationalEventKind.ObservationInterrupted, EventSeverity.Warning, before, after);
+            Record(OperationalEventKind.ObservationInterrupted, EventSeverity.Warning, before, after,
+                failureCategory: before.ObservationOrigin == ObservationOrigin.AutomaticLaunch &&
+                    after.TargetIdentity is null ? OperationalFailureCategory.EarlyExit : null);
         if (!before.LockedOut && after.LockedOut)
             Record(OperationalEventKind.LockoutEntered, EventSeverity.Warning, before, after);
         if (before.State == RecoveryState.Starting && !before.DetectionUnavailable &&
             before.AppearanceDeadline is { } appearanceDeadline &&
             _clock.Elapsed >= appearanceDeadline && after.State != RecoveryState.Starting &&
             after.TargetIdentity is null)
-            Record(OperationalEventKind.AppearanceTimedOut, EventSeverity.Warning, before, after);
+            Record(OperationalEventKind.AppearanceTimedOut, EventSeverity.Warning, before, after,
+                failureCategory: OperationalFailureCategory.AppearanceTimeout);
     }
 
     private void Record(OperationalEventKind kind, EventSeverity severity,
-        RecoverySnapshot before, RecoverySnapshot after, Guid? operationId = null)
+        RecoverySnapshot before, RecoverySnapshot after, Guid? operationId = null,
+        OperationalFailureCategory? failureCategory = null, int? nativeErrorCode = null)
     {
         var entry = new OperationalEvent(DateTimeOffset.UtcNow, Guid.NewGuid(), severity, kind,
             ProfileId: _profileId, EpisodeId: after.EpisodeId ?? before.EpisodeId,
@@ -1077,7 +1086,8 @@ public sealed class ProfileCoordinator : IDisposable
             Origin: after.ObservationOrigin ?? before.ObservationOrigin,
             AttemptNumber: after.ReservedAutomaticAttempts,
             AttemptLimit: _machine.Policy.MaximumAutomaticAttempts,
-            ProcessIdentity: after.TargetIdentity ?? before.TargetIdentity);
+            ProcessIdentity: after.TargetIdentity ?? before.TargetIdentity,
+            NativeErrorCode: nativeErrorCode, FailureCategory: failureCategory);
         try
         {
             if (!_recorder.TryRecord(entry))
@@ -1092,6 +1102,34 @@ public sealed class ProfileCoordinator : IDisposable
             _loggingError = $"Event recorder failed ({error.GetType().Name}).";
         }
     }
+
+    private static OperationalFailureCategory ClassifyLaunchFailure(Exception error) =>
+        error switch
+        {
+            FileNotFoundException => OperationalFailureCategory.MissingTarget,
+            DirectoryNotFoundException or ArgumentException =>
+                OperationalFailureCategory.InvalidConfiguration,
+            UnauthorizedAccessException => OperationalFailureCategory.PermissionDenied,
+            OperationCanceledException => OperationalFailureCategory.Canceled,
+            Win32Exception { NativeErrorCode: 2 or 3 } =>
+                OperationalFailureCategory.MissingTarget,
+            Win32Exception { NativeErrorCode: 267 } =>
+                OperationalFailureCategory.InvalidConfiguration,
+            Win32Exception { NativeErrorCode: 5 or 740 } =>
+                OperationalFailureCategory.PermissionDenied,
+            COMException { ErrorCode: unchecked((int)0x80070005) } =>
+                OperationalFailureCategory.PermissionDenied,
+            Win32Exception => OperationalFailureCategory.ActivationFailed,
+            COMException => OperationalFailureCategory.ActivationFailed,
+            _ => OperationalFailureCategory.Unknown
+        };
+
+    private static int? NativeErrorCode(Exception error) => error switch
+    {
+        Win32Exception windows => windows.NativeErrorCode,
+        COMException com => com.ErrorCode,
+        _ => null
+    };
 
     private CoordinatorResult Result(RecoveryTransition transition, bool dispatched = false) =>
         new(_machine.Snapshot, transition, dispatched, _storageDegraded, _storageError,

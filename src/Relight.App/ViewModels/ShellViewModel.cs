@@ -549,7 +549,30 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         $"Operation ID: {entry.OperationId?.ToString() ?? "—"}\n" +
         $"Origin: {entry.Origin?.ToString() ?? "—"}\n" +
         $"Process identity: {entry.ProcessIdentity ?? "—"}\n" +
-        $"Native error code: {entry.NativeErrorCode?.ToString() ?? "—"}";
+        $"Native error code: {entry.NativeErrorCode?.ToString() ?? "—"}\n" +
+        $"Failure category: {entry.FailureCategory?.ToString() ?? "—"}\n" +
+        $"Suggested check: {FailureAdvice(entry.FailureCategory)}";
+
+    private static string FailureAdvice(OperationalFailureCategory? category) => category switch
+    {
+        OperationalFailureCategory.MissingTarget =>
+            "Check that the selected executable still exists; edit the target path if it moved.",
+        OperationalFailureCategory.InvalidConfiguration =>
+            "Check the executable path, launch arguments, and working directory in Edit profile.",
+        OperationalFailureCategory.PermissionDenied =>
+            "Check file permissions and whether this signed-in account can launch the target.",
+        OperationalFailureCategory.ActivationFailed =>
+            "Check that the application is installed and can be started normally in this session.",
+        OperationalFailureCategory.AppearanceTimeout =>
+            "Check whether the application started under a different identity or needs more time to appear.",
+        OperationalFailureCategory.EarlyExit =>
+            "Check the target application's own logs for why it stopped before stable observation.",
+        OperationalFailureCategory.Canceled =>
+            "Review the profile action or identity change that canceled the pending launch.",
+        OperationalFailureCategory.Unknown =>
+            "Review the native error code and try starting the application manually.",
+        _ => "—"
+    };
 
     private static string SplitName(string value) =>
         System.Text.RegularExpressions.Regex.Replace(value, "(?<!^)([A-Z])", " $1");

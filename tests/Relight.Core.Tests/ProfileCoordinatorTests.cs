@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.ComponentModel;
 using Relight.Core;
 using Relight.Engine;
 using Relight.Storage;
@@ -1167,6 +1168,52 @@ public sealed class ProfileCoordinatorTests
     }
 
     [Fact]
+    public async Task Launch_failure_records_native_category_without_exception_message()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var recorder = new CapturingRecorder();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id, AutoPolicy, store,
+            new ConstantDiscovery(Detection.Absent()),
+            new ThrowingLauncher(new Win32Exception(5, "secret launch argument")),
+            clock, recorder: recorder);
+        await TickAt(coordinator, clock, 0);
+        await TickAt(coordinator, clock, 2);
+        await TickAt(coordinator, clock, 32);
+
+        OperationalEvent failure = Assert.Single(recorder.Events, entry =>
+            entry.Kind == OperationalEventKind.LaunchFailed);
+        Assert.Equal(OperationalFailureCategory.PermissionDenied, failure.FailureCategory);
+        Assert.Equal(5, failure.NativeErrorCode);
+        Assert.DoesNotContain("secret launch argument", JsonSerializer.Serialize(failure));
+        Assert.Equal(1, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+    }
+
+    [Fact]
+    public async Task Missing_executable_is_distinguished_from_activation_failure()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var recorder = new CapturingRecorder();
+        Guid id = Guid.NewGuid();
+        using var coordinator = ProfileCoordinator.CreateNew(id, AutoPolicy, store,
+            new ConstantDiscovery(Detection.Absent()),
+            new ThrowingLauncher(new FileNotFoundException("missing executable")),
+            clock, recorder: recorder);
+        await TickAt(coordinator, clock, 0);
+        await TickAt(coordinator, clock, 2);
+        await TickAt(coordinator, clock, 32);
+
+        OperationalEvent failure = Assert.Single(recorder.Events, entry =>
+            entry.Kind == OperationalEventKind.LaunchFailed);
+        Assert.Equal(OperationalFailureCategory.MissingTarget, failure.FailureCategory);
+        Assert.Null(failure.NativeErrorCode);
+    }
+
+    [Fact]
     public async Task Full_event_queue_is_visible_but_does_not_prevent_a_reserved_launch()
     {
         using var directory = new TestDirectory();
@@ -1432,6 +1479,12 @@ public sealed class ProfileCoordinatorTests
             await base.LaunchAsync(operationId, cancellationToken);
             throw new IOException("Controlled launch failure.");
         }
+    }
+
+    private sealed class ThrowingLauncher(Exception error) : IProcessLauncher
+    {
+        public Task LaunchAsync(Guid operationId, CancellationToken cancellationToken) =>
+            Task.FromException(error);
     }
 
     private sealed class BlockingLauncher : IProcessLauncher

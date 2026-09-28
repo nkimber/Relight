@@ -8,6 +8,18 @@ namespace Relight.Storage;
 
 public enum EventSeverity { Debug, Information, Warning, Error }
 
+public enum OperationalFailureCategory
+{
+    Unknown,
+    InvalidConfiguration,
+    MissingTarget,
+    PermissionDenied,
+    ActivationFailed,
+    AppearanceTimeout,
+    EarlyExit,
+    Canceled
+}
+
 public enum OperationalEventKind
 {
     Startup,
@@ -72,7 +84,8 @@ public sealed record OperationalEvent(
     int? AttemptNumber = null,
     int? AttemptLimit = null,
     string? ProcessIdentity = null,
-    int? NativeErrorCode = null);
+    int? NativeErrorCode = null,
+    OperationalFailureCategory? FailureCategory = null);
 
 public sealed record EventJournalStatus(
     bool Degraded,
