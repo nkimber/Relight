@@ -13,6 +13,7 @@ param(
     [switch]$ExerciseNoRearm,
     [switch]$ExerciseStartNow,
     [switch]$ExerciseExitRace,
+    [switch]$ExerciseAmbiguity,
     [switch]$ZeroAutomaticAttempts,
     [switch]$ExerciseHistoryNavigation,
     [ValidateSet('Pause', 'Disable', 'Remove', 'Exit')]
@@ -159,12 +160,14 @@ if ($ExerciseStartNow -and ($AcceptInitialStart -or $ExercisePauseResume -or
     $EditSavedExecutable -or $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
     throw 'Start now acceptance uses a saved initially absent disposable target with automatic initial start off.'
 }
-if ($ExerciseExitRace -and ($AcceptInitialStart -or $ExerciseStartNow -or
+if (($ExerciseExitRace -or $ExerciseAmbiguity) -and
+    ($ExerciseExitRace -and $ExerciseAmbiguity -or $AcceptInitialStart -or
+    $ExerciseStartNow -or
     $ExercisePauseResume -or $ExerciseDisableRemove -or $ExerciseExit -or
     $ExerciseResetDuplicate -or $ExerciseNoRearm -or $ExerciseHistoryNavigation -or
     $ExplicitAction -or $CancelPendingAction -or $EditSavedExecutable -or
     $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
-    throw 'Exit-race acceptance uses only one initially absent disposable profile.'
+    throw 'Exit-race or ambiguity acceptance uses only one initially absent disposable profile.'
 }
 if ($ZeroAutomaticAttempts -and -not $ExerciseStartNow) {
     throw 'The zero-attempt UI check requires -ExerciseStartNow.'
@@ -189,6 +192,7 @@ $primary = $null
 $secondary = $null
 $targetPid = $null
 $external = $null
+$external2 = $null
 try {
     $arguments = @('--shared-session-preview', $root, '--tray')
     $primary = Start-Process -FilePath $executablePath -ArgumentList $arguments -WindowStyle Hidden -PassThru
@@ -280,18 +284,21 @@ try {
             Find-Control $dashboard 'Disposable UI target' ([System.Windows.Automation.ControlType]::Text)
         } 'new dashboard row' | Out-Null
     }
-    if ($ExerciseExitRace) {
+    if ($ExerciseExitRace -or $ExerciseAmbiguity) {
         Invoke-Button $dashboard 'Edit policy'
         $editor = Wait-For {
             Find-Control $dashboard 'Edit protection · Relight' `
                 ([System.Windows.Automation.ControlType]::Window)
-        } 'profile editor for exit race'
-        foreach ($field in @(@('Normal check interval in seconds', '60'),
-                             @('Stable observation period in minutes', '1'),
-                             @('Retry delay in seconds', '10'))) {
+        } 'profile editor for controlled detection'
+        $fields = ,@('Normal check interval in seconds', '60')
+        if ($ExerciseExitRace) {
+            $fields += ,@('Stable observation period in minutes', '1')
+            $fields += ,@('Retry delay in seconds', '10')
+        }
+        foreach ($field in $fields) {
             $input = Find-Control $editor $field[0] `
                 ([System.Windows.Automation.ControlType]::Edit)
-            if ($null -eq $input) { throw "Exit-race editor lacks '$($field[0])'." }
+            if ($null -eq $input) { throw "Policy editor lacks '$($field[0])'." }
             $input.GetCurrentPattern(
                 [System.Windows.Automation.ValuePattern]::Pattern).SetValue($field[1])
         }
@@ -301,9 +308,10 @@ try {
             $saved = @($config.configuration.profiles | Where-Object id -eq $profile.id) |
                 Select-Object -First 1
             $null -ne $saved -and $saved.policy.normalPollInterval -eq '00:01:00' -and
-                $saved.policy.observationPeriod -eq '00:01:00' -and
-                $saved.policy.retryDelay -eq '00:00:10'
-        } 'saved exit-race policy' 45 | Out-Null
+                (-not $ExerciseExitRace -or
+                    ($saved.policy.observationPeriod -eq '00:01:00' -and
+                     $saved.policy.retryDelay -eq '00:00:10'))
+        } 'saved controlled-detection policy' 45 | Out-Null
     }
     if ($ExerciseNoRearm) {
         Invoke-Button $dashboard 'Edit policy'
@@ -587,6 +595,55 @@ try {
             throw 'Exit-race WPF Start now changed the automatic attempt budget.'
         }
         Write-Output 'PASS: callback-driven disappearance enabled WPF Start now; one explicit replacement launched with matching operation IDs, no automatic duplicate and no automatic budget charge.'
+    }
+    if ($ExerciseAmbiguity) {
+        $firstReady = Join-Path $root 'ambiguous-first.ready'
+        $secondReady = Join-Path $root 'ambiguous-second.ready'
+        $external = Start-Process -FilePath $targetPath -WindowStyle Hidden -PassThru `
+            -ArgumentList @('--label', $label, '--ready-file', $firstReady,
+                '--exit-after-ms', '180000', '--hidden')
+        $external2 = Start-Process -FilePath $targetPath -WindowStyle Hidden -PassThru `
+            -ArgumentList @('--label', $label, '--ready-file', $secondReady,
+                '--exit-after-ms', '180000', '--hidden')
+        Wait-For {
+            (Test-Path -LiteralPath $firstReady) -and
+                (Test-Path -LiteralPath $secondReady)
+        } 'two ambiguous disposable targets' 10 | Out-Null
+        $diagnostic = Wait-For {
+            $texts = $dashboard.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.PropertyCondition]::new(
+                    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                    [System.Windows.Automation.ControlType]::Text))
+            foreach ($item in $texts) {
+                $name = $item.Current.Name
+                if ($name.StartsWith('Cannot verify the target:') -and
+                    $name.Contains("PID $($external.Id)") -and
+                    $name.Contains("PID $($external2.Id)")) { return $name }
+            }
+            return $null
+        } 'rendered candidate ambiguity' 80
+        if (-not $diagnostic.Contains('Automatic actions are suspended.')) {
+            throw 'Ambiguity diagnostic did not explain the action suspension.'
+        }
+        if ((Find-Control $dashboard 'Detection unavailable' `
+            ([System.Windows.Automation.ControlType]::Text)) -eq $null) {
+            throw 'Dashboard did not show detection unavailable.'
+        }
+        foreach ($name in @('Start now', 'Stop and pause', 'Restart now')) {
+            if (Find-EnabledButton $dashboard $name) {
+                throw "$name remained enabled while two targets matched."
+            }
+        }
+        Start-Sleep -Seconds 8
+        $budgetPath = Join-Path $root ('Budgets\' + $profile.id.Replace('-', '') + '.json')
+        $budget = Read-Configuration $budgetPath
+        if ($null -eq $budget -or $budget.budget.reservedAutomaticAttempts -ne 0) {
+            throw 'Ambiguity charged an automatic attempt.'
+        }
+        if ($external.HasExited -or $external2.HasExited) {
+            throw 'Relight terminated an ambiguous disposable target.'
+        }
+        Write-Output 'PASS: WPF dashboard showed both ambiguous candidate PIDs, suspended unsafe controls, left both targets running and charged no automatic attempt.'
     }
 
     if ($ExerciseHistoryNavigation) {
@@ -1203,6 +1260,13 @@ try {
     }
 }
 finally {
+    if ($null -ne $external2) {
+        if (-not $external2.HasExited) {
+            Stop-Process -Id $external2.Id
+            $external2.WaitForExit(10000) | Out-Null
+        }
+        $external2.Dispose()
+    }
     if ($null -ne $external) {
         if (-not $external.HasExited) {
             Stop-Process -Id $external.Id

@@ -661,7 +661,8 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                     Policy = configured.GetValueOrDefault(status.Id)?.Policy,
                     TargetKind = configured.GetValueOrDefault(status.Id)?.Target.Kind ??
                         status.TargetKind,
-                    Detection = _scheduler.GetPassiveLast(status.Id) ?? status.Detection,
+                    Detection = coordinator?.LastDetection ??
+                        _scheduler.GetPassiveLast(status.Id) ?? status.Detection,
                     Recovery = coordinator?.Snapshot ?? status.Recovery,
                     AutomaticActionsAllowed = status.AutomaticActionsAllowed &&
                         !(coordinator?.StorageDegraded ?? false),
@@ -672,6 +673,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 Policy = configured.GetValueOrDefault(status.Id)?.Policy,
                 TargetKind = configured.GetValueOrDefault(status.Id)?.Target.Kind ??
                     status.TargetKind,
+                Detection = coordinator?.LastDetection ?? status.Detection,
                 Recovery = coordinator?.Snapshot ?? last.Value.Result?.Snapshot ?? status.Recovery,
                 AutomaticActionsAllowed = status.AutomaticActionsAllowed &&
                     !(coordinator?.StorageDegraded ?? last.Value.Result?.StorageDegraded ?? false),
