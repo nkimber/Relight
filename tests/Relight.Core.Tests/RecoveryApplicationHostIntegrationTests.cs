@@ -947,9 +947,14 @@ public sealed class RecoveryApplicationHostIntegrationTests
                 await Assert.ThrowsAsync<ConfigurationUnavailableException>(() =>
                     host.StartProfileNowAsync(id));
 
-                StoredConfiguration backup = store.Load();
+                StoredConfiguration backup = Assert.IsType<StoredConfiguration>(
+                    host.RepairableConfiguration);
                 Assert.True(backup.FromLastGoodBackup);
-                store.RepairFromLastGood(backup);
+                Assert.False(host.Configuration?.FromLastGoodBackup);
+                string? preserved = await host.RepairConfigurationAsync();
+                Assert.NotNull(preserved);
+                Assert.True(File.Exists(preserved));
+                Assert.Null(host.RepairableConfiguration);
                 using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(7)))
                     while (host.ConfigurationProblem is not null)
                         await Task.Delay(50, timeout.Token);

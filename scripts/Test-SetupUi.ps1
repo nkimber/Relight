@@ -16,6 +16,7 @@ param(
     [switch]$ExerciseAmbiguity,
     [switch]$ZeroAutomaticAttempts,
     [switch]$ExerciseHistoryNavigation,
+    [switch]$ExerciseBrokenConfig,
     [ValidateSet('Pause', 'Disable', 'Remove', 'Exit')]
     [string]$CancelPendingAction = '',
     [ValidateSet('StopGraceful', 'StopForceDecline', 'StopForceAccept',
@@ -176,6 +177,13 @@ if ($ExerciseHistoryNavigation -and ($ExercisePauseResume -or $ExerciseDisableRe
     $ExerciseExit -or $ExerciseResetDuplicate -or $EditSavedExecutable -or
     $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
     throw 'History navigation acceptance uses one automatically started disposable profile.'
+}
+if ($ExerciseBrokenConfig -and (-not $AcceptInitialStart -or $ExercisePauseResume -or
+    $ExerciseDisableRemove -or $ExerciseExit -or $ExerciseResetDuplicate -or
+    $ExerciseNoRearm -or $ExerciseStartNow -or $ExerciseHistoryNavigation -or
+    $CancelPendingAction -or $ExplicitAction -or $EditSavedExecutable -or
+    $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
+    throw 'Broken-configuration acceptance uses only accepted initial start and one disposable profile.'
 }
 if ($ExerciseNoRearm -and ($ExercisePauseResume -or $ExerciseDisableRemove -or
     $ExerciseExit -or $ExerciseResetDuplicate -or $ExerciseStartNow -or
@@ -426,6 +434,64 @@ try {
     }
     else {
         Write-Output 'PASS: Add dialog was accessible; detection found absence; saved profile kept automatic initial start off; dashboard showed the new profile.'
+    }
+
+    if ($ExerciseBrokenConfig) {
+        $configurationPath = Join-Path $root 'configuration.json'
+        Wait-For { Test-Path -LiteralPath ($configurationPath + '.bak') } 'last-good backup' | Out-Null
+        Wait-For {
+            foreach ($log in @(Get-ChildItem -LiteralPath (Join-Path $root 'Logs') -File -Filter 'events-*.jsonl')) {
+                if (Select-String -LiteralPath $log.FullName -SimpleMatch '"kind":"TargetObserved"' -Quiet) {
+                    return $true
+                }
+            }
+            return $false
+        } 'target observation' 20 | Out-Null
+        Wait-For {
+            try { [IO.File]::WriteAllText($configurationPath, 'invalid configuration'); return $true }
+            catch [IO.IOException] { return $false }
+        } 'external configuration edit' | Out-Null
+        Wait-For {
+            foreach ($item in $dashboard.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition)) {
+                if ($item.Current.Name -like 'Configuration needs attention:*') { return $true }
+            }
+            return $false
+        } 'rendered configuration warning' 20 | Out-Null
+        $settings = Find-Control $dashboard 'Settings' ([System.Windows.Automation.ControlType]::RadioButton)
+        if ($null -eq $settings) { throw 'Settings navigation is unavailable.' }
+        $settings.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+        $repair = Wait-For {
+            Find-EnabledButton $dashboard 'Restore last-good configuration'
+        } 'enabled last-good repair action' 15
+        $repair.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+        $confirmation = Find-MessageBox $dashboard 'Restore last-good configuration?'
+        Click-NativeMessageChoice $confirmation 'OK'
+        $complete = Find-MessageBox $dashboard 'Configuration restored'
+        Click-NativeMessageChoice $complete 'OK'
+        Wait-For {
+            $saved = Read-Configuration $configurationPath
+            if ($null -ne $saved -and $null -ne $saved.configuration) { return $saved }
+            return $null
+        } 'restored configuration' 20 | Out-Null
+        Wait-For {
+            foreach ($item in $dashboard.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition)) {
+                if ($item.Current.Name -like 'Configuration needs attention:*') { return $false }
+            }
+            return $true
+        } 'cleared configuration warning' 20 | Out-Null
+        if (-not (Get-Process -Id $targetPid -ErrorAction SilentlyContinue)) {
+            throw 'Configuration repair stopped the target.'
+        }
+        $budget = Read-Configuration $budgetPath
+        if ($null -eq $budget -or $budget.budget.reservedAutomaticAttempts -ne 1) {
+            throw 'Configuration repair changed the durable automatic attempt budget.'
+        }
+        $archives = @(Get-ChildItem -LiteralPath $root -File -Filter 'configuration-invalid-*.json')
+        if ($archives.Count -ne 1) { throw 'Repair did not preserve exactly one invalid configuration.' }
+        Write-Output 'PASS: invalid external edit showed WPF warning and enabled last-good repair; repair preserved invalid bytes, target and automatic budget.'
+        return
     }
 
     if ($ExerciseNoRearm) {
