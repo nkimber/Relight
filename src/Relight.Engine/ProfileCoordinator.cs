@@ -1110,7 +1110,10 @@ public sealed class ProfileCoordinator : IDisposable
             (after.State is RecoveryState.RetryWaiting or RecoveryState.AwaitingIntervention))
             Record(OperationalEventKind.TargetDisappeared, EventSeverity.Warning, before, after);
         if (before.State == RecoveryState.Observing &&
-            (after.State != RecoveryState.Observing || after.ObservationStartedAt is null))
+            ((after.State != RecoveryState.Observing &&
+              after.State != RecoveryState.Healthy) ||
+             (after.State == RecoveryState.Observing &&
+              after.ObservationStartedAt is null)))
             Record(OperationalEventKind.ObservationInterrupted, EventSeverity.Warning, before, after,
                 failureCategory: before.ObservationOrigin == ObservationOrigin.AutomaticLaunch &&
                     after.TargetIdentity is null ? OperationalFailureCategory.EarlyExit : null);

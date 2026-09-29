@@ -12,6 +12,86 @@ public sealed class RecoveryWpfPreviewProcessTests
 {
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Launcher_exit_is_not_counted_as_failure_when_child_is_selected_target()
+    {
+        string directory = Path.Combine(Path.GetTempPath(),
+            $"relight-wpf-handoff-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        string targetExecutable = FindBuiltExecutable("Relight.TestTarget",
+            "Relight.TestTarget.exe");
+        string relightExecutable = FindBuiltExecutable("Relight.App", "Relight.exe");
+        string label = $"wpf-handoff-{Guid.NewGuid():N}";
+        string ready = Path.Combine(directory, "target.ready");
+        string attemptsFile = Path.Combine(directory, "attempts.bin");
+        Process? preview = null;
+        int? childPid = null;
+        long? childStartedTicks = null;
+        try
+        {
+            Guid profileId = await ConfigureProfileAsync(directory, targetExecutable,
+                ["--label", label, "--handoff", "--ready-file", ready,
+                    "--attempt-file", attemptsFile, "--exit-after-ms", "180000"],
+                maximumAttempts: 3, normalPollInterval: TimeSpan.FromSeconds(60));
+            var store = new ConfigurationStore(directory);
+            StoredConfiguration current = store.Load();
+            ProfileConfiguration saved = Assert.Single(current.Configuration.Profiles);
+            store.Save(current, current.Configuration with
+            {
+                Profiles = [saved with { Target = saved.Target with
+                {
+                    RequiredArgument = label,
+                    ExcludedArgument = "--handoff"
+                } }]
+            });
+            var budgets = new SharedRecoveryBudgetStore(directory);
+            var history = new OperationalEventHistoryReader(directory);
+            preview = StartPreview(relightExecutable, directory);
+
+            await WaitUntilAsync(() => File.Exists(ready) && File.Exists(attemptsFile),
+                TimeSpan.FromSeconds(25));
+            string[] identity = (await File.ReadAllTextAsync(ready)).Split('|');
+            childPid = int.Parse(identity[0], CultureInfo.InvariantCulture);
+            childStartedTicks = DateTimeOffset.Parse(identity[1],
+                CultureInfo.InvariantCulture).UtcTicks;
+            Assert.True(IsSameTargetAlive(childPid.Value, childStartedTicks.Value,
+                targetExecutable));
+            Assert.Equal(1, BitConverter.ToInt32(File.ReadAllBytes(attemptsFile)));
+
+            await WaitForEventCountAsync(history, profileId,
+                OperationalEventKind.ObservationCompleted, 1,
+                TimeSpan.FromSeconds(75));
+            Assert.False(preview.HasExited);
+            Assert.True(IsSameTargetAlive(childPid.Value, childStartedTicks.Value,
+                targetExecutable));
+            Assert.Equal(0, budgets.Load(profileId).ReservedAutomaticAttempts);
+            EventHistoryResult events = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Limit: 100));
+            OperationalEvent reserved = Assert.Single(events.Events, entry =>
+                entry.Kind == OperationalEventKind.LaunchReserved);
+            OperationalEvent dispatched = Assert.Single(events.Events, entry =>
+                entry.Kind == OperationalEventKind.LaunchDispatched);
+            Assert.Equal(reserved.OperationId, dispatched.OperationId);
+            Assert.DoesNotContain(events.Events, entry =>
+                entry.Kind is OperationalEventKind.TargetDisappeared or
+                    OperationalEventKind.ObservationInterrupted or
+                    OperationalEventKind.LaunchFailed);
+            OperationalEvent[] observed = events.Events.Where(entry =>
+                entry.Kind == OperationalEventKind.TargetObserved).ToArray();
+            Assert.NotEmpty(observed);
+            Assert.All(observed, entry =>
+                Assert.Equal(childPid.Value.ToString(CultureInfo.InvariantCulture),
+                    entry.ProcessIdentity?.Split('|').ElementAtOrDefault(2)));
+        }
+        finally
+        {
+            StopStartedProcess(preview);
+            StopLabeledTestTargets(targetExecutable, label);
+            DeleteTemporaryDirectory(directory);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Repeated_dashboard_close_and_second_launch_keep_one_tray_process()
     {
         string directory = Path.Combine(Path.GetTempPath(),
