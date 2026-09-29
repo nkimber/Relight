@@ -15,6 +15,8 @@ param(
     [switch]$ZeroAutomaticAttempts,
     [switch]$ExerciseHistoryNavigation,
     [switch]$ExerciseCorruptBudget,
+    [switch]$ExerciseBlockedLogs,
+    [switch]$ExerciseBudgetWriteDenial,
     [ValidateSet('Pause', 'Disable', 'Remove', 'Exit')]
     [string]$CancelPendingAction = '',
     [ValidateSet('StopGraceful', 'StopForceDecline', 'StopForceAccept',
@@ -150,12 +152,16 @@ if ($ExerciseHistoryNavigation -and ($ExercisePauseResume -or $ExerciseDisableRe
     $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
     throw 'History navigation acceptance uses one automatically started disposable profile.'
 }
-if ($ExerciseCorruptBudget -and (-not $AcceptInitialStart -or $ExercisePauseResume -or
+if (($ExerciseCorruptBudget -or $ExerciseBlockedLogs -or $ExerciseBudgetWriteDenial) -and
+    (-not $AcceptInitialStart -or
+    ([int][bool]$ExerciseCorruptBudget + [int][bool]$ExerciseBlockedLogs +
+        [int][bool]$ExerciseBudgetWriteDenial) -ne 1 -or
+    $ExercisePauseResume -or
     $ExerciseDisableRemove -or $ExerciseExit -or $ExerciseResetDuplicate -or
     $ExerciseNoRearm -or $ExerciseStartNow -or $ExerciseHistoryNavigation -or
     $CancelPendingAction -or $ExplicitAction -or $EditSavedExecutable -or
     $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
-    throw 'Corrupt-budget acceptance uses only accepted initial start and one disposable profile.'
+    throw 'Storage-fault acceptance uses only accepted initial start and one fault mode.'
 }
 if ($ExerciseNoRearm -and ($ExercisePauseResume -or $ExerciseDisableRemove -or
     $ExerciseExit -or $ExerciseResetDuplicate -or $ExerciseStartNow -or
@@ -172,6 +178,7 @@ $primary = $null
 $secondary = $null
 $targetPid = $null
 $external = $null
+$budgetReadLock = $null
 try {
     $arguments = @('--shared-session-preview', $root, '--tray')
     $primary = Start-Process -FilePath $executablePath -ArgumentList $arguments -WindowStyle Hidden -PassThru
@@ -378,7 +385,42 @@ try {
         Write-Output 'PASS: Add dialog was accessible; detection found absence; saved profile kept automatic initial start off; dashboard showed the new profile.'
     }
 
-    if ($ExerciseCorruptBudget) {
+    if ($ExerciseBudgetWriteDenial) {
+        $budgetReadLock = [IO.File]::Open($budgetPath, [IO.FileMode]::Open,
+            [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        Remove-Item -LiteralPath $ready
+        Stop-Process -Id $targetPid
+        Wait-For {
+            foreach ($log in @(Get-ChildItem -LiteralPath (Join-Path $root 'Logs') -File -Filter 'events-*.jsonl')) {
+                if (Select-String -LiteralPath $log.FullName -SimpleMatch '"kind":"StorageDegraded"' -Quiet) {
+                    return $true
+                }
+            }
+            return $false
+        } 'storage-degraded event after denied budget write' 70 | Out-Null
+        Wait-For {
+            foreach ($item in $dashboard.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition)) {
+                if ($item.Current.Name -like '*Automatic recovery is suspended*') { return $true }
+            }
+            return $false
+        } 'rendered storage warning' 20 | Out-Null
+        Start-Sleep -Seconds 35
+        if (Test-Path -LiteralPath $ready) {
+            throw 'Automatic recovery launched without a writable durable budget.'
+        }
+        $budgetReadLock.Dispose()
+        $budgetReadLock = $null
+        $budget = Read-Configuration $budgetPath
+        if ($null -eq $budget -or $budget.budget.reservedAutomaticAttempts -ne 1) {
+            throw 'Write denial changed the original durable attempt charge.'
+        }
+        if ($primary.HasExited) { throw 'Storage-degraded preview did not remain resident.' }
+        Write-Output 'PASS: denied budget write produced a WPF warning and storage event; no automatic relaunch occurred and the original attempt stayed charged.'
+        return
+    }
+
+    if ($ExerciseCorruptBudget -or $ExerciseBlockedLogs) {
         $targetProcess = Get-Process -Id $targetPid -ErrorAction Stop
         try {
             if (-not [string]::Equals($targetProcess.Path, $targetPath,
@@ -388,10 +430,17 @@ try {
         }
         finally { $targetProcess.Dispose() }
         Stop-Process -Id $primary.Id
-        if (-not $primary.WaitForExit(10000)) { throw 'Preview did not exit before budget corruption.' }
+        if (-not $primary.WaitForExit(10000)) { throw 'Preview did not exit before fault injection.' }
         $primary.Dispose()
         $primary = $null
-        [IO.File]::WriteAllText($budgetPath, 'invalid recovery budget')
+        if ($ExerciseCorruptBudget) {
+            [IO.File]::WriteAllText($budgetPath, 'invalid recovery budget')
+        }
+        else {
+            $logPath = Join-Path $root 'Logs'
+            Move-Item -LiteralPath $logPath -Destination (Join-Path $root 'Logs-before-fault')
+            [IO.File]::WriteAllText($logPath, 'blocked log directory')
+        }
         $primary = Start-Process -FilePath $executablePath -ArgumentList $arguments `
             -WindowStyle Hidden -PassThru
         Start-Sleep -Seconds 2
@@ -410,29 +459,51 @@ try {
                 [System.Windows.Automation.Condition]::TrueCondition).Count -eq 0) { return $null }
             return $candidate
         } 'degraded dashboard' 15
+        $expectedDiagnostic = if ($ExerciseCorruptBudget) {
+            '*Recovery state is unavailable*'
+        } else { '*Event logging is degraded*' }
         Wait-For {
             foreach ($item in $dashboard.FindAll([System.Windows.Automation.TreeScope]::Descendants,
                 [System.Windows.Automation.Condition]::TrueCondition)) {
-                if ($item.Current.Name -like '*Recovery state is unavailable*') {
+                if ($item.Current.Name -like $expectedDiagnostic) {
                     return $true
                 }
             }
             return $false
-        } 'rendered corrupt-budget diagnostic' 20 | Out-Null
+        } 'rendered storage-fault diagnostic' 20 | Out-Null
         if (-not (Get-Process -Id $targetPid -ErrorAction SilentlyContinue)) {
-            throw 'Restart with corrupt budget stopped the disposable target.'
+            throw 'Restart under storage fault stopped the disposable target.'
         }
         Remove-Item -LiteralPath $ready
         Stop-Process -Id $targetPid
-        Start-Sleep -Seconds 12
-        if (Test-Path -LiteralPath $ready) {
-            throw 'Automatic recovery launched despite a corrupt durable budget.'
+        if ($ExerciseCorruptBudget) {
+            Start-Sleep -Seconds 12
+            if (Test-Path -LiteralPath $ready) {
+                throw 'Automatic recovery launched despite a corrupt durable budget.'
+            }
+            if ((Get-Content -LiteralPath $budgetPath -Raw) -ne 'invalid recovery budget') {
+                throw 'The original corrupt budget was overwritten.'
+            }
+            Write-Output 'PASS: corrupt durable budget survived preview restart; WPF showed recovery-state diagnostic, preserved the target until the controlled exit, and suppressed automatic relaunch.'
         }
-        if ((Get-Content -LiteralPath $budgetPath -Raw) -ne 'invalid recovery budget') {
-            throw 'The original corrupt budget was overwritten.'
+        else {
+            Wait-For { Test-Path -LiteralPath $ready } 'automatic recovery despite blocked logs' 100 | Out-Null
+            $newPid = [int](Get-Content -LiteralPath $ready -Raw).Split('|')[0]
+            if ($newPid -eq $targetPid) { throw 'Recovery did not create a distinct disposable target.' }
+            $targetPid = $newPid
+            $budget = Wait-For {
+                $saved = Read-Configuration $budgetPath
+                if ($null -ne $saved -and $saved.budget.reservedAutomaticAttempts -eq 2) {
+                    return $saved
+                }
+                return $null
+            } 'second durable automatic attempt' 15
+            if ((Get-Content -LiteralPath $logPath -Raw) -ne 'blocked log directory') {
+                throw 'Logging fault marker changed during automatic recovery.'
+            }
+            Write-Output 'PASS: blocked log path showed WPF warning while monitoring recovered the disposable target with a second durable attempt.'
         }
         if ($primary.HasExited) { throw 'Degraded preview did not remain resident.' }
-        Write-Output 'PASS: corrupt durable budget survived preview restart; WPF showed recovery-state diagnostic, preserved the target until the controlled exit, and suppressed automatic relaunch.'
         return
     }
 
@@ -1175,6 +1246,7 @@ try {
     }
 }
 finally {
+    if ($null -ne $budgetReadLock) { $budgetReadLock.Dispose() }
     if ($null -ne $external) {
         if (-not $external.HasExited) {
             Stop-Process -Id $external.Id
