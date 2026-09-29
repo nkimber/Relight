@@ -131,6 +131,7 @@ Work:
 - Once the initial WPF/tray shell builds and runs, complete the GitHub repository checkpoint above if it has not already been completed.
 - Add the tray icon, prioritized summary/tooltip and menu: dashboard, add application, pause/resume all, history, current-user sign-in startup and exit. Keep commands unavailable until their corresponding behavior is implemented.
 - Implement one engine instance per user interactive session. A second launch activates the existing dashboard; Explorer restart recreates the icon.
+- Support current-user sign-in startup and versioned binary installation. A running Relight may restart itself after an explicitly published replacement, preserving targets and durable budgets; verify the handoff before treating it as release behavior.
 - Build dashboard rows, filters/sorting, details and countdowns from engine snapshots. Explain paused, detection-unavailable and intervention states in words as well as color.
 - Ensure all disk/process work stays off the dispatcher. Recoverable notification/view failures must not stop coordination. Add baseline keyboard navigation, labels and theme/scaling support now.
 
