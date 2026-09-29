@@ -12,6 +12,167 @@ public sealed class RecoveryWpfPreviewProcessTests
 {
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Launcher_exit_is_not_counted_as_failure_when_child_is_selected_target()
+    {
+        string directory = Path.Combine(Path.GetTempPath(),
+            $"relight-wpf-handoff-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        string targetExecutable = FindBuiltExecutable("Relight.TestTarget",
+            "Relight.TestTarget.exe");
+        string relightExecutable = FindBuiltExecutable("Relight.App", "Relight.exe");
+        string label = $"wpf-handoff-{Guid.NewGuid():N}";
+        string ready = Path.Combine(directory, "target.ready");
+        string attemptsFile = Path.Combine(directory, "attempts.bin");
+        Process? preview = null;
+        int? childPid = null;
+        long? childStartedTicks = null;
+        try
+        {
+            Guid profileId = await ConfigureProfileAsync(directory, targetExecutable,
+                ["--label", label, "--handoff", "--ready-file", ready,
+                    "--attempt-file", attemptsFile, "--exit-after-ms", "180000"],
+                maximumAttempts: 3, normalPollInterval: TimeSpan.FromSeconds(60));
+            var store = new ConfigurationStore(directory);
+            StoredConfiguration current = store.Load();
+            ProfileConfiguration saved = Assert.Single(current.Configuration.Profiles);
+            store.Save(current, current.Configuration with
+            {
+                Profiles = [saved with { Target = saved.Target with
+                {
+                    RequiredArgument = label,
+                    ExcludedArgument = "--handoff"
+                } }]
+            });
+            var budgets = new SharedRecoveryBudgetStore(directory);
+            var history = new OperationalEventHistoryReader(directory);
+            preview = StartPreview(relightExecutable, directory);
+
+            await WaitUntilAsync(() => File.Exists(ready) && File.Exists(attemptsFile),
+                TimeSpan.FromSeconds(25));
+            string[] identity = (await File.ReadAllTextAsync(ready)).Split('|');
+            childPid = int.Parse(identity[0], CultureInfo.InvariantCulture);
+            childStartedTicks = DateTimeOffset.Parse(identity[1],
+                CultureInfo.InvariantCulture).UtcTicks;
+            Assert.True(IsSameTargetAlive(childPid.Value, childStartedTicks.Value,
+                targetExecutable));
+            Assert.Equal(1, BitConverter.ToInt32(File.ReadAllBytes(attemptsFile)));
+
+            await WaitForEventCountAsync(history, profileId,
+                OperationalEventKind.ObservationCompleted, 1,
+                TimeSpan.FromSeconds(75));
+            Assert.False(preview.HasExited);
+            Assert.True(IsSameTargetAlive(childPid.Value, childStartedTicks.Value,
+                targetExecutable));
+            Assert.Equal(0, budgets.Load(profileId).ReservedAutomaticAttempts);
+            EventHistoryResult events = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Limit: 100));
+            OperationalEvent reserved = Assert.Single(events.Events, entry =>
+                entry.Kind == OperationalEventKind.LaunchReserved);
+            OperationalEvent dispatched = Assert.Single(events.Events, entry =>
+                entry.Kind == OperationalEventKind.LaunchDispatched);
+            Assert.Equal(reserved.OperationId, dispatched.OperationId);
+            Assert.DoesNotContain(events.Events, entry =>
+                entry.Kind is OperationalEventKind.TargetDisappeared or
+                    OperationalEventKind.ObservationInterrupted or
+                    OperationalEventKind.LaunchFailed);
+            OperationalEvent[] observed = events.Events.Where(entry =>
+                entry.Kind == OperationalEventKind.TargetObserved).ToArray();
+            Assert.NotEmpty(observed);
+            Assert.All(observed, entry =>
+                Assert.Equal(childPid.Value.ToString(CultureInfo.InvariantCulture),
+                    entry.ProcessIdentity?.Split('|').ElementAtOrDefault(2)));
+        }
+        finally
+        {
+            StopStartedProcess(preview);
+            StopLabeledTestTargets(targetExecutable, label);
+            DeleteTemporaryDirectory(directory);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Surviving_helper_does_not_mask_main_target_exit()
+    {
+        string directory = Path.Combine(Path.GetTempPath(),
+            $"relight-wpf-helper-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        string targetExecutable = FindBuiltExecutable("Relight.TestTarget",
+            "Relight.TestTarget.exe");
+        string relightExecutable = FindBuiltExecutable("Relight.App", "Relight.exe");
+        string label = $"wpf-helper-{Guid.NewGuid():N}";
+        string ready = Path.Combine(directory, "target.ready");
+        string[] arguments = ["--label", label, "--spawn-helper", "--hidden",
+            "--ready-file", ready, "--exit-after-ms", "20000",
+            "--helper-ms", "120000"];
+        Process? preview = null, firstMain = null;
+        try
+        {
+            Guid profileId = await ConfigureProfileAsync(directory, targetExecutable,
+                arguments, maximumAttempts: 1, initialAutomaticStart: false);
+            var store = new ConfigurationStore(directory);
+            StoredConfiguration current = store.Load();
+            ProfileConfiguration saved = Assert.Single(current.Configuration.Profiles);
+            store.Save(current, current.Configuration with
+            {
+                Profiles = [saved with { Target = saved.Target with
+                {
+                    RequiredArgument = label,
+                    ExcludedArgument = "--helper"
+                } }]
+            });
+            var start = new ProcessStartInfo(targetExecutable) { UseShellExecute = false };
+            foreach (string argument in arguments) start.ArgumentList.Add(argument);
+            firstMain = Process.Start(start) ??
+                throw new InvalidOperationException("Initial main target did not start.");
+            await WaitUntilAsync(() => File.Exists(ready) && File.Exists(ready + ".helper"),
+                TimeSpan.FromSeconds(8));
+            string[] helperIdentity = (await File.ReadAllTextAsync(ready + ".helper"))
+                .Split('|');
+            int helperPid = int.Parse(helperIdentity[0], CultureInfo.InvariantCulture);
+            long helperStarted = DateTimeOffset.Parse(helperIdentity[1],
+                CultureInfo.InvariantCulture).UtcTicks;
+            var history = new OperationalEventHistoryReader(directory);
+            preview = StartPreview(relightExecutable, directory);
+            await WaitForTargetObservationsAsync(history, profileId, 1,
+                TimeSpan.FromSeconds(10));
+            await firstMain.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(25));
+            Assert.True(IsSameTargetAlive(helperPid, helperStarted, targetExecutable));
+            File.Delete(ready);
+
+            await WaitForEventCountAsync(history, profileId,
+                OperationalEventKind.TargetDisappeared, 1, TimeSpan.FromSeconds(12));
+            await WaitForEventCountAsync(history, profileId,
+                OperationalEventKind.LaunchDispatched, 1, TimeSpan.FromSeconds(20));
+            await WaitUntilAsync(() => File.Exists(ready), TimeSpan.FromSeconds(10));
+            int replacementPid = int.Parse((await File.ReadAllTextAsync(ready)).Split('|')[0],
+                CultureInfo.InvariantCulture);
+            Assert.NotEqual(firstMain.Id, replacementPid);
+            Assert.NotEqual(helperPid, replacementPid);
+            Assert.True(IsSameTargetAlive(helperPid, helperStarted, targetExecutable));
+            Assert.Equal(1, new SharedRecoveryBudgetStore(directory).Load(profileId)
+                .ReservedAutomaticAttempts);
+            EventHistoryResult events = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Limit: 100));
+            Assert.Single(events.Events, entry =>
+                entry.Kind == OperationalEventKind.LaunchDispatched);
+            Assert.DoesNotContain(events.Events, entry =>
+                entry.Kind == OperationalEventKind.TargetObserved &&
+                entry.ProcessIdentity?.Split('|').ElementAtOrDefault(2) ==
+                    helperPid.ToString(CultureInfo.InvariantCulture));
+            Assert.False(preview.HasExited);
+        }
+        finally
+        {
+            StopStartedProcess(preview);
+            StopStartedProcess(firstMain);
+            StopLabeledTestTargets(targetExecutable, label);
+            DeleteTemporaryDirectory(directory);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Repeated_dashboard_close_and_second_launch_keep_one_tray_process()
     {
         string directory = Path.Combine(Path.GetTempPath(),
@@ -99,6 +260,154 @@ public sealed class RecoveryWpfPreviewProcessTests
                 preview.Dispose();
             }
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Simultaneous_target_failures_keep_independent_budgets_and_responsive_dashboard()
+    {
+        string directory = Path.Combine(Path.GetTempPath(),
+            $"relight-wpf-concurrent-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        string sourceTarget = FindBuiltExecutable("Relight.TestTarget", "Relight.TestTarget.exe");
+        string firstTarget = CopyTestTarget(sourceTarget, Path.Combine(directory, "first"));
+        string secondTarget = CopyTestTarget(sourceTarget, Path.Combine(directory, "second"));
+        string relightExecutable = FindBuiltExecutable("Relight.App", "Relight.exe");
+        string firstLabel = $"concurrent-first-{Guid.NewGuid():N}";
+        string secondLabel = $"concurrent-second-{Guid.NewGuid():N}";
+        string firstReady = Path.Combine(directory, "first.ready");
+        string secondReady = Path.Combine(directory, "second.ready");
+        Process? preview = null, first = null, second = null;
+        try
+        {
+            first = StartDisposableTarget(firstTarget, firstLabel, firstReady);
+            second = StartDisposableTarget(secondTarget, secondLabel, secondReady);
+            await WaitUntilAsync(() => File.Exists(firstReady) && File.Exists(secondReady),
+                TimeSpan.FromSeconds(10));
+            var policy = RecoveryPolicy.Default with
+            {
+                StartAutomaticallyWhenInitiallyAbsent = false,
+                NormalPollInterval = TimeSpan.FromSeconds(60),
+                ObservationPeriod = TimeSpan.FromSeconds(60),
+                ObservationPollInterval = TimeSpan.FromSeconds(1),
+                RetryDelay = TimeSpan.FromSeconds(5),
+                AppearanceTimeout = TimeSpan.FromSeconds(5),
+                AbsenceConfirmationDelay = TimeSpan.FromSeconds(1),
+                LockoutDiscoveryInterval = TimeSpan.FromSeconds(5)
+            };
+            Guid firstId, secondId;
+            await using (var setup = await RecoveryApplicationHost
+                .OpenSharedSessionPreviewAsync(directory))
+            {
+                firstId = await setup.RegisterExecutableAsync("First disposable target",
+                    firstTarget, ["--label", firstLabel, "--ready-file", firstReady,
+                        "--attempt-file", Path.Combine(directory, "first-attempts.bin"),
+                        "--fail-first", "1", "--exit-after-ms", "150", "--hidden"],
+                    null, policy with { MaximumAutomaticAttempts = 1 });
+                secondId = await setup.RegisterExecutableAsync("Second disposable target",
+                    secondTarget, ["--label", secondLabel, "--ready-file", secondReady,
+                        "--attempt-file", Path.Combine(directory, "second-attempts.bin"),
+                        "--fail-first", "1", "--exit-after-ms", "150", "--hidden"],
+                    null, policy with { MaximumAutomaticAttempts = 2 });
+            }
+            var budgets = new SharedRecoveryBudgetStore(directory);
+            var history = new OperationalEventHistoryReader(directory);
+            preview = StartPreview(relightExecutable, directory);
+            await Task.WhenAll(
+                WaitForEventCountAsync(history, firstId, OperationalEventKind.ObservationCompleted,
+                    1, TimeSpan.FromSeconds(80)),
+                WaitForEventCountAsync(history, secondId, OperationalEventKind.ObservationCompleted,
+                    1, TimeSpan.FromSeconds(80)));
+            Assert.Equal(0, budgets.Load(firstId).ReservedAutomaticAttempts);
+            Assert.Equal(0, budgets.Load(secondId).ReservedAutomaticAttempts);
+
+            StopStartedProcess(first);
+            first = null;
+            StopStartedProcess(second);
+            second = null;
+            await Task.WhenAll(
+                WaitForEventCountAsync(history, firstId, OperationalEventKind.TargetDisappeared,
+                    1, TimeSpan.FromSeconds(80)),
+                WaitForEventCountAsync(history, secondId, OperationalEventKind.TargetDisappeared,
+                    1, TimeSpan.FromSeconds(80)));
+            using (Process activation = StartPreview(relightExecutable, directory))
+            {
+                await activation.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+                Assert.Equal(0, activation.ExitCode);
+            }
+            await WaitUntilAsync(() =>
+            {
+                preview.Refresh();
+                return preview.MainWindowHandle != nint.Zero;
+            }, TimeSpan.FromSeconds(10));
+            var response = Stopwatch.StartNew();
+            Assert.True(preview.CloseMainWindow());
+            await WaitUntilAsync(() =>
+            {
+                preview.Refresh();
+                return preview.MainWindowHandle == nint.Zero;
+            }, TimeSpan.FromSeconds(5));
+            response.Stop();
+            Assert.True(response.Elapsed < TimeSpan.FromSeconds(5),
+                $"Dashboard close took {response.Elapsed} during concurrent recovery.");
+
+            await Task.WhenAll(
+                WaitForEventCountAsync(history, firstId, OperationalEventKind.LockoutEntered,
+                    1, TimeSpan.FromSeconds(40)),
+                WaitForEventCountAsync(history, secondId, OperationalEventKind.LaunchDispatched,
+                    2, TimeSpan.FromSeconds(40)));
+            Assert.False(preview.HasExited);
+            SharedRecoveryBudget firstBudget = budgets.Load(firstId);
+            SharedRecoveryBudget secondBudget = budgets.Load(secondId);
+            Assert.True(firstBudget.LockedOut);
+            Assert.Equal(1, firstBudget.ReservedAutomaticAttempts);
+            Assert.False(secondBudget.LockedOut);
+            Assert.Equal(2, secondBudget.ReservedAutomaticAttempts);
+            EventHistoryResult firstDispatches = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: firstId, Kind: OperationalEventKind.LaunchDispatched));
+            EventHistoryResult secondDispatches = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: secondId, Kind: OperationalEventKind.LaunchDispatched));
+            Assert.Equal(1, firstDispatches.TotalMatches);
+            Assert.Equal(2, secondDispatches.TotalMatches);
+            OperationalEvent[] orderedSecond = secondDispatches.Events
+                .OrderBy(entry => entry.OccurredUtc).ToArray();
+            Assert.Equal(2, orderedSecond.Length);
+            Assert.NotEqual(orderedSecond[0].OperationId, orderedSecond[1].OperationId);
+            Assert.True(orderedSecond[1].OccurredUtc - orderedSecond[0].OccurredUtc >=
+                TimeSpan.FromSeconds(5));
+            using (Process activation = StartPreview(relightExecutable, directory))
+            {
+                await activation.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+                Assert.Equal(0, activation.ExitCode);
+            }
+            await WaitUntilAsync(() =>
+            {
+                preview.Refresh();
+                return preview.MainWindowHandle != nint.Zero;
+            }, TimeSpan.FromSeconds(10));
+            await WaitUntilAsync(() =>
+            {
+                try
+                {
+                    string[] identity = File.ReadAllText(secondReady).Split('|');
+                    int pid = int.Parse(identity[0], CultureInfo.InvariantCulture);
+                    long started = DateTimeOffset.Parse(identity[1], CultureInfo.InvariantCulture)
+                        .UtcTicks;
+                    return IsSameTargetAlive(pid, started, secondTarget);
+                }
+                catch (Exception error) when (error is IOException or FormatException or
+                    IndexOutOfRangeException) { return false; }
+            }, TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            StopStartedProcess(preview);
+            StopStartedProcess(first);
+            StopStartedProcess(second);
+            StopLabeledTestTargets(firstTarget, firstLabel);
+            StopLabeledTestTargets(secondTarget, secondLabel);
+            DeleteTemporaryDirectory(directory);
         }
     }
 
@@ -573,7 +882,8 @@ public sealed class RecoveryWpfPreviewProcessTests
             EventHistoryResult interrupted = await history.ReadAsync(new EventHistoryQuery(
                 ProfileId: profileId, Kind: OperationalEventKind.ObservationInterrupted));
             OperationalEvent start = Assert.Single(started.Events);
-            OperationalEvent end = Assert.Single(interrupted.Events);
+            OperationalEvent end = Assert.Single(interrupted.Events,
+                entry => entry.NewState == RecoveryState.AwaitingIntervention);
             Assert.Equal(ObservationOrigin.AutomaticLaunch, start.Origin);
             Assert.Equal(ObservationOrigin.AutomaticLaunch, end.Origin);
             if (end.FailureCategory != OperationalFailureCategory.EarlyExit)
@@ -865,7 +1175,7 @@ public sealed class RecoveryWpfPreviewProcessTests
             File.Delete(ready);
             await WaitForEventCountAsync(history, profileId,
                 OperationalEventKind.TargetDisappeared, 1,
-                TimeSpan.FromSeconds(75));
+                TimeSpan.FromSeconds(20));
             await WaitForEventCountAsync(history, profileId,
                 OperationalEventKind.LaunchDispatched, 1,
                 TimeSpan.FromSeconds(20));
@@ -1026,6 +1336,23 @@ public sealed class RecoveryWpfPreviewProcessTests
         start.ArgumentList.Add("--tray");
         return Process.Start(start) ??
             throw new InvalidOperationException("WPF preview did not start.");
+    }
+
+    private static string CopyTestTarget(string sourceExecutable, string directory)
+    {
+        Directory.CreateDirectory(directory);
+        foreach (string source in Directory.GetFiles(Path.GetDirectoryName(sourceExecutable)!))
+            File.Copy(source, Path.Combine(directory, Path.GetFileName(source)));
+        return Path.Combine(directory, Path.GetFileName(sourceExecutable));
+    }
+
+    private static Process StartDisposableTarget(string executable, string label, string ready)
+    {
+        var start = new ProcessStartInfo(executable) { UseShellExecute = false };
+        foreach (string argument in new[] { "--label", label, "--ready-file", ready, "--hidden" })
+            start.ArgumentList.Add(argument);
+        return Process.Start(start) ??
+            throw new InvalidOperationException("Disposable test target did not start.");
     }
 
     private static string FindBuiltExecutable(string project, string file)

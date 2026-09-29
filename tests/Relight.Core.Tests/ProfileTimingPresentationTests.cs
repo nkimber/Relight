@@ -159,6 +159,29 @@ public sealed class ProfileTimingPresentationTests
     }
 
     [Fact]
+    public void Permission_denied_detection_explains_suspension_in_dashboard_row()
+    {
+        var viewModel = new ShellViewModel(() => { }, () => { }, () => { }, () => { });
+        HostedProfileStatus profile = Profile(new RecoveryMachine(
+            RecoveryPolicy.Default).Snapshot with
+        {
+            DetectionUnavailable = true
+        }) with
+        {
+            Detection = Detection.Unavailable("Access denied while inspecting the process.",
+                DetectionFailureKind.PermissionDenied, 5)
+        };
+        viewModel.UpdateMonitoring(null, false, [profile], null, TimeSpan.Zero);
+        ApplicationStatusRow row = Assert.Single(viewModel.ApplicationRows);
+        Assert.Equal("Detection unavailable", row.State);
+        Assert.Contains("Access denied", row.Detail);
+        Assert.Contains("Automatic actions are suspended", row.Detail);
+        Assert.False(row.CanStartNow);
+        Assert.False(row.CanStopAndPause);
+        Assert.False(row.CanRestartNow);
+    }
+
+    [Fact]
     public void Enable_warning_flag_requires_initial_start_and_a_nonzero_budget()
     {
         var viewModel = new ShellViewModel(() => { }, () => { }, () => { }, () => { });

@@ -12,6 +12,215 @@ public sealed class RecoveryApplicationHostIntegrationTests
 {
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Verified_exit_callback_and_manual_start_share_one_launch_gate()
+    {
+        string root = Path.Combine(Path.GetTempPath(),
+            $"relight-exit-race-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        string ready = Path.Combine(root, "target.ready");
+        string label = $"exit-race-{Guid.NewGuid():N}";
+        Process? initial = null;
+        int? launchedPid = null;
+        try
+        {
+            string[] arguments = ["--label", label, "--ready-file", ready,
+                "--exit-after-ms", "30000"];
+            var start = new ProcessStartInfo(TestExecutable()) { UseShellExecute = false };
+            foreach (string argument in arguments) start.ArgumentList.Add(argument);
+            initial = Process.Start(start) ??
+                throw new InvalidOperationException("Disposable target did not start.");
+            await WaitForFile(ready);
+            Guid id = Guid.NewGuid();
+            RecoveryPolicy policy = RecoveryPolicy.Default with
+            {
+                NormalPollInterval = TimeSpan.FromSeconds(60),
+                ObservationPeriod = TimeSpan.FromSeconds(60),
+                RetryDelay = TimeSpan.FromSeconds(5)
+            };
+            new ConfigurationStore(root).Initialize(new(
+                [new(id, "Exit race target", true,
+                    new(TargetKind.Executable, TestExecutable(), [.. arguments],
+                        RequiredArgument: label), policy)], GlobalConfiguration.Default));
+            new RecoveryStateStore(root).Create(id,
+                new RecoveryMachine(policy).ExportCheckpoint());
+            var clock = new FakeClock();
+            await using var host = await RecoveryApplicationHost.OpenLegacyForTestsAsync(root,
+                clock);
+            await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
+            for (int second = 5; second <= 65; second += 5)
+            {
+                clock.Elapsed = TimeSpan.FromSeconds(second);
+                await Task.WhenAll(host.Pulse().Values).WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            Assert.Equal(RecoveryState.Healthy,
+                Assert.Single(host.GetProfiles()).Recovery?.State);
+            Assert.NotNull(Assert.Single(host.GetProfiles()).Recovery?.TargetIdentity);
+
+            initial.Kill(entireProcessTree: false);
+            await initial.WaitForExitAsync();
+            File.Delete(ready);
+            // The 60-second normal poll is not due again. Only the real Exited
+            // subscription can make this pulse available at the current clock.
+            Task? callbackPoll = null;
+            using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+            {
+                while (callbackPoll is null)
+                {
+                    timeout.Token.ThrowIfCancellationRequested();
+                    host.Pulse().TryGetValue(id, out callbackPoll);
+                    if (callbackPoll is null)
+                        await Task.Delay(20, timeout.Token);
+                }
+            }
+            await callbackPoll.WaitAsync(TimeSpan.FromSeconds(5));
+            clock.Elapsed = TimeSpan.FromSeconds(67);
+            await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(RecoveryState.RetryWaiting,
+                Assert.Single(host.GetProfiles()).Recovery?.State);
+
+            clock.Elapsed = TimeSpan.FromSeconds(72);
+            Task<CoordinatorResult> explicitStart = host.StartProfileNowAsync(id);
+            Task duePoll = Assert.Single(host.Pulse()).Value;
+            await Task.WhenAll(explicitStart, duePoll).WaitAsync(TimeSpan.FromSeconds(10));
+            string[] identity = (await WaitForFile(ready)).Split('|');
+            launchedPid = int.Parse(identity[0]);
+            Assert.NotEqual(initial.Id, launchedPid);
+            Assert.Equal(1, new RecoveryStateStore(root).Load(id).Checkpoint
+                .ReservedAutomaticAttempts + ((await explicitStart).LaunchDispatched ? 1 : 0));
+            var history = new OperationalEventHistoryReader(root);
+            EventHistoryResult automatic = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: id, Kind: OperationalEventKind.LaunchDispatched));
+            EventHistoryResult manual = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: id, Kind: OperationalEventKind.ExplicitStartDispatched));
+            Assert.Equal(1, automatic.TotalMatches + manual.TotalMatches);
+            if (automatic.TotalMatches == 1)
+            {
+                OperationalEvent reserved = Assert.Single((await history.ReadAsync(
+                    new EventHistoryQuery(ProfileId: id,
+                        Kind: OperationalEventKind.LaunchReserved))).Events);
+                Assert.Equal(reserved.OperationId, Assert.Single(automatic.Events).OperationId);
+            }
+        }
+        finally
+        {
+            foreach (int? pid in new int?[] { launchedPid, initial?.Id })
+            {
+                if (pid is null) continue;
+                try
+                {
+                    using Process process = Process.GetProcessById(pid.Value);
+                    if (!process.HasExited)
+                    {
+                        process.Kill(entireProcessTree: false);
+                        await process.WaitForExitAsync();
+                    }
+                }
+                catch (ArgumentException) { }
+            }
+            initial?.Dispose();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
+    public async Task Ambiguous_live_instances_show_candidates_and_suspend_actions()
+    {
+        string root = Path.Combine(Path.GetTempPath(),
+            $"relight-ambiguous-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        string label = $"ambiguous-{Guid.NewGuid():N}";
+        Process? first = null, second = null;
+        try
+        {
+            Guid id;
+            await using (var setup = await RecoveryApplicationHost.OpenSharedSessionAsync(root,
+                             new FakeClock()))
+                id = await setup.RegisterExecutableAsync("Ambiguous disposable target",
+                    TestExecutable(), ["--label", label, "--hidden"], null,
+                    RecoveryPolicy.Default with
+                    {
+                        StartAutomaticallyWhenInitiallyAbsent = true
+                    });
+            var store = new ConfigurationStore(root);
+            StoredConfiguration current = store.Load();
+            ProfileConfiguration profile = Assert.Single(current.Configuration.Profiles);
+            store.Save(current, current.Configuration with
+            {
+                Profiles = [profile with { Target = profile.Target with
+                {
+                    RequiredArgument = label
+                } }]
+            });
+            Process Start(string ready)
+            {
+                var info = new ProcessStartInfo(TestExecutable())
+                {
+                    UseShellExecute = false
+                };
+                foreach (string argument in new[] { "--label", label, "--hidden",
+                    "--ready-file", ready, "--exit-after-ms", "60000" })
+                    info.ArgumentList.Add(argument);
+                return Process.Start(info) ??
+                    throw new InvalidOperationException("Disposable target did not start.");
+            }
+            first = Start(Path.Combine(root, "first.ready"));
+            second = Start(Path.Combine(root, "second.ready"));
+            await WaitForFile(Path.Combine(root, "first.ready"));
+            await WaitForFile(Path.Combine(root, "second.ready"));
+
+            var clock = new FakeClock();
+            await using var host = await RecoveryApplicationHost.OpenSharedSessionAsync(root,
+                clock);
+            await Assert.Single(host.Pulse()).Value.WaitAsync(TimeSpan.FromSeconds(5));
+            HostedProfileStatus status = Assert.Single(host.GetProfiles());
+            Assert.True(status.Recovery?.DetectionUnavailable);
+            Assert.Equal(DetectionFailureKind.Ambiguous, status.Detection?.FailureKind);
+            Assert.Contains($"PID {first.Id}", status.Detection?.Reason);
+            Assert.Contains($"PID {second.Id}", status.Detection?.Reason);
+            var dashboard = new ShellViewModel(() => { }, () => { }, () => { }, () => { });
+            dashboard.UpdateMonitoring(null, false, [status], null, clock.Elapsed);
+            ApplicationStatusRow row = Assert.Single(dashboard.ApplicationRows);
+            Assert.Equal("Detection unavailable", row.State);
+            Assert.Contains($"PID {first.Id}", row.Detail);
+            Assert.Contains($"PID {second.Id}", row.Detail);
+            Assert.Contains("Automatic actions are suspended", row.Detail);
+            Assert.False(row.CanStartNow);
+            Assert.False(row.CanStopAndPause);
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                host.StartProfileNowAsync(id));
+            Assert.Equal(0, new SharedRecoveryBudgetStore(root).Load(id)
+                .ReservedAutomaticAttempts);
+            Assert.False(first.HasExited);
+            Assert.False(second.HasExited);
+            EventHistoryResult events = await new OperationalEventHistoryReader(root)
+                .ReadAsync(new EventHistoryQuery(ProfileId: id, Limit: 100));
+            Assert.Contains(events.Events, entry =>
+                entry.Kind == OperationalEventKind.DetectionUnavailable &&
+                entry.FailureCategory == OperationalFailureCategory.DetectionAmbiguous);
+            Assert.DoesNotContain(events.Events, entry =>
+                entry.Kind is OperationalEventKind.LaunchReserved or
+                    OperationalEventKind.LaunchDispatched or
+                    OperationalEventKind.ExplicitStartDispatched);
+        }
+        finally
+        {
+            foreach (Process? process in new[] { first, second })
+            {
+                if (process is null) continue;
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: false);
+                    await process.WaitForExitAsync();
+                }
+                process.Dispose();
+            }
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Windows_interruption_marks_profiles_unknown_then_reconciles_immediately()
     {
         string root = Path.Combine(Path.GetTempPath(),
@@ -738,9 +947,14 @@ public sealed class RecoveryApplicationHostIntegrationTests
                 await Assert.ThrowsAsync<ConfigurationUnavailableException>(() =>
                     host.StartProfileNowAsync(id));
 
-                StoredConfiguration backup = store.Load();
+                StoredConfiguration backup = Assert.IsType<StoredConfiguration>(
+                    host.RepairableConfiguration);
                 Assert.True(backup.FromLastGoodBackup);
-                store.RepairFromLastGood(backup);
+                Assert.False(host.Configuration?.FromLastGoodBackup);
+                string? preserved = await host.RepairConfigurationAsync();
+                Assert.NotNull(preserved);
+                Assert.True(File.Exists(preserved));
+                Assert.Null(host.RepairableConfiguration);
                 using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(7)))
                     while (host.ConfigurationProblem is not null)
                         await Task.Delay(50, timeout.Token);

@@ -18,6 +18,8 @@ dotnet run --project src/Relight.App --configuration Release --no-build
 
 Or run `src\Relight.App\bin\Release\net10.0-windows\Relight.exe` after building. That output needs the .NET 10 Desktop Runtime. Start with `--tray` to leave the dashboard hidden initially.
 
+To install a self-contained copy for the current Windows user and start it at each sign-in, run `pwsh -File scripts/Install-Relight.ps1 -EnableStartup`. The script publishes a fresh build into `%LOCALAPPDATA%\Relight\Versions`, registers that version under the current user's Windows Run key, and starts it in the tray if Relight is not already running. Later run `pwsh -File scripts/Install-Relight.ps1` after recompiling; it preserves the current startup choice. A running version checks the atomic `installed-version.json` pointer every five seconds, exits its monitoring host without closing target applications, and starts the new version after the old process exits. The first installation from an older build without version monitoring requires one manual Relight exit and restart. Rebuilding the same in-use output directory is not supported; use the install script so locked binaries are never overwritten. The Settings startup toggle remains available to disable or enable future sign-in launches.
+
 Ordinary launch now uses per-logon-session live state and a shared durable attempt budget. An existing legacy profile is migrated under a guarded ownership transfer; damaged or conflicting evidence suspends its automatic actions. For controlled shared-session testing, start the executable with `--shared-session-preview <absolute-data-directory> --tray`. The directory must differ from normal `%LOCALAPPDATA%\Relight`; the preview does not migrate legacy recovery state and disables sign-in startup controls. Use a disposable directory and session. `pwsh -File scripts/Test-SharedSessionPreview.ps1` checks isolated WPF startup and second-instance activation without configuring or closing a target. Real two-sign-in acceptance remains open.
 
 ## Use the preview
@@ -37,7 +39,7 @@ Ordinary launch now uses per-logon-session live state and a shared durable attem
 - Close the dashboard or press **Ctrl+W** to hide it and keep Relight resident.
 - Double-click the flame in the notification area, choose **Open dashboard** from its menu, or launch Relight again to return to the existing instance. Windows may place the icon in its tray overflow.
 - Choose **Exit Relight** or press **Ctrl+Q** to quit. The confirmation defaults to Cancel. Other applications stay running.
-- The Applications page shows configured profiles and monitoring status. Unimplemented controls are disabled and labeled. First run creates empty local configuration; profile state is stored separately under `%LOCALAPPDATA%\Relight\State`, and operational events under `Logs`. It does not register sign-in startup.
+- The Applications page shows configured profiles and monitoring status. Unimplemented controls are disabled and labeled. First run creates empty local configuration; profile state is stored separately under `%LOCALAPPDATA%\Relight\State`, and operational events under `Logs`. A plain development launch does not register sign-in startup; the install script can enable it.
 
 ## Verify
 
