@@ -92,6 +92,87 @@ public sealed class RecoveryWpfPreviewProcessTests
 
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Surviving_helper_does_not_mask_main_target_exit()
+    {
+        string directory = Path.Combine(Path.GetTempPath(),
+            $"relight-wpf-helper-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        string targetExecutable = FindBuiltExecutable("Relight.TestTarget",
+            "Relight.TestTarget.exe");
+        string relightExecutable = FindBuiltExecutable("Relight.App", "Relight.exe");
+        string label = $"wpf-helper-{Guid.NewGuid():N}";
+        string ready = Path.Combine(directory, "target.ready");
+        string[] arguments = ["--label", label, "--spawn-helper", "--hidden",
+            "--ready-file", ready, "--exit-after-ms", "20000",
+            "--helper-ms", "120000"];
+        Process? preview = null, firstMain = null;
+        try
+        {
+            Guid profileId = await ConfigureProfileAsync(directory, targetExecutable,
+                arguments, maximumAttempts: 1, initialAutomaticStart: false);
+            var store = new ConfigurationStore(directory);
+            StoredConfiguration current = store.Load();
+            ProfileConfiguration saved = Assert.Single(current.Configuration.Profiles);
+            store.Save(current, current.Configuration with
+            {
+                Profiles = [saved with { Target = saved.Target with
+                {
+                    RequiredArgument = label,
+                    ExcludedArgument = "--helper"
+                } }]
+            });
+            var start = new ProcessStartInfo(targetExecutable) { UseShellExecute = false };
+            foreach (string argument in arguments) start.ArgumentList.Add(argument);
+            firstMain = Process.Start(start) ??
+                throw new InvalidOperationException("Initial main target did not start.");
+            await WaitUntilAsync(() => File.Exists(ready) && File.Exists(ready + ".helper"),
+                TimeSpan.FromSeconds(8));
+            string[] helperIdentity = (await File.ReadAllTextAsync(ready + ".helper"))
+                .Split('|');
+            int helperPid = int.Parse(helperIdentity[0], CultureInfo.InvariantCulture);
+            long helperStarted = DateTimeOffset.Parse(helperIdentity[1],
+                CultureInfo.InvariantCulture).UtcTicks;
+            var history = new OperationalEventHistoryReader(directory);
+            preview = StartPreview(relightExecutable, directory);
+            await WaitForTargetObservationsAsync(history, profileId, 1,
+                TimeSpan.FromSeconds(10));
+            await firstMain.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(25));
+            Assert.True(IsSameTargetAlive(helperPid, helperStarted, targetExecutable));
+            File.Delete(ready);
+
+            await WaitForEventCountAsync(history, profileId,
+                OperationalEventKind.TargetDisappeared, 1, TimeSpan.FromSeconds(12));
+            await WaitForEventCountAsync(history, profileId,
+                OperationalEventKind.LaunchDispatched, 1, TimeSpan.FromSeconds(20));
+            await WaitUntilAsync(() => File.Exists(ready), TimeSpan.FromSeconds(10));
+            int replacementPid = int.Parse((await File.ReadAllTextAsync(ready)).Split('|')[0],
+                CultureInfo.InvariantCulture);
+            Assert.NotEqual(firstMain.Id, replacementPid);
+            Assert.NotEqual(helperPid, replacementPid);
+            Assert.True(IsSameTargetAlive(helperPid, helperStarted, targetExecutable));
+            Assert.Equal(1, new SharedRecoveryBudgetStore(directory).Load(profileId)
+                .ReservedAutomaticAttempts);
+            EventHistoryResult events = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: profileId, Limit: 100));
+            Assert.Single(events.Events, entry =>
+                entry.Kind == OperationalEventKind.LaunchDispatched);
+            Assert.DoesNotContain(events.Events, entry =>
+                entry.Kind == OperationalEventKind.TargetObserved &&
+                entry.ProcessIdentity?.Split('|').ElementAtOrDefault(2) ==
+                    helperPid.ToString(CultureInfo.InvariantCulture));
+            Assert.False(preview.HasExited);
+        }
+        finally
+        {
+            StopStartedProcess(preview);
+            StopStartedProcess(firstMain);
+            StopLabeledTestTargets(targetExecutable, label);
+            DeleteTemporaryDirectory(directory);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Repeated_dashboard_close_and_second_launch_keep_one_tray_process()
     {
         string directory = Path.Combine(Path.GetTempPath(),
