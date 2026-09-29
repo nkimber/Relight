@@ -1,6 +1,6 @@
 # Portable preview checkpoint
 
-This is an M9 packaging checkpoint, not the Version 1 release acceptance report. [The development plan](development-plan.md#m9--pilot-package-and-release-version-1) retains the 24-hour soak, actual-target pilot, clean-machine, upgrade/removal and full acceptance gates.
+This is an M9 packaging checkpoint, not the Version 1 release acceptance report. [The development plan](development-plan.md#m9--pilot-package-and-release-version-1) retains accepted-soak review, actual-target pilot, clean-machine, upgrade/removal and full acceptance gates.
 
 `pwsh -File scripts/Build-PortablePreview.ps1` builds from a clean committed checkout. It publishes `Relight.App` self-contained for `win-x64` into a new ignored `artifacts/releases` directory, identifies the runtime and `System.Management` versions from `Relight.deps.json`, copies available package license and third-party notices, and writes a dependency summary. It runs the tray process smoke check against the published executable, creates a ZIP, and writes `SHA256SUMS.txt` and `manifest.json`. It refuses an existing output directory, so it does not replace an earlier build. The source revision and SDK/runtime versions are recorded in the manifest.
 
@@ -8,6 +8,6 @@ On 28 September 2026, the builder produced a local **0.1.0 development preview**
 
 The published executable passed `scripts/Test-Shell.ps1`: hidden tray startup, second-instance dashboard activation and restart after interruption. The ZIP was then extracted to a fresh ignored directory, and those same process checks passed against the extracted executable. The archive contains `Notices/DEPENDENCIES.txt`, .NET runtime MIT and third-party notices, Windows Desktop runtime MIT license, and the `System.Management` package metadata identifying its MIT license. The checksum was recomputed from the archive and matched `SHA256SUMS.txt` and `manifest.json`.
 
-This verifies local publish, archive integrity, extraction and shell startup on the build PC. A machine without a separately installed .NET runtime, data-preserving upgrade/removal, sign-in registration cleanup, full UI, 24-hour soak and real ChatGPT recovery have not been validated. No public release artifact was published.
+This verifies local publish, archive integrity, extraction and shell startup on the build PC. A machine without a separately installed .NET runtime, data-preserving upgrade/removal, sign-in registration cleanup, full UI and real ChatGPT recovery have not been validated. The user accepted an 18.47-hour soak on an earlier preview build; its evidence still needs review. No public release artifact was published.
 
 [Windows CI](https://github.com/nkimber/Relight/actions/runs/36397549629) passed its Release solution build, deterministic tests and cross-process probes after the builder and this documentation were committed. CI does not execute the portable-package builder or clean-machine acceptance; the packaging checks above were run locally.
