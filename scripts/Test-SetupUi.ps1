@@ -14,6 +14,7 @@ param(
     [switch]$ExerciseStartNow,
     [switch]$ZeroAutomaticAttempts,
     [switch]$ExerciseHistoryNavigation,
+    [switch]$ExerciseCorruptBudget,
     [ValidateSet('Pause', 'Disable', 'Remove', 'Exit')]
     [string]$CancelPendingAction = '',
     [ValidateSet('StopGraceful', 'StopForceDecline', 'StopForceAccept',
@@ -148,6 +149,13 @@ if ($ExerciseHistoryNavigation -and ($ExercisePauseResume -or $ExerciseDisableRe
     $ExerciseExit -or $ExerciseResetDuplicate -or $EditSavedExecutable -or
     $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
     throw 'History navigation acceptance uses one automatically started disposable profile.'
+}
+if ($ExerciseCorruptBudget -and (-not $AcceptInitialStart -or $ExercisePauseResume -or
+    $ExerciseDisableRemove -or $ExerciseExit -or $ExerciseResetDuplicate -or
+    $ExerciseNoRearm -or $ExerciseStartNow -or $ExerciseHistoryNavigation -or
+    $CancelPendingAction -or $ExplicitAction -or $EditSavedExecutable -or
+    $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
+    throw 'Corrupt-budget acceptance uses only accepted initial start and one disposable profile.'
 }
 if ($ExerciseNoRearm -and ($ExercisePauseResume -or $ExerciseDisableRemove -or
     $ExerciseExit -or $ExerciseResetDuplicate -or $ExerciseStartNow -or
@@ -368,6 +376,64 @@ try {
     }
     else {
         Write-Output 'PASS: Add dialog was accessible; detection found absence; saved profile kept automatic initial start off; dashboard showed the new profile.'
+    }
+
+    if ($ExerciseCorruptBudget) {
+        $targetProcess = Get-Process -Id $targetPid -ErrorAction Stop
+        try {
+            if (-not [string]::Equals($targetProcess.Path, $targetPath,
+                [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'The disposable target identity changed before fault injection.'
+            }
+        }
+        finally { $targetProcess.Dispose() }
+        Stop-Process -Id $primary.Id
+        if (-not $primary.WaitForExit(10000)) { throw 'Preview did not exit before budget corruption.' }
+        $primary.Dispose()
+        $primary = $null
+        [IO.File]::WriteAllText($budgetPath, 'invalid recovery budget')
+        $primary = Start-Process -FilePath $executablePath -ArgumentList $arguments `
+            -WindowStyle Hidden -PassThru
+        Start-Sleep -Seconds 2
+        if ($primary.HasExited) { throw "Degraded preview exited with code $($primary.ExitCode)." }
+        $secondary = Start-Process -FilePath $executablePath -ArgumentList $arguments `
+            -WindowStyle Hidden -PassThru
+        if (-not $secondary.WaitForExit(10000) -or $secondary.ExitCode -ne 0) {
+            throw 'Second launch did not reopen the degraded dashboard.'
+        }
+        $dashboard = Wait-For {
+            $primary.Refresh()
+            if ($primary.HasExited -or $primary.MainWindowHandle -eq [IntPtr]::Zero) { return $null }
+            $candidate = [System.Windows.Automation.AutomationElement]::FromHandle($primary.MainWindowHandle)
+            if ($candidate.Current.Name -ne 'Relight dashboard') { return $null }
+            if ($candidate.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition).Count -eq 0) { return $null }
+            return $candidate
+        } 'degraded dashboard' 15
+        Wait-For {
+            foreach ($item in $dashboard.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition)) {
+                if ($item.Current.Name -like '*Recovery state is unavailable*') {
+                    return $true
+                }
+            }
+            return $false
+        } 'rendered corrupt-budget diagnostic' 20 | Out-Null
+        if (-not (Get-Process -Id $targetPid -ErrorAction SilentlyContinue)) {
+            throw 'Restart with corrupt budget stopped the disposable target.'
+        }
+        Remove-Item -LiteralPath $ready
+        Stop-Process -Id $targetPid
+        Start-Sleep -Seconds 12
+        if (Test-Path -LiteralPath $ready) {
+            throw 'Automatic recovery launched despite a corrupt durable budget.'
+        }
+        if ((Get-Content -LiteralPath $budgetPath -Raw) -ne 'invalid recovery budget') {
+            throw 'The original corrupt budget was overwritten.'
+        }
+        if ($primary.HasExited) { throw 'Degraded preview did not remain resident.' }
+        Write-Output 'PASS: corrupt durable budget survived preview restart; WPF showed recovery-state diagnostic, preserved the target until the controlled exit, and suppressed automatic relaunch.'
+        return
     }
 
     if ($ExerciseNoRearm) {
@@ -1116,7 +1182,13 @@ finally {
         }
         $external.Dispose()
     }
-    if ($null -ne $secondary) { $secondary.Dispose() }
+    if ($null -ne $secondary) {
+        if (-not $secondary.HasExited) {
+            Stop-Process -Id $secondary.Id
+            $secondary.WaitForExit(10000) | Out-Null
+        }
+        $secondary.Dispose()
+    }
     if ($null -ne $primary) {
         if (-not $primary.HasExited) {
             Stop-Process -Id $primary.Id
