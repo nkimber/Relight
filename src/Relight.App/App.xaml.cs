@@ -235,7 +235,7 @@ public partial class App : Application
                 }
             }
             _viewModel?.UpdateMonitoring(host.ConfigurationProblem,
-                host.Configuration?.FromLastGoodBackup == true, profiles, logging,
+                host.RepairableConfiguration is not null, profiles, logging,
                 host.Elapsed, _dashboardHistory, _dashboardHistoryProblem,
                 _notificationProblem);
             bool configured = host.Configuration?.Configuration.Settings.StartAtSignIn == true;
@@ -349,7 +349,7 @@ public partial class App : Application
     {
         if (_repairingConfiguration || _exiting || _dashboard is null) return;
         RecoveryApplicationHost? host = Volatile.Read(ref _host);
-        StoredConfiguration? fallback = host?.Configuration;
+        StoredConfiguration? fallback = host?.RepairableConfiguration;
         if (host is null || fallback?.FromLastGoodBackup != true) return;
         string profileCount = fallback.Configuration.Profiles.Count == 1
             ? "1 profile" : $"{fallback.Configuration.Profiles.Count} profiles";
