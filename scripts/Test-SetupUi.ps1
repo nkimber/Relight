@@ -14,6 +14,7 @@ param(
     [switch]$ExerciseStartNow,
     [switch]$ZeroAutomaticAttempts,
     [switch]$ExerciseHistoryNavigation,
+    [switch]$ExerciseHistoryExport,
     [ValidateSet('Pause', 'Disable', 'Remove', 'Exit')]
     [string]$CancelPendingAction = '',
     [ValidateSet('StopGraceful', 'StopForceDecline', 'StopForceAccept',
@@ -32,8 +33,11 @@ public static class RelightUiNative {
     public static extern int GetClassName(IntPtr window, StringBuilder name, int capacity);
     [DllImport("user32.dll")]
     public static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr window);
 }
 '@
+Add-Type -AssemblyName System.Windows.Forms
 
 function Wait-For([scriptblock]$Condition, [string]$Description, [int]$Seconds = 12) {
     $until = [DateTime]::UtcNow.AddSeconds($Seconds)
@@ -93,6 +97,19 @@ function Find-MessageBox($Dashboard, [string]$Title, [int]$Seconds = 12) {
     } $Title $Seconds
 }
 
+function Save-ExportDialog($Dashboard, [string]$Title, [string]$Destination) {
+    $dialog = Find-MessageBox $Dashboard $Title
+    $handle = [IntPtr]::new($dialog.Current.NativeWindowHandle)
+    if ($handle -eq [IntPtr]::Zero -or -not [RelightUiNative]::SetForegroundWindow($handle)) {
+        throw "The $Title picker could not receive keyboard input."
+    }
+    Start-Sleep -Milliseconds 200
+    [System.Windows.Forms.SendKeys]::SendWait('%n')
+    [System.Windows.Forms.SendKeys]::SendWait('^a')
+    [System.Windows.Forms.SendKeys]::SendWait($Destination)
+    [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+}
+
 function Click-NativeMessageChoice($MessageBox, [string]$Choice) {
     $choiceElement = Wait-For {
         $condition = [System.Windows.Automation.PropertyCondition]::new(
@@ -117,6 +134,7 @@ function Complete-InitialStartWarning($Dashboard, [string]$Choice) {
 if ($VerifyInitialStartConfirmation -and $AcceptInitialStart) {
     throw 'Choose either declining or accepting the initial-start warning for one run.'
 }
+if ($ExerciseHistoryExport) { $ExerciseHistoryNavigation = $true }
 if (($ExercisePauseResume -or $ExerciseDisableRemove -or $ExerciseExit -or
     $ExerciseResetDuplicate -or $ExerciseNoRearm -or $ExerciseHistoryNavigation) -and
     -not $AcceptInitialStart) {
@@ -164,6 +182,9 @@ $primary = $null
 $secondary = $null
 $targetPid = $null
 $external = $null
+$historyExport = $null
+$episodeExport = $null
+$diagnosticExport = $null
 try {
     $arguments = @('--shared-session-preview', $root, '--tray')
     $primary = Start-Process -FilePath $executablePath -ArgumentList $arguments -WindowStyle Hidden -PassThru
@@ -565,6 +586,7 @@ try {
                     [System.Windows.Automation.ValuePattern]::Pattern).Current.Value
                 if ($value.Contains("Profile ID: $($profile.id)") -and
                     $value.Contains('UTC:') -and $value.Contains('Operation ID:')) {
+                    $script:launchDetails = $value
                     return $true
                 }
             }
@@ -587,6 +609,76 @@ try {
                 ([System.Windows.Automation.ControlType]::Text)
         } 'filtered launch event history' 20 | Out-Null
         Write-Output 'PASS: WPF View history selected the source profile, expanded launch correlation details and filtered to its one launch dispatch.'
+        if ($ExerciseHistoryExport) {
+            $exportId = [guid]::NewGuid().ToString('N')
+            $historyExport = Join-Path ([IO.Path]::GetTempPath()) "relight-history-ui-$exportId.csv"
+            $episodeExport = Join-Path ([IO.Path]::GetTempPath()) "relight-episode-ui-$exportId.csv"
+            $diagnosticExport = Join-Path ([IO.Path]::GetTempPath()) "relight-diagnostics-ui-$exportId.zip"
+            Invoke-Button $dashboard 'Export history'
+            Save-ExportDialog $dashboard 'Export filtered Relight history' $historyExport
+            Click-NativeMessageChoice (Find-MessageBox $dashboard 'Relight history' 25) 'OK'
+            if (-not (Test-Path -LiteralPath $historyExport)) {
+                throw 'Filtered history export was not created.'
+            }
+            $csv = @(Import-Csv -LiteralPath $historyExport)
+            if ($csv.Count -ne 1 -or $csv[0].kind -ne 'LaunchDispatched' -or
+                $csv[0].profileId -ne $profile.id -or $csv[0].processIdentity) {
+                throw 'Filtered CSV did not contain exactly the redacted selected launch event.'
+            }
+            $episodeMatch = [regex]::Match($script:launchDetails,
+                '(?m)^Episode ID:\s*([0-9a-fA-F-]{36})')
+            if (-not $episodeMatch.Success) { throw 'Launch details did not expose an episode ID.' }
+            $episodeId = $episodeMatch.Groups[1].Value
+            $episodeFilter = Find-Control $dashboard 'Filter history by episode ID' `
+                ([System.Windows.Automation.ControlType]::Edit)
+            if ($null -eq $episodeFilter) { throw 'Episode filter is inaccessible.' }
+            $episodeFilter.GetCurrentPattern(
+                [System.Windows.Automation.ValuePattern]::Pattern).SetValue($episodeId)
+            Invoke-Button $dashboard 'Export filtered history'
+            Save-ExportDialog $dashboard 'Export all retained events for this episode' $episodeExport
+            Click-NativeMessageChoice (Find-MessageBox $dashboard 'Relight history' 25) 'OK'
+            $episodeRows = @(Import-Csv -LiteralPath $episodeExport)
+            if ($episodeRows.Count -lt 2 -or
+                -not @($episodeRows | Where-Object kind -eq 'LaunchReserved').Count -or
+                -not @($episodeRows | Where-Object kind -eq 'LaunchDispatched').Count -or
+                @($episodeRows | Where-Object { $_.episodeId -ne $episodeId }).Count -gt 0 -or
+                @($episodeRows | Where-Object { $_.processIdentity }).Count -gt 0) {
+                throw 'Episode export omitted the retained launch chain or exposed process identity.'
+            }
+            $settings = Find-Control $dashboard 'Settings' `
+                ([System.Windows.Automation.ControlType]::RadioButton)
+            if ($null -eq $settings) { throw 'Settings navigation is inaccessible.' }
+            $settings.GetCurrentPattern(
+                [System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+            Invoke-Button $dashboard 'Export local diagnostic bundle'
+            Save-ExportDialog $dashboard 'Save local Relight diagnostics' $diagnosticExport
+            Click-NativeMessageChoice (Find-MessageBox $dashboard 'Relight diagnostics' 25) 'OK'
+            $archive = [IO.Compression.ZipFile]::OpenRead($diagnosticExport)
+            try {
+                $eventsEntry = $archive.GetEntry('events.jsonl')
+                $metadataEntry = $archive.GetEntry('diagnostics.json')
+                if ($null -eq $eventsEntry -or $null -eq $metadataEntry) {
+                    throw 'Diagnostic bundle omitted events or metadata.'
+                }
+                $eventsReader = [IO.StreamReader]::new($eventsEntry.Open())
+                try { $eventsText = $eventsReader.ReadToEnd() }
+                finally { $eventsReader.Dispose() }
+                $metadataReader = [IO.StreamReader]::new($metadataEntry.Open())
+                try { $metadataText = $metadataReader.ReadToEnd() }
+                finally { $metadataReader.Dispose() }
+                $metadata = $metadataText | ConvertFrom-Json
+                if ($metadata.events.exported -lt $episodeRows.Count -or
+                    $eventsText -notlike '*"kind":"LaunchDispatched"*' -or
+                    $eventsText -like "*$targetPath*" -or
+                    $metadataText -like "*$targetPath*" -or
+                    $metadataText -like "*$label*" -or
+                    $metadataText -like "*$ready*") {
+                    throw 'Diagnostic ZIP omitted events or exposed target launch details.'
+                }
+            }
+            finally { $archive.Dispose() }
+            Write-Output 'PASS: WPF filtered and full-episode exports used user-selected paths; CSV and diagnostic ZIP retained the event chain without process identity or target launch details.'
+        }
     }
 
     if ($ExplicitAction) {
@@ -1109,6 +1201,11 @@ try {
     }
 }
 finally {
+    foreach ($generated in @($historyExport, $episodeExport, $diagnosticExport)) {
+        if ($null -ne $generated -and (Test-Path -LiteralPath $generated)) {
+            Remove-Item -LiteralPath $generated
+        }
+    }
     if ($null -ne $external) {
         if (-not $external.HasExited) {
             Stop-Process -Id $external.Id
