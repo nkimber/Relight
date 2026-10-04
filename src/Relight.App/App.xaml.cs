@@ -102,7 +102,7 @@ public partial class App : Application
             MainWindow = _dashboard;
             _dashboard.Closing += OnDashboardClosing;
             _tray = new TrayService(
-                () => ShowDashboard(ShellPage.Applications),
+                () => ShowDashboard(ShellPage.Monitoring),
                 ShowAddApplication,
                 () => ShowDashboard(ShellPage.History),
                 () => ChangeAllPauseFromTray(paused: true),

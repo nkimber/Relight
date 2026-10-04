@@ -9,7 +9,7 @@ using Relight.Windows;
 
 namespace Relight.ViewModels;
 
-internal enum ShellPage { Applications, History, Settings }
+internal enum ShellPage { Monitoring, Applications, History, Settings }
 internal enum ApplicationStatusCategory { Attention, Recovering, Protected, PausedOrDisabled }
 internal enum ApplicationSortMode { Name, Status, Attempts }
 internal sealed record ApplicationFilterOption(string Label, ApplicationStatusCategory? Category)
@@ -137,6 +137,8 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     private readonly string _dataDirectory;
     private ShellPage _page;
     private IReadOnlyList<ApplicationStatusRow> _applicationRows = [];
+    private IReadOnlyList<MonitoringRow> _monitoringRows = [];
+    private string _monitoringHistoryStatus = "Loading 24-hour history…";
     private IReadOnlyList<ApplicationStatusRow> _visibleApplicationRows = [];
     private ApplicationFilterOption _selectedApplicationFilter;
     private ApplicationSortOption _selectedApplicationSort;
@@ -165,6 +167,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     {
         _dataDirectory = dataDirectory ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Relight");
+        MonitoringCommand = new RelayCommand(() => Navigate(ShellPage.Monitoring));
         ApplicationsCommand = new RelayCommand(() => Navigate(ShellPage.Applications));
         HistoryCommand = new RelayCommand(() => Navigate(ShellPage.History));
         SettingsCommand = new RelayCommand(() => Navigate(ShellPage.Settings));
@@ -181,6 +184,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         _selectedHistoryRange = HistoryRanges[0];
     }
 
+    public ICommand MonitoringCommand { get; }
     public ICommand ApplicationsCommand { get; }
     public ICommand HistoryCommand { get; }
     public ICommand SettingsCommand { get; }
@@ -267,6 +271,9 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         }
     }
     public IReadOnlyList<ApplicationStatusRow> ApplicationRows => _visibleApplicationRows;
+    public IReadOnlyList<MonitoringRow> MonitoringRows => _monitoringRows;
+    public string MonitoringCountText => $"{_monitoringRows.Count} configured application(s)";
+    public string MonitoringHistoryStatus => _monitoringHistoryStatus;
     public bool HasApplications => _applicationRows.Count > 0;
     public bool HasNoApplications => !HasApplications;
     public bool HasNoVisibleApplications => HasApplications && _visibleApplicationRows.Count == 0;
@@ -282,6 +289,12 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     public TrayIconState TrayIconState => _trayIconState;
     // Selection bindings also handle radio-button arrow keys and accessibility selection,
     // which can change IsChecked without invoking a button command.
+    public bool IsMonitoring
+    {
+        get => _page == ShellPage.Monitoring;
+        set { if (value) Navigate(ShellPage.Monitoring); }
+    }
+    public bool IsDetailPage => !IsMonitoring;
     public bool IsApplications
     {
         get => _page == ShellPage.Applications;
@@ -299,12 +312,14 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     }
     public string Heading => _page switch
     {
+        ShellPage.Monitoring => "Monitoring",
         ShellPage.History => "History",
         ShellPage.Settings => "Settings",
         _ => "Applications"
     };
     public string Subtitle => _page switch
     {
+        ShellPage.Monitoring => "Your protected applications at a glance.",
         ShellPage.History => "A clear account of what happened while you were away.",
         ShellPage.Settings => "A quiet presence, on your terms.",
         _ => "A home for the apps you want to keep running."
@@ -314,7 +329,8 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     public void UpdateMonitoring(string? configurationProblem, bool canRepairConfiguration,
         IReadOnlyList<HostedProfileStatus> profiles, EventRecorderStatus? logging,
         TimeSpan elapsed, DashboardEventHistory? eventHistory = null,
-        string? eventHistoryProblem = null, string? notificationProblem = null)
+        string? eventHistoryProblem = null, string? notificationProblem = null,
+        DateTimeOffset? nowUtc = null)
     {
         if (_canRepairConfiguration != canRepairConfiguration)
         {
@@ -371,6 +387,8 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         else
             for (int i = 0; i < rows.Length; i++)
                 _applicationRows[i].UpdateFrom(rows[i]);
+        UpdateMonitoringRows(profiles, elapsed, nowUtc ?? DateTimeOffset.UtcNow,
+            eventHistory, eventHistoryProblem, logging?.Degraded == true);
         RefreshHistoryProfiles(_applicationRows);
         RefreshVisibleApplications();
         TraySnapshotSummary tray = TraySnapshotSummary.FromProfiles(profiles,
@@ -405,6 +423,41 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
     }
 
+    private void UpdateMonitoringRows(IReadOnlyList<HostedProfileStatus> profiles,
+        TimeSpan elapsed, DateTimeOffset nowUtc, DashboardEventHistory? history,
+        string? historyProblem, bool loggingDegraded)
+    {
+        var byId = profiles.ToDictionary(profile => profile.Id);
+        var previous = _monitoringRows.ToDictionary(row => row.Id);
+        MonitoringRow[] next = _applicationRows.Select(application =>
+        {
+            MonitoringPresentation presentation = MonitoringPresentation.FromProfile(
+                byId[application.Id], application, elapsed, nowUtc, history,
+                historyProblem, loggingDegraded);
+            if (!previous.TryGetValue(application.Id, out MonitoringRow? row))
+                return new MonitoringRow(application.Id, presentation);
+            row.Update(presentation);
+            return row;
+        }).ToArray();
+        if (!_monitoringRows.Select(row => row.Id).SequenceEqual(next.Select(row => row.Id)))
+        {
+            _monitoringRows = next;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(MonitoringRows)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(MonitoringCountText)));
+        }
+        string status = historyProblem is not null ? "24-hour counts unavailable; history could not be read."
+            : history is null ? "Loading 24-hour history…"
+            : $"Auto relaunches count recorded dispatches in the 24 hours ending " +
+                $"{(history.ThroughUtc ?? nowUtc).ToLocalTime():g}. Refreshed every 30 seconds." +
+                (history.SkippedMalformedLines > 0 || loggingDegraded
+                    ? " Counts are partial because event history is incomplete." : "");
+        if (_monitoringHistoryStatus != status)
+        {
+            _monitoringHistoryStatus = status;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(MonitoringHistoryStatus)));
+        }
+    }
+
     private static string MilestoneText(string label, DashboardEventHistory? history,
         string? problem, Guid profileId, bool outage)
     {
@@ -423,6 +476,8 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         _canRepairConfiguration = false;
         _canChangeStartAtSignIn = false;
         _applicationRows = [];
+        _monitoringRows = [];
+        _monitoringHistoryStatus = "Monitoring unavailable.";
         RefreshVisibleApplications();
         _monitoringBanner = $"Monitoring could not start: {problem}";
         _footerStatus = "Relight is in the tray · Monitoring unavailable";

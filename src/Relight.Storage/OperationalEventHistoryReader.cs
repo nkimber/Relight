@@ -38,9 +38,10 @@ public sealed record EventHistoryOverview(EventHistoryResult Results,
     EventHistorySummary Summary, IReadOnlyList<EventHistoryProfile> Profiles);
 
 public sealed record DashboardEventMilestones(DateTimeOffset? LastOutageUtc,
-    DateTimeOffset? LastAutomaticRecoveryUtc);
+    DateTimeOffset? LastAutomaticRecoveryUtc, int AutomaticLaunches24Hours = 0);
 public sealed record DashboardEventHistory(
-    IReadOnlyDictionary<Guid, DashboardEventMilestones> Profiles, int SkippedMalformedLines);
+    IReadOnlyDictionary<Guid, DashboardEventMilestones> Profiles, int SkippedMalformedLines,
+    DateTimeOffset? ThroughUtc = null);
 
 public enum EventHistoryExportFormat { Text, Csv }
 public sealed record EventHistoryExportResult(int ExportedEvents, int SkippedMalformedLines);
@@ -55,25 +56,35 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
     private readonly string _directory = Path.Combine(Path.GetFullPath(dataDirectory), "Logs");
 
     public async Task<DashboardEventHistory> ReadDashboardMilestonesAsync(
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, DateTimeOffset? nowUtc = null)
     {
+        DateTimeOffset through = nowUtc ?? DateTimeOffset.UtcNow;
+        DateTimeOffset from = through.AddHours(-24);
         var milestones = new Dictionary<Guid, DashboardEventMilestones>();
         ScanSummary result = await ScanAsync(new EventHistoryQuery(), entry =>
         {
             if (entry.ProfileId is not { } id) return Task.CompletedTask;
             if (entry.Kind != OperationalEventKind.TargetDisappeared &&
+                entry.Kind != OperationalEventKind.LaunchDispatched &&
                 !(entry.Kind == OperationalEventKind.ObservationCompleted &&
                   entry.Origin == Relight.Core.ObservationOrigin.AutomaticLaunch))
                 return Task.CompletedTask;
             milestones.TryGetValue(id, out DashboardEventMilestones? prior);
             prior ??= new(null, null);
-            milestones[id] = entry.Kind == OperationalEventKind.TargetDisappeared
-                ? prior with { LastOutageUtc = Later(prior.LastOutageUtc, entry.OccurredUtc) }
-                : prior with { LastAutomaticRecoveryUtc = Later(
-                    prior.LastAutomaticRecoveryUtc, entry.OccurredUtc) };
+            milestones[id] = entry.Kind switch
+            {
+                OperationalEventKind.TargetDisappeared => prior with
+                    { LastOutageUtc = Later(prior.LastOutageUtc, entry.OccurredUtc) },
+                OperationalEventKind.ObservationCompleted => prior with
+                    { LastAutomaticRecoveryUtc = Later(prior.LastAutomaticRecoveryUtc, entry.OccurredUtc) },
+                OperationalEventKind.LaunchDispatched when entry.OccurredUtc >= from &&
+                    entry.OccurredUtc <= through => prior with
+                    { AutomaticLaunches24Hours = prior.AutomaticLaunches24Hours + 1 },
+                _ => prior
+            };
             return Task.CompletedTask;
         }, cancellationToken).ConfigureAwait(false);
-        return new(milestones, result.Malformed);
+        return new(milestones, result.Malformed, through);
     }
 
     private static DateTimeOffset Later(DateTimeOffset? previous, DateTimeOffset candidate)

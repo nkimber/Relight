@@ -270,6 +270,8 @@ Tooltip summarizes protected, observing, paused and intervention-needed applicat
 
 ### Dashboard
 
+The main **Monitoring** page provides a compact read-only grid with one row per configured application, including paused and disabled profiles. Show status, the last verified PID, process age at its last verified check, last-check age, recorded automatic relaunch dispatches in the rolling last 24 hours, and the current episode attempt budget. Process age is not measured availability or uninterrupted observation. Unknown process information must remain unknown. Relaunch counts exclude manual and external starts and do not imply successful recovery; incomplete or unavailable history must be labeled. Keep setup and explicit controls on the **Applications** page. Monitoring is the initial page and the tray's Open dashboard destination; existing Ctrl+1–3 shortcuts remain, with Ctrl+4 added for Monitoring.
+
 Sortable/filterable table with application name/icon, status, PID or logical-instance summary, attempt count, last seen, last outage, last successful recovery and next action. Display countdowns for launch timeout, retry delay and observation. A selected row shows a concise explanation such as “Automatic recovery suspended after 3 unsuccessful attempts. Still watching for a restart.”
 
 Primary actions appear on the row or details panel and in the context menu. Closing the dashboard keeps monitoring active. Empty state offers Add application and explains what Relight can recover.

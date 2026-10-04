@@ -1,10 +1,11 @@
 <Window x:Class="Relight.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Relight" Width="1080" Height="740" MinWidth="860" MinHeight="600"
+        Title="Relight" Width="1180" Height="740" MinWidth="860" MinHeight="600"
         WindowStartupLocation="CenterScreen" Icon="Assets/Relight.ico"
         UseLayoutRounding="True" AutomationProperties.Name="Relight dashboard">
     <Window.InputBindings>
+        <KeyBinding Key="D4" Modifiers="Control" Command="{Binding MonitoringCommand}" />
         <KeyBinding Key="D1" Modifiers="Control" Command="{Binding ApplicationsCommand}" />
         <KeyBinding Key="D2" Modifiers="Control" Command="{Binding HistoryCommand}" />
         <KeyBinding Key="D3" Modifiers="Control" Command="{Binding SettingsCommand}" />
@@ -34,6 +35,8 @@
                     <Button Content="E_xit Relight" Command="{Binding ExitCommand}" ToolTip="Exit Relight (Ctrl+Q)." />
                 </StackPanel>
                 <StackPanel>
+                    <RadioButton Content="_Monitoring" GroupName="Page" Style="{StaticResource Navigation}"
+                                 IsChecked="{Binding IsMonitoring, Mode=TwoWay}" ToolTip="Monitoring (Ctrl+4)" />
                     <RadioButton Content="_Applications" GroupName="Page" Style="{StaticResource Navigation}"
                                  IsChecked="{Binding IsApplications, Mode=TwoWay}" ToolTip="Applications (Ctrl+1)" />
                     <RadioButton Content="_History" GroupName="Page" Style="{StaticResource Navigation}"
@@ -57,7 +60,82 @@
             <Border Grid.Row="1" Background="{DynamicResource AccentSoftBrush}" CornerRadius="8" Padding="16,12" Margin="0,0,0,24">
                 <TextBlock Foreground="{DynamicResource AccentBrush}" Text="{Binding MonitoringBanner}" TextWrapping="Wrap" />
             </Border>
-            <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <Border Grid.Row="2" Style="{StaticResource Card}" Padding="16"
+                    Visibility="{Binding IsMonitoring, Converter={StaticResource VisibleWhenTrue}}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <DockPanel Margin="0,0,0,16">
+                        <Button DockPanel.Dock="Right" Content="Manage applications"
+                                Command="{Binding ApplicationsCommand}" />
+                        <StackPanel>
+                            <TextBlock Text="Live overview" FontSize="18" FontWeight="SemiBold" />
+                            <TextBlock Text="{Binding MonitoringCountText}" Style="{StaticResource Muted}" Margin="0,4,0,0" />
+                        </StackPanel>
+                    </DockPanel>
+                    <StackPanel Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="400"
+                                Visibility="{Binding HasNoApplications, Converter={StaticResource VisibleWhenTrue}}">
+                        <TextBlock Text="No applications to monitor yet" FontSize="20" TextAlignment="Center" />
+                        <TextBlock Text="Add an application to see its status and recovery activity here."
+                                   Style="{StaticResource Muted}" TextAlignment="Center" Margin="0,10,0,16" />
+                        <Button Content="+ Add application" Command="{Binding AddCommand}" HorizontalAlignment="Center" />
+                    </StackPanel>
+                    <DataGrid Grid.Row="1" ItemsSource="{Binding MonitoringRows}" IsReadOnly="True"
+                              AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False"
+                              CanUserReorderColumns="False" CanUserResizeRows="False" HeadersVisibility="Column"
+                              RowHeight="38" GridLinesVisibility="Horizontal" BorderThickness="0"
+                              Background="{DynamicResource SurfaceBrush}" Foreground="{DynamicResource TextBrush}"
+                              RowBackground="{DynamicResource SurfaceBrush}"
+                              HorizontalGridLinesBrush="{DynamicResource LineBrush}"
+                              EnableRowVirtualization="True" EnableColumnVirtualization="True"
+                              ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                              AutomationProperties.Name="Monitored applications overview"
+                              Visibility="{Binding HasApplications, Converter={StaticResource VisibleWhenTrue}}">
+                        <DataGrid.ColumnHeaderStyle>
+                            <Style TargetType="DataGridColumnHeader">
+                                <Setter Property="Background" Value="{DynamicResource CanvasBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource MutedBrush}" />
+                                <Setter Property="Padding" Value="8,10" />
+                                <Setter Property="FontWeight" Value="SemiBold" />
+                            </Style>
+                        </DataGrid.ColumnHeaderStyle>
+                        <DataGrid.RowStyle>
+                            <Style TargetType="DataGridRow">
+                                <Setter Property="ToolTip" Value="{Binding Detail}" />
+                            </Style>
+                        </DataGrid.RowStyle>
+                        <DataGrid.Resources>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="VerticalAlignment" Value="Center" />
+                                <Setter Property="Margin" Value="8,0" />
+                                <Setter Property="TextWrapping" Value="NoWrap" />
+                                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                            </Style>
+                        </DataGrid.Resources>
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Application" Binding="{Binding Name}" Width="*" MinWidth="125" />
+                            <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="155" />
+                            <DataGridTextColumn Header="PID" Binding="{Binding ProcessId}" Width="70" CanUserSort="False" />
+                            <DataGridTextColumn Header="Uptime at check" Binding="{Binding Uptime}" Width="125" CanUserSort="False" />
+                            <DataGridTextColumn Header="Last verified" Binding="{Binding LastVerified}" Width="110" CanUserSort="False" />
+                            <DataGridTextColumn Header="Auto relaunches (24h)" Binding="{Binding AutomaticRelaunches}" Width="155" CanUserSort="False" />
+                            <DataGridTextColumn Header="Attempts" Binding="{Binding Attempts}" Width="80" CanUserSort="False" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <StackPanel Grid.Row="2" Margin="0,14,0,0">
+                        <TextBlock Text="Uptime is the Windows process age at its last verified check, not measured availability. Paused, disabled or unverified instances show —. Attempts are the current episode budget."
+                                   Style="{StaticResource Muted}" FontSize="12" />
+                        <TextBlock Text="{Binding MonitoringHistoryStatus}" Style="{StaticResource Muted}" FontSize="12" Margin="0,6,0,0"
+                                   ToolTip="Automatic dispatches include initial automatic starts and failed appearances; they do not prove a successful recovery. Manual and external starts are excluded. Counts use retained profile history across sign-ins." />
+                    </StackPanel>
+                </Grid>
+            </Border>
+            <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                          Visibility="{Binding IsDetailPage, Converter={StaticResource VisibleWhenTrue}}">
                 <Grid>
                     <StackPanel Visibility="{Binding IsApplications, Converter={StaticResource VisibleWhenTrue}}">
                         <Border Style="{StaticResource Card}">

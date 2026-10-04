@@ -500,6 +500,47 @@ public sealed class OperationalEventJournalTests
         Assert.Single(Directory.GetFiles(exports.Path));
     }
 
+    [Fact]
+    public async Task Dashboard_relaunch_counts_use_full_rolling_window_not_display_limit_or_success_events()
+    {
+        using var directory = new TestDirectory();
+        using var journal = new OperationalEventJournal(directory.Path, GlobalConfiguration.Default);
+        Guid profile = Guid.NewGuid();
+        Guid other = Guid.NewGuid();
+        DateTimeOffset now = new(2026, 10, 4, 14, 0, 0, TimeSpan.Zero);
+        for (int i = 0; i < 505; i++)
+            await journal.AppendAsync(NewEvent() with
+            {
+                ProfileId = profile, Kind = OperationalEventKind.LaunchDispatched,
+                OccurredUtc = now.AddHours(-1)
+            });
+        foreach (var entry in new[]
+        {
+            NewEvent() with { ProfileId = profile, Kind = OperationalEventKind.LaunchDispatched,
+                OccurredUtc = now.AddHours(-24) },
+            NewEvent() with { ProfileId = profile, Kind = OperationalEventKind.LaunchDispatched,
+                OccurredUtc = now.AddHours(-24).AddTicks(-1) },
+            NewEvent() with { ProfileId = profile, Kind = OperationalEventKind.LaunchDispatched,
+                OccurredUtc = now.AddTicks(1) },
+            NewEvent() with { ProfileId = profile, Kind = OperationalEventKind.LaunchReserved,
+                OccurredUtc = now },
+            NewEvent() with { ProfileId = profile, Kind = OperationalEventKind.ExplicitStartDispatched,
+                OccurredUtc = now },
+            NewEvent() with { ProfileId = profile, Kind = OperationalEventKind.ObservationCompleted,
+                Origin = Relight.Core.ObservationOrigin.AutomaticLaunch, OccurredUtc = now },
+            NewEvent() with { ProfileId = other, Kind = OperationalEventKind.LaunchDispatched,
+                OccurredUtc = now }
+        }) await journal.AppendAsync(entry);
+        var reader = new OperationalEventHistoryReader(directory.Path);
+        DashboardEventHistory history = await reader.ReadDashboardMilestonesAsync(nowUtc: now);
+        Assert.Equal(506, history.Profiles[profile].AutomaticLaunches24Hours);
+        Assert.Equal(1, history.Profiles[other].AutomaticLaunches24Hours);
+        Assert.Equal(now, history.ThroughUtc);
+        DashboardEventHistory later = await reader.ReadDashboardMilestonesAsync(nowUtc: now.AddHours(25));
+        Assert.Equal(0, later.Profiles[profile].AutomaticLaunches24Hours);
+        Assert.Equal(0, later.Profiles[other].AutomaticLaunches24Hours);
+    }
+
     private static OperationalEvent NewEvent() =>
         new(DateTimeOffset.UtcNow, Guid.NewGuid(), EventSeverity.Information,
             OperationalEventKind.Startup);

@@ -158,6 +158,8 @@ Work:
 
 **Current evidence:** [History checkpoint](history-checkpoint.md) records the first read-only browser and its limits. M7 exit criteria and AT-25 remain open.
 
+The user-requested main [Monitoring page](monitoring-checkpoint.md) adds a compact live grid and a rolling 24-hour automatic-dispatch count alongside verified process-age information. This is an M5/M7 presentation increment; it does not complete overnight outcome reporting or target-recovery acceptance.
+
 Work:
 
 - Complete required structured events and error categories, with profile/episode/operation linkage, UTC timestamps, origin, attempt accounting and native error information.
