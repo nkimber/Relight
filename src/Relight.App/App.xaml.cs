@@ -1,5 +1,6 @@
 using System;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -25,6 +26,9 @@ public partial class App : Application
     private Task? _monitoringTask;
     private RecoveryApplicationHost? _host;
     private DispatcherTimer? _statusTimer;
+    private DispatcherTimer? _installedVersionTimer;
+    private InstalledVersionMonitor? _installedVersionMonitor;
+    private bool _checkingInstalledVersion;
     private bool _updatingStatus;
     private bool _exiting;
     private bool _repairingConfiguration;
@@ -53,12 +57,27 @@ public partial class App : Application
         return Path.GetFullPath(args[index + 1]);
     }
 
-    protected override void OnStartup(StartupEventArgs e)
+    protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
 
         try
         {
+            int parentArg = Array.IndexOf(e.Args, "--restart-parent");
+            if (parentArg >= 0)
+            {
+                if (parentArg + 2 >= e.Args.Length ||
+                    !int.TryParse(e.Args[parentArg + 1], out int parentId) || parentId <= 0 ||
+                    !long.TryParse(e.Args[parentArg + 2], out long parentStartTicks))
+                    throw new ArgumentException("The restart parent identity is invalid.");
+                try
+                {
+                    using Process parent = Process.GetProcessById(parentId);
+                    if (parent.StartTime.ToUniversalTime().Ticks == parentStartTicks)
+                        await parent.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(45));
+                }
+                catch (ArgumentException) { /* The old process has already exited. */ }
+            }
             _sharedSessionPreviewDataDirectory = PreviewDirectory(e.Args);
             _instance = new SingleInstanceService(_sharedSessionPreviewDataDirectory);
             if (!_instance.IsPrimary)
@@ -128,6 +147,16 @@ public partial class App : Application
                 _statusTimer.Start();
                 SystemEvents.PowerModeChanged += OnPowerModeChanged;
                 SystemEvents.SessionSwitch += OnSessionSwitch;
+                if (_sharedSessionPreviewDataDirectory is null &&
+                    Environment.ProcessPath is { } executablePath)
+                {
+                    _installedVersionMonitor = new InstalledVersionMonitor(
+                        RecoveryApplicationHost.DefaultDataDirectory, executablePath);
+                    _installedVersionTimer = new DispatcherTimer(DispatcherPriority.Background,
+                        Dispatcher) { Interval = TimeSpan.FromSeconds(5) };
+                    _installedVersionTimer.Tick += OnInstalledVersionTick;
+                    _installedVersionTimer.Start();
+                }
             }
 
             if (Array.IndexOf(e.Args, "--tray") < 0)
@@ -143,6 +172,33 @@ public partial class App : Application
         }
     }
 
+    private async void OnInstalledVersionTick(object? sender, EventArgs e)
+    {
+        if (_exiting || _checkingInstalledVersion || _installedVersionMonitor is null) return;
+        _checkingInstalledVersion = true;
+        try
+        {
+            string? replacement = await _installedVersionMonitor.FindUpdateAsync();
+            if (replacement is null) return;
+            // Publish writes the pointer only after the version directory is complete.
+            using Process current = Process.GetCurrentProcess();
+            using Process replacementProcess = Process.Start(new ProcessStartInfo(replacement)
+            {
+                UseShellExecute = false,
+                ArgumentList = { "--restart-parent", Environment.ProcessId.ToString(),
+                    current.StartTime.ToUniversalTime().Ticks.ToString(), "--tray" }
+            }) ?? throw new IOException("The updated Relight process did not start.");
+            _exiting = true;
+            _installedVersionTimer?.Stop();
+            _ = CompleteExitAsync();
+        }
+        catch (Exception error)
+        {
+            SetMonitoringProblem($"Relight update could not start: {error.Message}");
+        }
+        finally { _checkingInstalledVersion = false; }
+    }
+
     private async Task RunMonitoringAsync(CancellationToken cancellationToken)
     {
         RecoveryApplicationHost? host = null;
@@ -153,6 +209,25 @@ public partial class App : Application
                     cancellationToken).ConfigureAwait(false)
                 : await RecoveryApplicationHost.OpenAsync(cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
+            if (_startupRegistration is { } startup &&
+                host.Configuration is { AutomaticActionsAllowed: true } configuration &&
+                !configuration.Configuration.Settings.StartAtSignIn)
+            {
+                try
+                {
+                    if (startup.Inspect().EnabledForThisExecutable)
+                        await host.SetStartAtSignInAsync(true, startup, cancellationToken)
+                            .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception error)
+                {
+                    _startupUnavailable = $"Sign-in startup could not be synchronized: {error.Message}";
+                }
+            }
             Volatile.Write(ref _host, host);
             await host.RunAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -235,7 +310,7 @@ public partial class App : Application
                 }
             }
             _viewModel?.UpdateMonitoring(host.ConfigurationProblem,
-                host.Configuration?.FromLastGoodBackup == true, profiles, logging,
+                host.RepairableConfiguration is not null, profiles, logging,
                 host.Elapsed, _dashboardHistory, _dashboardHistoryProblem,
                 _notificationProblem);
             bool configured = host.Configuration?.Configuration.Settings.StartAtSignIn == true;
@@ -349,7 +424,7 @@ public partial class App : Application
     {
         if (_repairingConfiguration || _exiting || _dashboard is null) return;
         RecoveryApplicationHost? host = Volatile.Read(ref _host);
-        StoredConfiguration? fallback = host?.Configuration;
+        StoredConfiguration? fallback = host?.RepairableConfiguration;
         if (host is null || fallback?.FromLastGoodBackup != true) return;
         string profileCount = fallback.Configuration.Profiles.Count == 1
             ? "1 profile" : $"{fallback.Configuration.Profiles.Count} profiles";
@@ -749,6 +824,7 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         _exiting = true;
+        _installedVersionTimer?.Stop();
         _statusTimer?.Stop();
         _monitoringCancellation?.Cancel();
         CancellationTokenSource? cancellation = _monitoringCancellation;

@@ -32,6 +32,7 @@ public sealed class ExecutableDiscovery : IProcessDiscovery
         string expectedPath = _target.CanonicalPath;
         string name = Path.GetFileNameWithoutExtension(expectedPath);
         var matches = new List<string>();
+        var candidateSummaries = new List<string>();
         try
         {
             foreach (Process process in Process.GetProcessesByName(name))
@@ -82,6 +83,8 @@ public sealed class ExecutableDiscovery : IProcessDiscovery
                         // command-line contents or application data in this identity.
                         long started = process.StartTime.ToUniversalTime().Ticks;
                         matches.Add($"{_sessionId}|{expectedPath}|{process.Id}|{started}");
+                        candidateSummaries.Add($"PID {process.Id} started " +
+                            new DateTime(started, DateTimeKind.Utc).ToString("O"));
                     }
                     catch (InvalidOperationException) when (process.HasExited)
                     {
@@ -98,7 +101,10 @@ public sealed class ExecutableDiscovery : IProcessDiscovery
             {
                 0 => Detection.Absent(),
                 1 => Detection.Present(matches[0]),
-                _ => Detection.Unavailable($"{matches.Count} matching instances; identity is ambiguous.",
+                _ => Detection.Unavailable(
+                    $"{matches.Count} matching instances; identity is ambiguous. " +
+                    $"Candidates: {string.Join("; ", candidateSummaries.Take(8))}" +
+                    (candidateSummaries.Count > 8 ? "; more omitted" : string.Empty),
                     DetectionFailureKind.Ambiguous)
             };
         }

@@ -12,8 +12,15 @@ param(
     [switch]$ExerciseResetDuplicate,
     [switch]$ExerciseNoRearm,
     [switch]$ExerciseStartNow,
+    [switch]$ExerciseExitRace,
+    [switch]$ExerciseAmbiguity,
     [switch]$ZeroAutomaticAttempts,
     [switch]$ExerciseHistoryNavigation,
+    [switch]$ExerciseBrokenConfig,
+    [switch]$ExerciseCorruptBudget,
+    [switch]$ExerciseBlockedLogs,
+    [switch]$ExerciseBudgetWriteDenial,
+    [switch]$ExerciseHistoryExport,
     [ValidateSet('Pause', 'Disable', 'Remove', 'Exit')]
     [string]$CancelPendingAction = '',
     [ValidateSet('StopGraceful', 'StopForceDecline', 'StopForceAccept',
@@ -32,8 +39,11 @@ public static class RelightUiNative {
     public static extern int GetClassName(IntPtr window, StringBuilder name, int capacity);
     [DllImport("user32.dll")]
     public static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr window);
 }
 '@
+Add-Type -AssemblyName System.Windows.Forms
 
 function Wait-For([scriptblock]$Condition, [string]$Description, [int]$Seconds = 12) {
     $until = [DateTime]::UtcNow.AddSeconds($Seconds)
@@ -81,6 +91,23 @@ function Read-Configuration([string]$Path) {
     catch [UnauthorizedAccessException] { return $null }
 }
 
+function Get-ProfileEvents([string]$Directory, [string]$ProfileId) {
+    $logs = Join-Path $Directory 'Logs'
+    if (-not (Test-Path -LiteralPath $logs)) { return @() }
+    $events = @()
+    foreach ($log in @(Get-ChildItem -LiteralPath $logs -File -Filter 'events-*.jsonl')) {
+        foreach ($line in @(Get-Content -LiteralPath $log.FullName)) {
+            if (-not $line.Contains($ProfileId)) { continue }
+            try {
+                $event = $line | ConvertFrom-Json
+                if ($event.profileId -eq $ProfileId) { $events += $event }
+            }
+            catch [System.ArgumentException] { }
+        }
+    }
+    return $events
+}
+
 function Find-MessageBox($Dashboard, [string]$Title, [int]$Seconds = 12) {
     Wait-For {
         $nested = Find-Control $Dashboard $Title `
@@ -91,6 +118,19 @@ function Find-MessageBox($Dashboard, [string]$Title, [int]$Seconds = 12) {
         [System.Windows.Automation.AutomationElement]::RootElement.FindFirst(
             [System.Windows.Automation.TreeScope]::Children, $condition)
     } $Title $Seconds
+}
+
+function Save-ExportDialog($Dashboard, [string]$Title, [string]$Destination) {
+    $dialog = Find-MessageBox $Dashboard $Title
+    $handle = [IntPtr]::new($dialog.Current.NativeWindowHandle)
+    if ($handle -eq [IntPtr]::Zero -or -not [RelightUiNative]::SetForegroundWindow($handle)) {
+        throw "The $Title picker could not receive keyboard input."
+    }
+    Start-Sleep -Milliseconds 200
+    [System.Windows.Forms.SendKeys]::SendWait('%n')
+    [System.Windows.Forms.SendKeys]::SendWait('^a')
+    [System.Windows.Forms.SendKeys]::SendWait($Destination)
+    [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
 }
 
 function Click-NativeMessageChoice($MessageBox, [string]$Choice) {
@@ -117,6 +157,7 @@ function Complete-InitialStartWarning($Dashboard, [string]$Choice) {
 if ($VerifyInitialStartConfirmation -and $AcceptInitialStart) {
     throw 'Choose either declining or accepting the initial-start warning for one run.'
 }
+if ($ExerciseHistoryExport) { $ExerciseHistoryNavigation = $true }
 if (($ExercisePauseResume -or $ExerciseDisableRemove -or $ExerciseExit -or
     $ExerciseResetDuplicate -or $ExerciseNoRearm -or $ExerciseHistoryNavigation) -and
     -not $AcceptInitialStart) {
@@ -141,6 +182,15 @@ if ($ExerciseStartNow -and ($AcceptInitialStart -or $ExercisePauseResume -or
     $EditSavedExecutable -or $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
     throw 'Start now acceptance uses a saved initially absent disposable target with automatic initial start off.'
 }
+if (($ExerciseExitRace -or $ExerciseAmbiguity) -and
+    ($ExerciseExitRace -and $ExerciseAmbiguity -or $AcceptInitialStart -or
+    $ExerciseStartNow -or
+    $ExercisePauseResume -or $ExerciseDisableRemove -or $ExerciseExit -or
+    $ExerciseResetDuplicate -or $ExerciseNoRearm -or $ExerciseHistoryNavigation -or
+    $ExplicitAction -or $CancelPendingAction -or $EditSavedExecutable -or
+    $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
+    throw 'Exit-race or ambiguity acceptance uses only one initially absent disposable profile.'
+}
 if ($ZeroAutomaticAttempts -and -not $ExerciseStartNow) {
     throw 'The zero-attempt UI check requires -ExerciseStartNow.'
 }
@@ -148,6 +198,24 @@ if ($ExerciseHistoryNavigation -and ($ExercisePauseResume -or $ExerciseDisableRe
     $ExerciseExit -or $ExerciseResetDuplicate -or $EditSavedExecutable -or
     $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
     throw 'History navigation acceptance uses one automatically started disposable profile.'
+}
+if ($ExerciseBrokenConfig -and (-not $AcceptInitialStart -or $ExercisePauseResume -or
+    $ExerciseDisableRemove -or $ExerciseExit -or $ExerciseResetDuplicate -or
+    $ExerciseNoRearm -or $ExerciseStartNow -or $ExerciseHistoryNavigation -or
+    $CancelPendingAction -or $ExplicitAction -or $EditSavedExecutable -or
+    $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
+    throw 'Broken-configuration acceptance uses only accepted initial start and one disposable profile.'
+}
+if (($ExerciseCorruptBudget -or $ExerciseBlockedLogs -or $ExerciseBudgetWriteDenial) -and
+    (-not $AcceptInitialStart -or $ExerciseBrokenConfig -or
+    $ExerciseExitRace -or $ExerciseAmbiguity -or
+    ([int][bool]$ExerciseCorruptBudget + [int][bool]$ExerciseBlockedLogs +
+        [int][bool]$ExerciseBudgetWriteDenial) -ne 1 -or $ExercisePauseResume -or
+    $ExerciseDisableRemove -or $ExerciseExit -or $ExerciseResetDuplicate -or
+    $ExerciseNoRearm -or $ExerciseStartNow -or $ExerciseHistoryNavigation -or
+    $CancelPendingAction -or $ExplicitAction -or $EditSavedExecutable -or
+    $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
+    throw 'Storage-fault acceptance uses only accepted initial start and one fault mode.'
 }
 if ($ExerciseNoRearm -and ($ExercisePauseResume -or $ExerciseDisableRemove -or
     $ExerciseExit -or $ExerciseResetDuplicate -or $ExerciseStartNow -or
@@ -164,6 +232,11 @@ $primary = $null
 $secondary = $null
 $targetPid = $null
 $external = $null
+$external2 = $null
+$budgetReadLock = $null
+$historyExport = $null
+$episodeExport = $null
+$diagnosticExport = $null
 try {
     $arguments = @('--shared-session-preview', $root, '--tray')
     $primary = Start-Process -FilePath $executablePath -ArgumentList $arguments -WindowStyle Hidden -PassThru
@@ -254,6 +327,35 @@ try {
         Wait-For {
             Find-Control $dashboard 'Disposable UI target' ([System.Windows.Automation.ControlType]::Text)
         } 'new dashboard row' | Out-Null
+    }
+    if ($ExerciseExitRace -or $ExerciseAmbiguity) {
+        Invoke-Button $dashboard 'Edit policy'
+        $editor = Wait-For {
+            Find-Control $dashboard 'Edit protection · Relight' `
+                ([System.Windows.Automation.ControlType]::Window)
+        } 'profile editor for controlled detection'
+        $fields = ,@('Normal check interval in seconds', '60')
+        if ($ExerciseExitRace) {
+            $fields += ,@('Stable observation period in minutes', '1')
+            $fields += ,@('Retry delay in seconds', '10')
+        }
+        foreach ($field in $fields) {
+            $input = Find-Control $editor $field[0] `
+                ([System.Windows.Automation.ControlType]::Edit)
+            if ($null -eq $input) { throw "Policy editor lacks '$($field[0])'." }
+            $input.GetCurrentPattern(
+                [System.Windows.Automation.ValuePattern]::Pattern).SetValue($field[1])
+        }
+        Invoke-Button $editor 'Save changes'
+        Wait-For {
+            $config = Read-Configuration (Join-Path $root 'configuration.json')
+            $saved = @($config.configuration.profiles | Where-Object id -eq $profile.id) |
+                Select-Object -First 1
+            $null -ne $saved -and $saved.policy.normalPollInterval -eq '00:01:00' -and
+                (-not $ExerciseExitRace -or
+                    ($saved.policy.observationPeriod -eq '00:01:00' -and
+                     $saved.policy.retryDelay -eq '00:00:10'))
+        } 'saved controlled-detection policy' 45 | Out-Null
     }
     if ($ExerciseNoRearm) {
         Invoke-Button $dashboard 'Edit policy'
@@ -368,6 +470,186 @@ try {
     }
     else {
         Write-Output 'PASS: Add dialog was accessible; detection found absence; saved profile kept automatic initial start off; dashboard showed the new profile.'
+    }
+
+    if ($ExerciseBrokenConfig) {
+        $configurationPath = Join-Path $root 'configuration.json'
+        Wait-For { Test-Path -LiteralPath ($configurationPath + '.bak') } 'last-good backup' | Out-Null
+        Wait-For {
+            foreach ($log in @(Get-ChildItem -LiteralPath (Join-Path $root 'Logs') -File -Filter 'events-*.jsonl')) {
+                if (Select-String -LiteralPath $log.FullName -SimpleMatch '"kind":"TargetObserved"' -Quiet) {
+                    return $true
+                }
+            }
+            return $false
+        } 'target observation' 20 | Out-Null
+        Wait-For {
+            try { [IO.File]::WriteAllText($configurationPath, 'invalid configuration'); return $true }
+            catch [IO.IOException] { return $false }
+        } 'external configuration edit' | Out-Null
+        Wait-For {
+            foreach ($item in $dashboard.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition)) {
+                if ($item.Current.Name -like 'Configuration needs attention:*') { return $true }
+            }
+            return $false
+        } 'rendered configuration warning' 20 | Out-Null
+        $settings = Find-Control $dashboard 'Settings' ([System.Windows.Automation.ControlType]::RadioButton)
+        if ($null -eq $settings) { throw 'Settings navigation is unavailable.' }
+        $settings.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+        $repair = Wait-For {
+            Find-EnabledButton $dashboard 'Restore last-good configuration'
+        } 'enabled last-good repair action' 15
+        $repair.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+        $confirmation = Find-MessageBox $dashboard 'Restore last-good configuration?'
+        Click-NativeMessageChoice $confirmation 'OK'
+        $complete = Find-MessageBox $dashboard 'Configuration restored'
+        Click-NativeMessageChoice $complete 'OK'
+        Wait-For {
+            $saved = Read-Configuration $configurationPath
+            if ($null -ne $saved -and $null -ne $saved.configuration) { return $saved }
+            return $null
+        } 'restored configuration' 20 | Out-Null
+        Wait-For {
+            foreach ($item in $dashboard.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition)) {
+                if ($item.Current.Name -like 'Configuration needs attention:*') { return $false }
+            }
+            return $true
+        } 'cleared configuration warning' 20 | Out-Null
+        if (-not (Get-Process -Id $targetPid -ErrorAction SilentlyContinue)) {
+            throw 'Configuration repair stopped the target.'
+        }
+        $budget = Read-Configuration $budgetPath
+        if ($null -eq $budget -or $budget.budget.reservedAutomaticAttempts -ne 1) {
+            throw 'Configuration repair changed the durable automatic attempt budget.'
+        }
+        $archives = @(Get-ChildItem -LiteralPath $root -File -Filter 'configuration-invalid-*.json')
+        if ($archives.Count -ne 1) { throw 'Repair did not preserve exactly one invalid configuration.' }
+        Write-Output 'PASS: invalid external edit showed WPF warning and enabled last-good repair; repair preserved invalid bytes, target and automatic budget.'
+        return
+    }
+
+    if ($ExerciseBudgetWriteDenial) {
+        $budgetReadLock = [IO.File]::Open($budgetPath, [IO.FileMode]::Open,
+            [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        Remove-Item -LiteralPath $ready
+        Stop-Process -Id $targetPid
+        Wait-For {
+            foreach ($log in @(Get-ChildItem -LiteralPath (Join-Path $root 'Logs') -File -Filter 'events-*.jsonl')) {
+                if (Select-String -LiteralPath $log.FullName -SimpleMatch '"kind":"StorageDegraded"' -Quiet) {
+                    return $true
+                }
+            }
+            return $false
+        } 'storage-degraded event after denied budget write' 70 | Out-Null
+        Wait-For {
+            foreach ($item in $dashboard.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition)) {
+                if ($item.Current.Name -like '*Automatic recovery is suspended*') { return $true }
+            }
+            return $false
+        } 'rendered storage warning' 20 | Out-Null
+        Start-Sleep -Seconds 35
+        if (Test-Path -LiteralPath $ready) {
+            throw 'Automatic recovery launched without a writable durable budget.'
+        }
+        $budgetReadLock.Dispose()
+        $budgetReadLock = $null
+        $budget = Read-Configuration $budgetPath
+        if ($null -eq $budget -or $budget.budget.reservedAutomaticAttempts -ne 1) {
+            throw 'Write denial changed the original durable attempt charge.'
+        }
+        if ($primary.HasExited) { throw 'Storage-degraded preview did not remain resident.' }
+        Write-Output 'PASS: denied budget write produced a WPF warning and storage event; no automatic relaunch occurred and the original attempt stayed charged.'
+        return
+    }
+
+    if ($ExerciseCorruptBudget -or $ExerciseBlockedLogs) {
+        $targetProcess = Get-Process -Id $targetPid -ErrorAction Stop
+        try {
+            if (-not [string]::Equals($targetProcess.Path, $targetPath,
+                [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'The disposable target identity changed before fault injection.'
+            }
+        }
+        finally { $targetProcess.Dispose() }
+        Stop-Process -Id $primary.Id
+        if (-not $primary.WaitForExit(10000)) { throw 'Preview did not exit before fault injection.' }
+        $primary.Dispose()
+        $primary = $null
+        if ($ExerciseCorruptBudget) {
+            [IO.File]::WriteAllText($budgetPath, 'invalid recovery budget')
+        }
+        else {
+            $logPath = Join-Path $root 'Logs'
+            Move-Item -LiteralPath $logPath -Destination (Join-Path $root 'Logs-before-fault')
+            [IO.File]::WriteAllText($logPath, 'blocked log directory')
+        }
+        $primary = Start-Process -FilePath $executablePath -ArgumentList $arguments `
+            -WindowStyle Hidden -PassThru
+        Start-Sleep -Seconds 2
+        if ($primary.HasExited) { throw "Degraded preview exited with code $($primary.ExitCode)." }
+        $secondary = Start-Process -FilePath $executablePath -ArgumentList $arguments `
+            -WindowStyle Hidden -PassThru
+        if (-not $secondary.WaitForExit(10000) -or $secondary.ExitCode -ne 0) {
+            throw 'Second launch did not reopen the degraded dashboard.'
+        }
+        $dashboard = Wait-For {
+            $primary.Refresh()
+            if ($primary.HasExited -or $primary.MainWindowHandle -eq [IntPtr]::Zero) { return $null }
+            $candidate = [System.Windows.Automation.AutomationElement]::FromHandle($primary.MainWindowHandle)
+            if ($candidate.Current.Name -ne 'Relight dashboard') { return $null }
+            if ($candidate.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition).Count -eq 0) { return $null }
+            return $candidate
+        } 'degraded dashboard' 15
+        $expectedDiagnostic = if ($ExerciseCorruptBudget) {
+            '*Recovery state is unavailable*'
+        } else { '*Event logging is degraded*' }
+        Wait-For {
+            foreach ($item in $dashboard.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition)) {
+                if ($item.Current.Name -like $expectedDiagnostic) {
+                    return $true
+                }
+            }
+            return $false
+        } 'rendered storage-fault diagnostic' 20 | Out-Null
+        if (-not (Get-Process -Id $targetPid -ErrorAction SilentlyContinue)) {
+            throw 'Restart under storage fault stopped the disposable target.'
+        }
+        Remove-Item -LiteralPath $ready
+        Stop-Process -Id $targetPid
+        if ($ExerciseCorruptBudget) {
+            Start-Sleep -Seconds 12
+            if (Test-Path -LiteralPath $ready) {
+                throw 'Automatic recovery launched despite a corrupt durable budget.'
+            }
+            if ((Get-Content -LiteralPath $budgetPath -Raw) -ne 'invalid recovery budget') {
+                throw 'The original corrupt budget was overwritten.'
+            }
+            Write-Output 'PASS: corrupt durable budget survived preview restart; WPF showed recovery-state diagnostic, preserved the target until the controlled exit, and suppressed automatic relaunch.'
+        }
+        else {
+            Wait-For { Test-Path -LiteralPath $ready } 'automatic recovery despite blocked logs' 100 | Out-Null
+            $newPid = [int](Get-Content -LiteralPath $ready -Raw).Split('|')[0]
+            if ($newPid -eq $targetPid) { throw 'Recovery did not create a distinct disposable target.' }
+            $targetPid = $newPid
+            $budget = Wait-For {
+                $saved = Read-Configuration $budgetPath
+                if ($null -ne $saved -and $saved.budget.reservedAutomaticAttempts -eq 2) {
+                    return $saved
+                }
+                return $null
+            } 'second durable automatic attempt' 15
+            if ((Get-Content -LiteralPath $logPath -Raw) -ne 'blocked log directory') {
+                throw 'Logging fault marker changed during automatic recovery.'
+            }
+            Write-Output 'PASS: blocked log path showed WPF warning while monitoring recovered the disposable target with a second durable attempt.'
+        }
+        if ($primary.HasExited) { throw 'Degraded preview did not remain resident.' }
+        return
     }
 
     if ($ExerciseNoRearm) {
@@ -495,6 +777,99 @@ try {
         Write-Output "PASS: WPF Start now$policyDescription launched the absent disposable target once, disabled duplicate start while present, logged an explicit dispatch and left the automatic budget at zero."
     }
 
+    if ($ExerciseExitRace) {
+        $budgetPath = Join-Path $root ('Budgets\' + $profile.id.Replace('-', '') + '.json')
+        $external = Start-Process -FilePath $targetPath -WindowStyle Hidden -PassThru `
+            -ArgumentList @('--label', $label, '--ready-file', $ready,
+                '--exit-after-ms', '300000', '--hidden')
+        Wait-For { Test-Path -LiteralPath $ready } 'external exit-race target' 10 | Out-Null
+        Wait-For {
+            @(Get-ProfileEvents $root $profile.id | Where-Object kind -eq 'ObservationCompleted').Count -ge 1
+        } 'stable external target observation' 150 | Out-Null
+        $before = Read-Configuration $budgetPath
+        if ($null -eq $before -or $before.budget.reservedAutomaticAttempts -ne 0) {
+            throw 'Exit-race target had a charged budget before exit.'
+        }
+        if ($external.HasExited) { throw 'External exit-race target closed before controlled exit.' }
+        Stop-Process -Id $external.Id
+        $external.WaitForExit(10000) | Out-Null
+        Remove-Item -LiteralPath $ready -ErrorAction SilentlyContinue
+        Wait-For {
+            @(Get-ProfileEvents $root $profile.id | Where-Object kind -eq 'TargetDisappeared').Count -ge 1
+        } 'callback-driven target disappearance' 20 | Out-Null
+        $button = Wait-For {
+            Find-EnabledButton $dashboard 'Start now'
+        } 'WPF Start now during retry window' 8
+        $button.GetCurrentPattern(
+            [System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+        Wait-For { Test-Path -LiteralPath $ready } 'exit-race replacement target' 20 | Out-Null
+        $targetPid = [int](Get-Content -LiteralPath $ready -Raw).Split('|')[0]
+        if ($targetPid -eq $external.Id) { throw 'Exit-race target identity did not change.' }
+        Start-Sleep -Seconds 15
+        $events = @(Get-ProfileEvents $root $profile.id)
+        $manual = @($events | Where-Object kind -eq 'ExplicitStartDispatched')
+        $automatic = @($events | Where-Object kind -eq 'LaunchDispatched')
+        $requests = @($events | Where-Object kind -eq 'ExplicitStartRequested')
+        if ($manual.Count -ne 1 -or $automatic.Count -ne 0 -or $requests.Count -ne 1 -or
+            $requests[0].operationId -ne $manual[0].operationId) {
+            throw 'Exit-race UI action produced a missing, duplicate or mismatched launch operation.'
+        }
+        $after = Read-Configuration $budgetPath
+        if ($null -eq $after -or $after.budget.reservedAutomaticAttempts -ne 0) {
+            throw 'Exit-race WPF Start now changed the automatic attempt budget.'
+        }
+        Write-Output 'PASS: callback-driven disappearance enabled WPF Start now; one explicit replacement launched with matching operation IDs, no automatic duplicate and no automatic budget charge.'
+    }
+    if ($ExerciseAmbiguity) {
+        $firstReady = Join-Path $root 'ambiguous-first.ready'
+        $secondReady = Join-Path $root 'ambiguous-second.ready'
+        $external = Start-Process -FilePath $targetPath -WindowStyle Hidden -PassThru `
+            -ArgumentList @('--label', $label, '--ready-file', $firstReady,
+                '--exit-after-ms', '180000', '--hidden')
+        $external2 = Start-Process -FilePath $targetPath -WindowStyle Hidden -PassThru `
+            -ArgumentList @('--label', $label, '--ready-file', $secondReady,
+                '--exit-after-ms', '180000', '--hidden')
+        Wait-For {
+            (Test-Path -LiteralPath $firstReady) -and
+                (Test-Path -LiteralPath $secondReady)
+        } 'two ambiguous disposable targets' 10 | Out-Null
+        $diagnostic = Wait-For {
+            $texts = $dashboard.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.PropertyCondition]::new(
+                    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                    [System.Windows.Automation.ControlType]::Text))
+            foreach ($item in $texts) {
+                $name = $item.Current.Name
+                if ($name.StartsWith('Cannot verify the target:') -and
+                    $name.Contains("PID $($external.Id)") -and
+                    $name.Contains("PID $($external2.Id)")) { return $name }
+            }
+            return $null
+        } 'rendered candidate ambiguity' 80
+        if (-not $diagnostic.Contains('Automatic actions are suspended.')) {
+            throw 'Ambiguity diagnostic did not explain the action suspension.'
+        }
+        if ((Find-Control $dashboard 'Detection unavailable' `
+            ([System.Windows.Automation.ControlType]::Text)) -eq $null) {
+            throw 'Dashboard did not show detection unavailable.'
+        }
+        foreach ($name in @('Start now', 'Stop and pause', 'Restart now')) {
+            if (Find-EnabledButton $dashboard $name) {
+                throw "$name remained enabled while two targets matched."
+            }
+        }
+        Start-Sleep -Seconds 8
+        $budgetPath = Join-Path $root ('Budgets\' + $profile.id.Replace('-', '') + '.json')
+        $budget = Read-Configuration $budgetPath
+        if ($null -eq $budget -or $budget.budget.reservedAutomaticAttempts -ne 0) {
+            throw 'Ambiguity charged an automatic attempt.'
+        }
+        if ($external.HasExited -or $external2.HasExited) {
+            throw 'Relight terminated an ambiguous disposable target.'
+        }
+        Write-Output 'PASS: WPF dashboard showed both ambiguous candidate PIDs, suspended unsafe controls, left both targets running and charged no automatic attempt.'
+    }
+
     if ($ExerciseHistoryNavigation) {
         Wait-For {
             foreach ($log in @(Get-ChildItem -LiteralPath (Join-Path $root 'Logs') -File `
@@ -565,6 +940,7 @@ try {
                     [System.Windows.Automation.ValuePattern]::Pattern).Current.Value
                 if ($value.Contains("Profile ID: $($profile.id)") -and
                     $value.Contains('UTC:') -and $value.Contains('Operation ID:')) {
+                    $script:launchDetails = $value
                     return $true
                 }
             }
@@ -587,6 +963,76 @@ try {
                 ([System.Windows.Automation.ControlType]::Text)
         } 'filtered launch event history' 20 | Out-Null
         Write-Output 'PASS: WPF View history selected the source profile, expanded launch correlation details and filtered to its one launch dispatch.'
+        if ($ExerciseHistoryExport) {
+            $exportId = [guid]::NewGuid().ToString('N')
+            $historyExport = Join-Path ([IO.Path]::GetTempPath()) "relight-history-ui-$exportId.csv"
+            $episodeExport = Join-Path ([IO.Path]::GetTempPath()) "relight-episode-ui-$exportId.csv"
+            $diagnosticExport = Join-Path ([IO.Path]::GetTempPath()) "relight-diagnostics-ui-$exportId.zip"
+            Invoke-Button $dashboard 'Export history'
+            Save-ExportDialog $dashboard 'Export filtered Relight history' $historyExport
+            Click-NativeMessageChoice (Find-MessageBox $dashboard 'Relight history' 25) 'OK'
+            if (-not (Test-Path -LiteralPath $historyExport)) {
+                throw 'Filtered history export was not created.'
+            }
+            $csv = @(Import-Csv -LiteralPath $historyExport)
+            if ($csv.Count -ne 1 -or $csv[0].kind -ne 'LaunchDispatched' -or
+                $csv[0].profileId -ne $profile.id -or $csv[0].processIdentity) {
+                throw 'Filtered CSV did not contain exactly the redacted selected launch event.'
+            }
+            $episodeMatch = [regex]::Match($script:launchDetails,
+                '(?m)^Episode ID:\s*([0-9a-fA-F-]{36})')
+            if (-not $episodeMatch.Success) { throw 'Launch details did not expose an episode ID.' }
+            $episodeId = $episodeMatch.Groups[1].Value
+            $episodeFilter = Find-Control $dashboard 'Filter history by episode ID' `
+                ([System.Windows.Automation.ControlType]::Edit)
+            if ($null -eq $episodeFilter) { throw 'Episode filter is inaccessible.' }
+            $episodeFilter.GetCurrentPattern(
+                [System.Windows.Automation.ValuePattern]::Pattern).SetValue($episodeId)
+            Invoke-Button $dashboard 'Export filtered history'
+            Save-ExportDialog $dashboard 'Export all retained events for this episode' $episodeExport
+            Click-NativeMessageChoice (Find-MessageBox $dashboard 'Relight history' 25) 'OK'
+            $episodeRows = @(Import-Csv -LiteralPath $episodeExport)
+            if ($episodeRows.Count -lt 2 -or
+                -not @($episodeRows | Where-Object kind -eq 'LaunchReserved').Count -or
+                -not @($episodeRows | Where-Object kind -eq 'LaunchDispatched').Count -or
+                @($episodeRows | Where-Object { $_.episodeId -ne $episodeId }).Count -gt 0 -or
+                @($episodeRows | Where-Object { $_.processIdentity }).Count -gt 0) {
+                throw 'Episode export omitted the retained launch chain or exposed process identity.'
+            }
+            $settings = Find-Control $dashboard 'Settings' `
+                ([System.Windows.Automation.ControlType]::RadioButton)
+            if ($null -eq $settings) { throw 'Settings navigation is inaccessible.' }
+            $settings.GetCurrentPattern(
+                [System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+            Invoke-Button $dashboard 'Export local diagnostic bundle'
+            Save-ExportDialog $dashboard 'Save local Relight diagnostics' $diagnosticExport
+            Click-NativeMessageChoice (Find-MessageBox $dashboard 'Relight diagnostics' 25) 'OK'
+            $archive = [IO.Compression.ZipFile]::OpenRead($diagnosticExport)
+            try {
+                $eventsEntry = $archive.GetEntry('events.jsonl')
+                $metadataEntry = $archive.GetEntry('diagnostics.json')
+                if ($null -eq $eventsEntry -or $null -eq $metadataEntry) {
+                    throw 'Diagnostic bundle omitted events or metadata.'
+                }
+                $eventsReader = [IO.StreamReader]::new($eventsEntry.Open())
+                try { $eventsText = $eventsReader.ReadToEnd() }
+                finally { $eventsReader.Dispose() }
+                $metadataReader = [IO.StreamReader]::new($metadataEntry.Open())
+                try { $metadataText = $metadataReader.ReadToEnd() }
+                finally { $metadataReader.Dispose() }
+                $metadata = $metadataText | ConvertFrom-Json
+                if ($metadata.events.exported -lt $episodeRows.Count -or
+                    $eventsText -notlike '*"kind":"LaunchDispatched"*' -or
+                    $eventsText -like "*$targetPath*" -or
+                    $metadataText -like "*$targetPath*" -or
+                    $metadataText -like "*$label*" -or
+                    $metadataText -like "*$ready*") {
+                    throw 'Diagnostic ZIP omitted events or exposed target launch details.'
+                }
+            }
+            finally { $archive.Dispose() }
+            Write-Output 'PASS: WPF filtered and full-episode exports used user-selected paths; CSV and diagnostic ZIP retained the event chain without process identity or target launch details.'
+        }
     }
 
     if ($ExplicitAction) {
@@ -1109,6 +1555,19 @@ try {
     }
 }
 finally {
+    if ($null -ne $budgetReadLock) { $budgetReadLock.Dispose() }
+    if ($null -ne $external2) {
+        if (-not $external2.HasExited) {
+            Stop-Process -Id $external2.Id
+            $external2.WaitForExit(10000) | Out-Null
+        }
+        $external2.Dispose()
+    }
+    foreach ($generated in @($historyExport, $episodeExport, $diagnosticExport)) {
+        if ($null -ne $generated -and (Test-Path -LiteralPath $generated)) {
+            Remove-Item -LiteralPath $generated
+        }
+    }
     if ($null -ne $external) {
         if (-not $external.HasExited) {
             Stop-Process -Id $external.Id
@@ -1116,7 +1575,13 @@ finally {
         }
         $external.Dispose()
     }
-    if ($null -ne $secondary) { $secondary.Dispose() }
+    if ($null -ne $secondary) {
+        if (-not $secondary.HasExited) {
+            Stop-Process -Id $secondary.Id
+            $secondary.WaitForExit(10000) | Out-Null
+        }
+        $secondary.Dispose()
+    }
     if ($null -ne $primary) {
         if (-not $primary.HasExited) {
             Stop-Process -Id $primary.Id

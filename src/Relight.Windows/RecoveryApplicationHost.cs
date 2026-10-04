@@ -51,6 +51,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     private readonly object _statusSync = new();
     private readonly SemaphoreSlim _changes = new(1, 1);
     private volatile bool _sharedConfigurationSuspended;
+    private volatile StoredConfiguration? _repairFallback;
     private bool _disposed;
 
     private RecoveryApplicationHost(string dataDirectory, IMonotonicClock clock,
@@ -77,6 +78,8 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Relight");
 
     public StoredConfiguration? Configuration { get; private set; }
+    public StoredConfiguration? RepairableConfiguration => _repairFallback ??
+        (Configuration is { FromLastGoodBackup: true } fallback ? fallback : null);
     public string? ConfigurationProblem { get; private set; }
     public TimeSpan Elapsed => _clock.Elapsed;
 
@@ -226,7 +229,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 {
                     ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(
                         profile.Id, profile.Policy, StateStoreForExisting(profile),
-                        GuardDiscovery(packagedDiscovery),
+                        GuardDiscovery(profile.Id, packagedDiscovery),
                         GuardLauncher(new PackagedApplicationLauncher(profile.Target.Identity)),
                         _clock, _launchGate, _notificationTap,
                         stopper: GuardStopper(new ChatGptPackagedStopper()),
@@ -303,7 +306,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             try
             {
                 ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(profile.Id,
-                    profile.Policy, StateStoreForExisting(profile), GuardDiscovery(discovery),
+                    profile.Policy, StateStoreForExisting(profile), GuardDiscovery(profile.Id, discovery),
                     GuardLauncher(_executableLauncherFactory(target)), _clock, _launchGate,
                     _notificationTap, GuardStopper(new ExecutableStopper(target)), _sharedBudgetStore);
                 _scheduler.Add(profile.Id, coordinator, profile.Policy);
@@ -339,10 +342,14 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         try
         {
             if (_disposed) throw new ObjectDisposedException(nameof(RecoveryApplicationHost));
+            _repairFallback = null;
             StoredConfiguration current = _configurationStore.Load();
             if (!current.AutomaticActionsAllowed)
+            {
+                _repairFallback = current;
                 throw new ConfigurationUnavailableException(
                     "Repair the invalid shared configuration before reconciliation.");
+            }
             StoredConfiguration? active = Configuration;
             if (!forceReload && !_sharedConfigurationSuspended && active is not null &&
                 current.Revision == active.Revision &&
@@ -406,10 +413,21 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         _notificationTap = new(_recorder);
     }
 
-    private IProcessDiscovery GuardDiscovery(IProcessDiscovery discovery) =>
-        _sessionStateStore is null ? discovery :
+    private IProcessDiscovery GuardDiscovery(Guid profileId, IProcessDiscovery discovery)
+    {
+        if (discovery is ExecutableDiscovery executable)
+            discovery = new ExecutableExitSignaledDiscovery(executable, () =>
+            {
+                try
+                {
+                    if (!_disposed) _scheduler.RequestImmediate(profileId);
+                }
+                catch (ObjectDisposedException) { /* Shutdown raced the exit callback. */ }
+            });
+        return _sessionStateStore is null ? discovery :
             new ConfigurationGuardedDiscovery(discovery, _configurationStore,
                 () => _sharedConfigurationSuspended ? null : Configuration);
+    }
 
     private IProcessLauncher GuardLauncher(IProcessLauncher launcher) =>
         _sessionStateStore is null ? launcher :
@@ -650,7 +668,8 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                     Policy = configured.GetValueOrDefault(status.Id)?.Policy,
                     TargetKind = configured.GetValueOrDefault(status.Id)?.Target.Kind ??
                         status.TargetKind,
-                    Detection = _scheduler.GetPassiveLast(status.Id) ?? status.Detection,
+                    Detection = coordinator?.LastDetection ??
+                        _scheduler.GetPassiveLast(status.Id) ?? status.Detection,
                     Recovery = coordinator?.Snapshot ?? status.Recovery,
                     AutomaticActionsAllowed = status.AutomaticActionsAllowed &&
                         !(coordinator?.StorageDegraded ?? false),
@@ -661,6 +680,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
                 Policy = configured.GetValueOrDefault(status.Id)?.Policy,
                 TargetKind = configured.GetValueOrDefault(status.Id)?.Target.Kind ??
                     status.TargetKind,
+                Detection = coordinator?.LastDetection ?? status.Detection,
                 Recovery = coordinator?.Snapshot ?? last.Value.Result?.Snapshot ?? status.Recovery,
                 AutomaticActionsAllowed = status.AutomaticActionsAllowed &&
                     !(coordinator?.StorageDegraded ?? last.Value.Result?.StorageDegraded ?? false),
@@ -786,7 +806,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             ConfigurationStore.ValidateConfiguration(updated);
             ProfileCoordinator coordinator = await Task.Run(() =>
                 ProfileCoordinator.CreateNew(id, policy, _activeStateStore,
-                    GuardDiscovery(discovery),
+                    GuardDiscovery(id, discovery),
                     GuardLauncher(launcher), _clock, _launchGate, _notificationTap,
                     GuardStopper(stopper),
                     _sharedBudgetStore),
@@ -870,11 +890,13 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             try
             {
                 if (_disposed) throw new ObjectDisposedException(nameof(RecoveryApplicationHost));
-                StoredConfiguration fallback = Configuration is { FromLastGoodBackup: true } shown
+                StoredConfiguration fallback = RepairableConfiguration is { FromLastGoodBackup: true } shown
                     ? shown : throw new InvalidOperationException(
                         "A trusted last-good configuration is not available for repair.");
                 cancellationToken.ThrowIfCancellationRequested();
-                return _configurationStore.RepairFromLastGood(fallback).PreservedInvalidPath;
+                string? preserved = _configurationStore.RepairFromLastGood(fallback).PreservedInvalidPath;
+                _repairFallback = null;
+                return preserved;
             }
             finally { _changes.Release(); }
         }, CancellationToken.None);
@@ -1358,7 +1380,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             if (_coordinators.ContainsKey(profile.Id))
                 throw new InvalidOperationException("This profile is already scheduled.");
         ProfileCoordinator coordinator = ProfileCoordinator.OpenExisting(profile.Id,
-            profile.Policy, StateStoreForExisting(profile), GuardDiscovery(discovery), GuardLauncher(launcher),
+            profile.Policy, StateStoreForExisting(profile), GuardDiscovery(profile.Id, discovery), GuardLauncher(launcher),
             _clock, _launchGate, _notificationTap, GuardStopper(stopper), _sharedBudgetStore);
         RecoveryState previousState = coordinator.Snapshot.State;
         bool schedulerOwnsCoordinator = false;

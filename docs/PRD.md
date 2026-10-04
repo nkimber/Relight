@@ -349,7 +349,7 @@ Produce a self-contained Windows x64 package with version metadata, documented b
 | Idle CPU | Target below 1% total CPU averaged over 15 minutes with 20 ordinary profiles; measure on a documented reference PC |
 | Resident memory | Initial target below 150 MB working set with dashboard closed; report engine/UI footprint during profiling |
 | UI responsiveness | Normal actions acknowledge within 250 ms; long operations expose progress and cancellation where applicable |
-| Reliability | Pass a 24-hour soak with repeated target failures, UI open/close cycles and no unbounded memory/log growth |
+| Reliability | Review the accepted 18-hour controlled soak with repeated target failures and no unbounded memory/log growth; verify UI open/close cycles separately. The user waived the original 24-hour duration on 28 September 2026. |
 | Session lock | Monitoring continues while the user session is locked and the machine remains awake |
 | Sleep/logoff | No promise of work during sleep or after logoff; resume/sign-in behavior follows persisted policy |
 | Isolation | One target's failure or blocked launch cannot stall other profiles |
@@ -418,7 +418,7 @@ Implement dashboard, editor, controls, history, notifications, startup integrati
 
 ### Milestone 3 — Overnight pilot and distribution
 
-Run the 24-hour soak and supervised overnight pilot; validate retention, CPU/memory targets, locked-session behavior, recovery after update and package installation/removal. Publish a reproducible build recipe and a local release package for testing.
+Review the accepted 18-hour controlled soak and run a supervised overnight pilot; validate retention, CPU/memory targets, locked-session behavior, recovery after update and package installation/removal. Publish a reproducible build recipe and a local release package for testing.
 
 **Exit:** All Version 1 acceptance tests pass, no unresolved duplicate-launch or budget-loss defects, and the user can diagnose the complete overnight episode history.
 

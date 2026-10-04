@@ -700,6 +700,8 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
             ? profile.Recovery is { } disabled
                 ? $"Protection is disabled; the target is left running. {disabled.ReservedAutomaticAttempts} automatic attempt(s) remain charged."
                 : "Protection is disabled; the target is left running."
+        : profile.Recovery?.DetectionUnavailable == true
+            ? $"Cannot verify the target: {profile.Detection?.Reason ?? "Detection is unavailable."} Automatic actions are suspended."
         : profile.Recovery is { } recovery
             ? recovery.Paused
                 ? $"Protection is paused; the application is left running. {recovery.ReservedAutomaticAttempts} automatic attempt(s) remain charged."
