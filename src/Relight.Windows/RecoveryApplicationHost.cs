@@ -51,6 +51,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     private readonly object _statusSync = new();
     private readonly SemaphoreSlim _changes = new(1, 1);
     private volatile bool _sharedConfigurationSuspended;
+    private volatile StoredConfiguration? _repairFallback;
     private bool _disposed;
 
     private RecoveryApplicationHost(string dataDirectory, IMonotonicClock clock,
@@ -77,6 +78,8 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Relight");
 
     public StoredConfiguration? Configuration { get; private set; }
+    public StoredConfiguration? RepairableConfiguration => _repairFallback ??
+        (Configuration is { FromLastGoodBackup: true } fallback ? fallback : null);
     public string? ConfigurationProblem { get; private set; }
     public TimeSpan Elapsed => _clock.Elapsed;
 
@@ -339,10 +342,14 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         try
         {
             if (_disposed) throw new ObjectDisposedException(nameof(RecoveryApplicationHost));
+            _repairFallback = null;
             StoredConfiguration current = _configurationStore.Load();
             if (!current.AutomaticActionsAllowed)
+            {
+                _repairFallback = current;
                 throw new ConfigurationUnavailableException(
                     "Repair the invalid shared configuration before reconciliation.");
+            }
             StoredConfiguration? active = Configuration;
             if (!forceReload && !_sharedConfigurationSuspended && active is not null &&
                 current.Revision == active.Revision &&
@@ -870,11 +877,13 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
             try
             {
                 if (_disposed) throw new ObjectDisposedException(nameof(RecoveryApplicationHost));
-                StoredConfiguration fallback = Configuration is { FromLastGoodBackup: true } shown
+                StoredConfiguration fallback = RepairableConfiguration is { FromLastGoodBackup: true } shown
                     ? shown : throw new InvalidOperationException(
                         "A trusted last-good configuration is not available for repair.");
                 cancellationToken.ThrowIfCancellationRequested();
-                return _configurationStore.RepairFromLastGood(fallback).PreservedInvalidPath;
+                string? preserved = _configurationStore.RepairFromLastGood(fallback).PreservedInvalidPath;
+                _repairFallback = null;
+                return preserved;
             }
             finally { _changes.Release(); }
         }, CancellationToken.None);
