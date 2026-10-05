@@ -76,6 +76,7 @@ public sealed class ProfileCoordinator : IDisposable
     private readonly IEventRecorder _recorder;
     private readonly IMonotonicClock _clock;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private Detection? _lastDetection;
     private readonly object _launchSync = new();
     private CancellationTokenSource? _launchCancellation;
     private int _commandGeneration;
@@ -164,6 +165,7 @@ public sealed class ProfileCoordinator : IDisposable
     }
 
     public RecoverySnapshot Snapshot => _machine.Snapshot;
+    public Detection? LastDetection => Volatile.Read(ref _lastDetection);
     public RecoveryPolicy Policy => _machine.Policy;
     public bool StorageDegraded => _storageDegraded;
     public string? StorageError => _storageError;
@@ -914,16 +916,24 @@ public sealed class ProfileCoordinator : IDisposable
 
     private async Task<Detection> Discover(CancellationToken cancellationToken)
     {
-        try { return await _discovery.DetectAsync(cancellationToken).ConfigureAwait(false); }
+        try
+        {
+            Detection found = await _discovery.DetectAsync(cancellationToken)
+                .ConfigureAwait(false);
+            Volatile.Write(ref _lastDetection, found);
+            return found;
+        }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception error)
         {
-            return Detection.Unavailable(error.Message,
+            Detection unavailable = Detection.Unavailable(error.Message,
                 error is UnauthorizedAccessException or
                     Win32Exception { NativeErrorCode: 5 }
                     ? DetectionFailureKind.PermissionDenied
                     : DetectionFailureKind.InspectionFailed,
                 NativeErrorCode(error));
+            Volatile.Write(ref _lastDetection, unavailable);
+            return unavailable;
         }
     }
 
@@ -1110,7 +1120,10 @@ public sealed class ProfileCoordinator : IDisposable
             (after.State is RecoveryState.RetryWaiting or RecoveryState.AwaitingIntervention))
             Record(OperationalEventKind.TargetDisappeared, EventSeverity.Warning, before, after);
         if (before.State == RecoveryState.Observing &&
-            (after.State != RecoveryState.Observing || after.ObservationStartedAt is null))
+            ((after.State != RecoveryState.Observing &&
+              after.State != RecoveryState.Healthy) ||
+             (after.State == RecoveryState.Observing &&
+              after.ObservationStartedAt is null)))
             Record(OperationalEventKind.ObservationInterrupted, EventSeverity.Warning, before, after,
                 failureCategory: before.ObservationOrigin == ObservationOrigin.AutomaticLaunch &&
                     after.TargetIdentity is null ? OperationalFailureCategory.EarlyExit : null);
