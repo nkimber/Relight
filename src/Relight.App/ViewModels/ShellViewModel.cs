@@ -644,6 +644,8 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         $"Process identity: {entry.ProcessIdentity ?? "—"}\n" +
         $"Native error code: {entry.NativeErrorCode?.ToString() ?? "—"}\n" +
         $"Failure category: {entry.FailureCategory?.ToString() ?? "—"}\n" +
+        $"Detection diagnostics: {(entry.DetectionDiagnostic is null ? "—" : entry.DetectionDiagnostic.ToString())}\n" +
+        $"Runtime diagnostics: {(entry.RuntimeDiagnostic is null ? "—" : entry.RuntimeDiagnostic.ToString())}\n" +
         $"Suggested check: {FailureAdvice(entry.FailureCategory)}";
 
     private static string FailureAdvice(OperationalFailureCategory? category) => category switch

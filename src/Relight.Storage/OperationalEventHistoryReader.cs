@@ -409,7 +409,7 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
             throw new ArgumentException("History query is invalid.", nameof(query));
     }
 
-    private const string CsvHeader = "occurredUtc,eventId,severity,kind,profileId,profileName,episodeId,operationId,previousState,newState,origin,attemptNumber,attemptLimit,processIdentity,nativeErrorCode,failureCategory";
+    private const string CsvHeader = "occurredUtc,eventId,severity,kind,profileId,profileName,episodeId,operationId,previousState,newState,origin,attemptNumber,attemptLimit,processIdentity,nativeErrorCode,failureCategory,detectionDiagnostic,runtimeDiagnostic";
 
     private static string CsvLine(OperationalEvent entry) => string.Join(",",
         new string?[]
@@ -420,12 +420,16 @@ public sealed class OperationalEventHistoryReader(string dataDirectory)
             entry.PreviousState?.ToString(), entry.NewState?.ToString(),
             entry.Origin?.ToString(), entry.AttemptNumber?.ToString(),
             entry.AttemptLimit?.ToString(), entry.ProcessIdentity,
-            entry.NativeErrorCode?.ToString(), entry.FailureCategory?.ToString()
+            entry.NativeErrorCode?.ToString(), entry.FailureCategory?.ToString(),
+            entry.DetectionDiagnostic is null ? null : JsonSerializer.Serialize(entry.DetectionDiagnostic, OperationalEventJournal.Json),
+            entry.RuntimeDiagnostic is null ? null : JsonSerializer.Serialize(entry.RuntimeDiagnostic, OperationalEventJournal.Json)
         }.Select(value => "\"" + (value ?? "").Replace("\"", "\"\"") + "\""));
 
     private static string TextBlock(OperationalEvent entry) =>
         $"{entry.OccurredUtc:O} | {entry.Severity} | {entry.Kind} | {entry.ProfileName ?? "Relight"}\n" +
         $"  Event: {entry.EventId}  Profile: {entry.ProfileId?.ToString() ?? "—"}  Episode: {entry.EpisodeId?.ToString() ?? "—"}  Operation: {entry.OperationId?.ToString() ?? "—"}\n" +
         $"  State: {entry.PreviousState?.ToString() ?? "—"} → {entry.NewState?.ToString() ?? "—"}  Origin: {entry.Origin?.ToString() ?? "—"}  Attempt: {entry.AttemptNumber?.ToString() ?? "—"}/{entry.AttemptLimit?.ToString() ?? "—"}\n" +
-        $"  Process identity: {entry.ProcessIdentity ?? "—"}  Native error: {entry.NativeErrorCode?.ToString() ?? "—"}  Failure category: {entry.FailureCategory?.ToString() ?? "—"}\n";
+        $"  Process identity: {entry.ProcessIdentity ?? "—"}  Native error: {entry.NativeErrorCode?.ToString() ?? "—"}  Failure category: {entry.FailureCategory?.ToString() ?? "—"}\n" +
+        $"  Detection diagnostics: {(entry.DetectionDiagnostic is null ? "—" : JsonSerializer.Serialize(entry.DetectionDiagnostic, OperationalEventJournal.Json))}\n" +
+        $"  Runtime diagnostics: {(entry.RuntimeDiagnostic is null ? "—" : JsonSerializer.Serialize(entry.RuntimeDiagnostic, OperationalEventJournal.Json))}\n";
 }

@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
 using Microsoft.Win32;
+using Relight.Core;
 using Relight.Engine;
 using Relight.Services;
 using Relight.Storage;
@@ -688,23 +689,23 @@ public partial class App : Application
 
     private void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
     {
-        if (e.Mode == PowerModes.Resume) ReconcileAfterWindowsInterruption();
+        if (e.Mode == PowerModes.Resume) ReconcileAfterWindowsInterruption(MonitoringInterruptionCause.PowerResume);
     }
 
     private void OnSessionSwitch(object? sender, SessionSwitchEventArgs e)
     {
         if (e.Reason == SessionSwitchReason.SessionUnlock)
-            ReconcileAfterWindowsInterruption();
+            ReconcileAfterWindowsInterruption(MonitoringInterruptionCause.SessionUnlock);
     }
 
-    private void ReconcileAfterWindowsInterruption()
+    private void ReconcileAfterWindowsInterruption(MonitoringInterruptionCause cause)
     {
         RecoveryApplicationHost? host = Volatile.Read(ref _host);
         if (_exiting || host is null ||
             Interlocked.Exchange(ref _reconcilingWindows, 1) != 0) return;
         CancellationToken cancellationToken = _monitoringCancellation?.Token ??
             CancellationToken.None;
-        Task reconciliation = host.ReconcileAfterWindowsInterruptionAsync(cancellationToken);
+        Task reconciliation = host.ReconcileAfterWindowsInterruptionAsync(cancellationToken, cause);
         _ = ObserveWindowsReconciliationAsync(reconciliation, cancellationToken);
     }
 

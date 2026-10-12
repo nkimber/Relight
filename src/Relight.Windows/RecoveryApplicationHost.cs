@@ -172,8 +172,12 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         }
 
         InitializeLogging(dataDirectory, Configuration.Configuration.Settings);
+        using var hostProcess = System.Diagnostics.Process.GetCurrentProcess();
         _recorder!.TryRecord(new(DateTimeOffset.UtcNow, Guid.NewGuid(),
-            EventSeverity.Information, OperationalEventKind.Startup));
+            EventSeverity.Information, OperationalEventKind.Startup,
+            RuntimeDiagnostic: new(typeof(RecoveryApplicationHost).Assembly.GetName().Version?.ToString(),
+                typeof(RecoveryApplicationHost).Module.ModuleVersionId, Environment.ProcessId,
+                hostProcess.SessionId, Configuration.Revision)));
 
         await LoadProfilesAsync(Configuration, cancellationToken)
             .ConfigureAwait(false);
@@ -1552,7 +1556,8 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
     public void RequestImmediate(Guid profileId) => _scheduler.RequestImmediate(profileId);
 
     public async Task ReconcileAfterWindowsInterruptionAsync(
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        MonitoringInterruptionCause cause = MonitoringInterruptionCause.Unspecified)
     {
         KeyValuePair<Guid, ProfileCoordinator>[] coordinators;
         lock (_statusSync) coordinators = _coordinators.ToArray();
@@ -1563,7 +1568,7 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
         {
             try
             {
-                await entry.Value.MarkMonitoringInterruptedAsync(cancellationToken)
+                await entry.Value.MarkMonitoringInterruptedAsync(cancellationToken, cause)
                     .ConfigureAwait(false);
             }
             finally

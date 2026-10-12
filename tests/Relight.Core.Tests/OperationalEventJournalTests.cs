@@ -390,7 +390,9 @@ public sealed class OperationalEventJournalTests
                 ProfileName = "Alpha,\"Beta\"",
                 Kind = OperationalEventKind.LaunchReserved,
                 FailureCategory = OperationalFailureCategory.PermissionDenied,
-                NativeErrorCode = 5
+                NativeErrorCode = 5,
+                DetectionDiagnostic = new(DetectionDiagnosticCode.CandidateInspectionFailed,
+                    "ChatGptPackagedDiscovery", "OpenProcess", CandidateProcessId: 42)
             }).ToArray();
         File.WriteAllLines(owned, entries.Select(entry => JsonSerializer.Serialize(entry, json)));
         var reader = new OperationalEventHistoryReader(directory.Path);
@@ -406,9 +408,11 @@ public sealed class OperationalEventJournalTests
         Assert.Equal(0, exported.SkippedMalformedLines);
         string[] lines = File.ReadAllLines(csv);
         Assert.Equal(506, lines.Length);
-        Assert.EndsWith(",failureCategory", lines[0]);
+        Assert.EndsWith(",failureCategory,detectionDiagnostic,runtimeDiagnostic", lines[0]);
         Assert.Contains("\"Alpha,\"\"Beta\"\"\"", lines[1]);
-        Assert.EndsWith(",\"PermissionDenied\"", lines[1]);
+        Assert.Contains(",\"PermissionDenied\",", lines[1]);
+        Assert.Contains("CandidateInspectionFailed", lines[1]);
+        Assert.Equal(42, display.Events[0].DetectionDiagnostic?.CandidateProcessId);
         Assert.DoesNotContain(entries[505].EpisodeId!.Value.ToString(),
             File.ReadAllText(csv));
 
@@ -418,6 +422,7 @@ public sealed class OperationalEventJournalTests
         Assert.Equal(505, textResult.ExportedEvents);
         Assert.Contains("LaunchReserved", File.ReadAllText(text));
         Assert.Contains("Failure category: PermissionDenied", File.ReadAllText(text));
+        Assert.Contains("OpenProcess", File.ReadAllText(text));
     }
 
     [Fact]

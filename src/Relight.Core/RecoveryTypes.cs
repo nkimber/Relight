@@ -25,6 +25,24 @@ public enum RecoveryHoldReason { InterruptedExplicitLaunch }
 
 public enum DetectionKind { Present, Absent, Unavailable }
 
+public enum DetectionDiagnosticCode
+{
+    MonitoringInterrupted, EnumerationFailed, CandidateInspectionFailed,
+    ProcessDisappeared, OwnerUnavailable, CommandLineUnavailable,
+    AmbiguousMainProcesses, ConfigurationUnavailable, ConfigurationChanged,
+    ConfigurationReadFailed, AdapterException
+}
+
+public enum MonitoringInterruptionCause { Unspecified, PowerResume, SessionUnlock }
+
+/// <summary>Safe diagnostic facts; never include command lines or exception messages.</summary>
+public sealed record DetectionDiagnostic(DetectionDiagnosticCode Code,
+    string? Adapter = null, string? Stage = null, int? CandidateProcessId = null,
+    int? SessionId = null, int? CandidateCount = null, int? MainCount = null,
+    string? ExceptionType = null, int? HResult = null,
+    long? ActiveConfigurationRevision = null, long? DiskConfigurationRevision = null,
+    MonitoringInterruptionCause? InterruptionCause = null);
+
 public enum DetectionFailureKind
 {
     Unknown,
@@ -39,7 +57,8 @@ public enum DetectionFailureKind
 /// incorporate current-session identity and a process start time, not just a PID.
 /// </summary>
 public sealed record Detection(DetectionKind Kind, string? Identity = null, string? Reason = null,
-    DetectionFailureKind? FailureKind = null, int? NativeErrorCode = null)
+    DetectionFailureKind? FailureKind = null, int? NativeErrorCode = null,
+    DetectionDiagnostic? Diagnostic = null)
 {
     public static Detection Present(string identity) =>
         !string.IsNullOrWhiteSpace(identity)
@@ -49,8 +68,9 @@ public sealed record Detection(DetectionKind Kind, string? Identity = null, stri
     public static Detection Absent() => new(DetectionKind.Absent);
     public static Detection Unavailable(string reason,
         DetectionFailureKind failureKind = DetectionFailureKind.Unknown,
-        int? nativeErrorCode = null) => new(DetectionKind.Unavailable,
-            Reason: reason, FailureKind: failureKind, NativeErrorCode: nativeErrorCode);
+        int? nativeErrorCode = null, DetectionDiagnostic? diagnostic = null) => new(DetectionKind.Unavailable,
+            Reason: reason, FailureKind: failureKind, NativeErrorCode: nativeErrorCode,
+            Diagnostic: diagnostic);
 }
 
 public enum RecoverySignal { None, LaunchDue }

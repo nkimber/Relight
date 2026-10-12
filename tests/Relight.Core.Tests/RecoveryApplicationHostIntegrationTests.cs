@@ -534,6 +534,16 @@ public sealed class RecoveryApplicationHostIntegrationTests
                 host.StopProfileAndPauseAsync(id, TimeSpan.FromSeconds(1)));
             Assert.Equal(0, new SharedRecoveryBudgetStore(root).Load(id)
                 .ReservedAutomaticAttempts);
+            await host.DisposeAsync();
+            var events = await new OperationalEventHistoryReader(root).ReadAsync(new(ProfileId: id,
+                Kind: OperationalEventKind.DetectionUnavailable));
+            var diagnostic = Assert.Single(events.Events).DetectionDiagnostic;
+            Assert.Equal(DetectionDiagnosticCode.ConfigurationChanged, diagnostic?.Code);
+            Assert.Equal(current.Revision, diagnostic?.ActiveConfigurationRevision);
+            Assert.Equal(current.Revision + 1, diagnostic?.DiskConfigurationRevision);
+            var startup = await new OperationalEventHistoryReader(root).ReadAsync(new(
+                Kind: OperationalEventKind.Startup));
+            Assert.Equal(Environment.ProcessId, Assert.Single(startup.Events).RuntimeDiagnostic?.HostProcessId);
         }
         finally
         {

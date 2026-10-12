@@ -1287,7 +1287,10 @@ public sealed class ProfileCoordinatorTests
         Guid id = Guid.NewGuid();
         using var coordinator = ProfileCoordinator.CreateNew(id, AutoPolicy, store,
             new ConstantDiscovery(Detection.Unavailable("candidate could not be read",
-                DetectionFailureKind.PermissionDenied, 5)),
+                DetectionFailureKind.PermissionDenied, 5, new(
+                    DetectionDiagnosticCode.CandidateInspectionFailed,
+                    "ChatGptPackagedDiscovery", "OpenProcess", CandidateProcessId: 42,
+                    SessionId: 1, ExceptionType: "Win32Exception", HResult: -2147467259))),
             launcher, clock, recorder: recorder);
 
         await TickAt(coordinator, clock, 0);
@@ -1298,10 +1301,54 @@ public sealed class ProfileCoordinatorTests
         Assert.Equal(OperationalFailureCategory.PermissionDenied,
             unavailable.FailureCategory);
         Assert.Equal(5, unavailable.NativeErrorCode);
+        Assert.Equal(42, unavailable.DetectionDiagnostic?.CandidateProcessId);
+        Assert.Equal("OpenProcess", unavailable.DetectionDiagnostic?.Stage);
+        Assert.Equal(unavailable.DetectionDiagnostic, Assert.Single(recorder.Events,
+            entry => entry.Kind == OperationalEventKind.MonitoringGap).DetectionDiagnostic);
         Assert.DoesNotContain("candidate could not be read",
             JsonSerializer.Serialize(unavailable));
         Assert.Equal(0, launcher.Dispatches);
         Assert.Equal(0, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+    }
+
+    [Fact]
+    public async Task Monitoring_interruption_records_lifecycle_cause_without_raw_text()
+    {
+        using var directory = new TestDirectory();
+        var recorder = new CapturingRecorder();
+        using var coordinator = ProfileCoordinator.CreateNew(Guid.NewGuid(), AutoPolicy,
+            new RecoveryStateStore(directory.Path), new ConstantDiscovery(Detection.Present("instance")),
+            new CountingLauncher(), new FakeClock(), recorder: recorder);
+        await coordinator.MarkMonitoringInterruptedAsync(cause: MonitoringInterruptionCause.SessionUnlock);
+        var entry = Assert.Single(recorder.Events,
+            item => item.Kind == OperationalEventKind.DetectionUnavailable);
+        Assert.Equal(DetectionDiagnosticCode.MonitoringInterrupted, entry.DetectionDiagnostic?.Code);
+        Assert.Equal("WindowsLifecycle", entry.DetectionDiagnostic?.Adapter);
+        Assert.Equal(MonitoringInterruptionCause.SessionUnlock, entry.DetectionDiagnostic?.InterruptionCause);
+    }
+
+    [Fact]
+    public async Task Changed_failure_is_logged_without_repeating_unchanged_polls()
+    {
+        using var directory = new TestDirectory();
+        var recorder = new CapturingRecorder();
+        var clock = new FakeClock();
+        var discovery = new MutableDiscovery(Detection.Unavailable("private detail",
+            DetectionFailureKind.PermissionDenied, 5));
+        using var coordinator = ProfileCoordinator.CreateNew(Guid.NewGuid(), AutoPolicy,
+            new RecoveryStateStore(directory.Path), discovery, new CountingLauncher(),
+            clock, recorder: recorder);
+        await TickAt(coordinator, clock, 0);
+        await TickAt(coordinator, clock, 1);
+        discovery.Result = Detection.Unavailable("different private detail",
+            DetectionFailureKind.Ambiguous, diagnostic: new(
+                DetectionDiagnosticCode.AmbiguousMainProcesses, MainCount: 2));
+        await TickAt(coordinator, clock, 2);
+        await TickAt(coordinator, clock, 3);
+        var changed = Assert.Single(recorder.Events,
+            item => item.Kind == OperationalEventKind.DetectionFailureChanged);
+        Assert.Equal(2, changed.DetectionDiagnostic?.MainCount);
+        Assert.DoesNotContain("private detail", JsonSerializer.Serialize(recorder.Events));
     }
 
     [Fact]

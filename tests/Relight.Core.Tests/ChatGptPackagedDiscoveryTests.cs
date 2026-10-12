@@ -35,6 +35,8 @@ public sealed class ChatGptPackagedDiscoveryTests
         Assert.Equal(DetectionKind.Unavailable, ambiguous.Kind);
         Assert.Equal(DetectionKind.Unavailable, unreadable.Kind);
         Assert.Equal(DetectionFailureKind.Ambiguous, ambiguous.FailureKind);
+        Assert.Equal(2, ambiguous.Diagnostic?.MainCount);
+        Assert.Equal(3, ambiguous.Diagnostic?.SessionId);
     }
 
     [Fact]
@@ -42,11 +44,15 @@ public sealed class ChatGptPackagedDiscoveryTests
     {
         Detection result = ChatGptPackagedDiscovery.Interpret(new(
             [new(11, 100, true)], "A candidate could not be inspected.",
-            DetectionFailureKind.PermissionDenied, 5), 3);
+            DetectionFailureKind.PermissionDenied, 5, new(
+                DetectionDiagnosticCode.OwnerUnavailable, "ChatGptPackagedDiscovery",
+                "WmiMetadata", CandidateProcessId: 11)), 3);
 
         Assert.Equal(DetectionKind.Unavailable, result.Kind);
         Assert.Equal(DetectionFailureKind.PermissionDenied, result.FailureKind);
         Assert.Equal(5, result.NativeErrorCode);
+        Assert.Equal(DetectionDiagnosticCode.OwnerUnavailable, result.Diagnostic?.Code);
+        Assert.Equal(11, result.Diagnostic?.CandidateProcessId);
     }
 
     [Theory]

@@ -34,7 +34,7 @@ public sealed class ChatGptPackagedDiscovery : IProcessDiscovery
         if (inspection.Problem is { } problem)
             return Detection.Unavailable(problem,
                 inspection.FailureKind ?? DetectionFailureKind.Unknown,
-                inspection.NativeErrorCode);
+                inspection.NativeErrorCode, inspection.Diagnostic);
         PackagedProcessCandidate[] main = inspection.Candidates
             .Where(candidate => !candidate.HasTypeSwitch).ToArray();
         return main.Length switch
@@ -44,7 +44,10 @@ public sealed class ChatGptPackagedDiscovery : IProcessDiscovery
                 $"{sessionId}|{PackageFamilyName}|{main[0].ProcessId}|{main[0].StartedUtcTicks}"),
             _ => Detection.Unavailable(
                 $"{main.Length} ChatGPT main-process candidates; identity is ambiguous.",
-                DetectionFailureKind.Ambiguous)
+                DetectionFailureKind.Ambiguous, diagnostic: new(
+                    DetectionDiagnosticCode.AmbiguousMainProcesses,
+                    "ChatGptPackagedDiscovery", "MainClassification", SessionId: sessionId,
+                    CandidateCount: inspection.Candidates.Count, MainCount: main.Length))
         };
     }
 }

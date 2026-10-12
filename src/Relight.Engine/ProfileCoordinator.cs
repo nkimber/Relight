@@ -427,7 +427,8 @@ public sealed class ProfileCoordinator : IDisposable
     }
 
     public async Task<CoordinatorResult> MarkMonitoringInterruptedAsync(
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        MonitoringInterruptionCause cause = MonitoringInterruptionCause.Unspecified)
     {
         CancelPendingLaunchForMonitoringInterruption();
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -439,7 +440,10 @@ public sealed class ProfileCoordinator : IDisposable
             RecoveryCheckpoint before = _machine.ExportCheckpoint();
             RecoverySnapshot previous = _machine.Snapshot;
             Detection interruption = Detection.Unavailable(
-                "Windows monitoring was interrupted; target presence must be checked again.");
+                "Windows monitoring was interrupted; target presence must be checked again.",
+                diagnostic: new(DetectionDiagnosticCode.MonitoringInterrupted,
+                    Adapter: "WindowsLifecycle", Stage: "ObservationContinuity",
+                    InterruptionCause: cause));
             RecoveryTransition transition = _machine.Advance(interruption, _clock.Elapsed);
             PersistIfChanged(before);
             RecordTransition(previous, _machine.Snapshot, interruption);
@@ -923,7 +927,9 @@ public sealed class ProfileCoordinator : IDisposable
                     Win32Exception { NativeErrorCode: 5 }
                     ? DetectionFailureKind.PermissionDenied
                     : DetectionFailureKind.InspectionFailed,
-                NativeErrorCode(error));
+                NativeErrorCode(error), new(DetectionDiagnosticCode.AdapterException,
+                    Adapter: _discovery.GetType().Name, Stage: "Detect",
+                    ExceptionType: error.GetType().Name, HResult: error.HResult));
         }
     }
 
@@ -1079,20 +1085,34 @@ public sealed class ProfileCoordinator : IDisposable
             Adopt(budgets.EnterLockout(_profileId, current.Revision, lockedEpisode));
     }
 
+    private (DetectionFailureKind? Kind, int? NativeCode, DetectionDiagnosticCode? Code,
+        string? Stage)? _lastDetectionFailure;
+
     private void RecordTransition(RecoverySnapshot before, RecoverySnapshot after,
         Detection? detection = null)
     {
         if (before.State != after.State)
             Record(OperationalEventKind.StateChanged, EventSeverity.Information, before, after);
+        if (detection?.Kind == DetectionKind.Unavailable)
+        {
+            var failure = (detection.FailureKind, detection.NativeErrorCode,
+                detection.Diagnostic?.Code, detection.Diagnostic?.Stage);
+            if (before.DetectionUnavailable && _lastDetectionFailure != failure)
+                Record(OperationalEventKind.DetectionFailureChanged, EventSeverity.Warning,
+                    before, after, failureCategory: DetectionCategory(detection),
+                    nativeErrorCode: detection.NativeErrorCode, diagnostic: detection.Diagnostic);
+            _lastDetectionFailure = failure;
+        }
+        else if (detection is not null) _lastDetectionFailure = null;
         if (!before.DetectionUnavailable && after.DetectionUnavailable)
         {
             OperationalFailureCategory? category = DetectionCategory(detection);
             Record(OperationalEventKind.DetectionUnavailable, EventSeverity.Warning,
                 before, after, failureCategory: category,
-                nativeErrorCode: detection?.NativeErrorCode);
+                nativeErrorCode: detection?.NativeErrorCode, diagnostic: detection?.Diagnostic);
             Record(OperationalEventKind.MonitoringGap, EventSeverity.Warning,
                 before, after, failureCategory: category,
-                nativeErrorCode: detection?.NativeErrorCode);
+                nativeErrorCode: detection?.NativeErrorCode, diagnostic: detection?.Diagnostic);
         }
         if (before.DetectionUnavailable && !after.DetectionUnavailable)
             Record(OperationalEventKind.MonitoringRestored, EventSeverity.Information, before, after);
@@ -1138,7 +1158,8 @@ public sealed class ProfileCoordinator : IDisposable
 
     private void Record(OperationalEventKind kind, EventSeverity severity,
         RecoverySnapshot before, RecoverySnapshot after, Guid? operationId = null,
-        OperationalFailureCategory? failureCategory = null, int? nativeErrorCode = null)
+        OperationalFailureCategory? failureCategory = null, int? nativeErrorCode = null,
+        DetectionDiagnostic? diagnostic = null)
     {
         var entry = new OperationalEvent(DateTimeOffset.UtcNow, Guid.NewGuid(), severity, kind,
             ProfileId: _profileId, EpisodeId: after.EpisodeId ?? before.EpisodeId,
@@ -1148,7 +1169,8 @@ public sealed class ProfileCoordinator : IDisposable
             AttemptNumber: after.ReservedAutomaticAttempts,
             AttemptLimit: _machine.Policy.MaximumAutomaticAttempts,
             ProcessIdentity: after.TargetIdentity ?? before.TargetIdentity,
-            NativeErrorCode: nativeErrorCode, FailureCategory: failureCategory);
+            NativeErrorCode: nativeErrorCode, FailureCategory: failureCategory,
+            DetectionDiagnostic: diagnostic);
         try
         {
             if (!_recorder.TryRecord(entry))

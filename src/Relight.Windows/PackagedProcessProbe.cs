@@ -14,7 +14,8 @@ public sealed record PackagedProcessCandidate(int ProcessId, long StartedUtcTick
     bool HasTypeSwitch);
 public sealed record PackagedProcessInspection(
     IReadOnlyList<PackagedProcessCandidate> Candidates, string? Problem,
-    DetectionFailureKind? FailureKind = null, int? NativeErrorCode = null);
+    DetectionFailureKind? FailureKind = null, int? NativeErrorCode = null,
+    DetectionDiagnostic? Diagnostic = null);
 
 /// <summary>
 /// Read-only package-family inspection. Multiple processes are reported as
@@ -59,34 +60,48 @@ public sealed class PackagedProcessProbe
         string? problem = null;
         DetectionFailureKind? failureKind = null;
         int? nativeErrorCode = null;
+        DetectionDiagnostic? diagnostic = null;
         try
         {
             foreach (Process process in Process.GetProcessesByName(_processName))
             {
                 using (process)
                 {
+                    string stage = "Session";
+                    DetectionDiagnosticCode code = DetectionDiagnosticCode.CandidateInspectionFailed;
                     cancellationToken.ThrowIfCancellationRequested();
                     try
                     {
                         if (process.HasExited || process.SessionId != _sessionId) continue;
+                        stage = "OpenProcess";
                         using SafeProcessHandle handle = OpenProcess(
                             ProcessQueryLimitedInformation, false, process.Id);
                         if (handle.IsInvalid)
                             throw new Win32Exception(Marshal.GetLastWin32Error());
+                        stage = "PackageFamily";
                         string? family = GetFamilyName(handle);
                         if (family is null || !string.Equals(family, _familyName,
                                 StringComparison.OrdinalIgnoreCase)) continue;
+                        stage = "WmiMetadata";
                         ProcessMetadata? metadata = GetProcessMetadata(process.Id);
                         if (metadata is null)
                         {
                             if (process.HasExited) continue;
+                            code = DetectionDiagnosticCode.ProcessDisappeared;
                             throw new InvalidOperationException("A packaged process disappeared during inspection.");
                         }
                         if (metadata.OwnerSid is null)
+                        {
+                            code = DetectionDiagnosticCode.OwnerUnavailable;
                             throw new InvalidOperationException("A packaged process owner could not be verified.");
+                        }
                         if (!string.Equals(metadata.OwnerSid, _userSid, StringComparison.Ordinal)) continue;
                         if (metadata.CommandLine is null)
+                        {
+                            code = DetectionDiagnosticCode.CommandLineUnavailable;
                             throw new InvalidOperationException("A packaged process command line could not be read.");
+                        }
+                        stage = "StartTime";
                         candidates.Add(new(process.Id,
                             process.StartTime.ToUniversalTime().Ticks,
                             Regex.IsMatch(metadata.CommandLine, @"(?:^|\s)--type=\S+",
@@ -102,6 +117,9 @@ public sealed class PackagedProcessProbe
                             problem = $"A candidate process could not be verified: {error.Message}";
                             failureKind = Classify(error);
                             nativeErrorCode = NativeCode(error);
+                            diagnostic = new(code, "ChatGptPackagedDiscovery", stage,
+                                CandidateProcessId: process.Id, SessionId: _sessionId,
+                                ExceptionType: error.GetType().Name, HResult: error.HResult);
                         }
                     }
                 }
@@ -114,9 +132,17 @@ public sealed class PackagedProcessProbe
                 problem = $"Process enumeration failed: {error.Message}";
                 failureKind = Classify(error);
                 nativeErrorCode = NativeCode(error);
+                diagnostic = new(DetectionDiagnosticCode.EnumerationFailed,
+                    "ChatGptPackagedDiscovery", "Enumeration", SessionId: _sessionId,
+                    ExceptionType: error.GetType().Name, HResult: error.HResult);
             }
         }
-        return new(candidates, problem, failureKind, nativeErrorCode);
+        return new(candidates, problem, failureKind, nativeErrorCode,
+            diagnostic is null ? null : diagnostic with
+            {
+                CandidateCount = candidates.Count,
+                MainCount = candidates.Count(candidate => !candidate.HasTypeSwitch)
+            });
     }
 
     private static DetectionFailureKind Classify(Exception error) =>

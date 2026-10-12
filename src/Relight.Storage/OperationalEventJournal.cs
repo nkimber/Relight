@@ -67,7 +67,8 @@ public enum OperationalEventKind
     LaunchAverted,
     ExplicitStartAverted,
     InterruptedLaunchReconciled,
-    ProfileTargetChanged
+    ProfileTargetChanged,
+    DetectionFailureChanged
 }
 
 /// <summary>
@@ -90,7 +91,12 @@ public sealed record OperationalEvent(
     int? AttemptLimit = null,
     string? ProcessIdentity = null,
     int? NativeErrorCode = null,
-    OperationalFailureCategory? FailureCategory = null);
+    OperationalFailureCategory? FailureCategory = null,
+    DetectionDiagnostic? DetectionDiagnostic = null,
+    RuntimeDiagnostic? RuntimeDiagnostic = null);
+
+public sealed record RuntimeDiagnostic(string? AssemblyVersion, Guid ModuleVersionId,
+    int HostProcessId, int SessionId, long ConfigurationRevision);
 
 public sealed record EventJournalStatus(
     bool Degraded,
