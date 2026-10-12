@@ -31,6 +31,8 @@
                     <Border BorderBrush="{DynamicResource LineBrush}" BorderThickness="0,1,0,0" Margin="0,0,0,16" />
                     <TextBlock Text="DEVELOPMENT PREVIEW" Foreground="{DynamicResource AccentBrush}" FontSize="11" FontWeight="SemiBold" />
                     <TextBlock Text="Version 0.1.0" Style="{StaticResource Muted}" FontSize="12" Margin="0,6,0,16" />
+                    <TextBlock Text="Closing the window keeps monitoring in the tray. Use Exit Relight to quit."
+                               Style="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,12" />
                     <Button Content="Hide to tray" Command="{Binding HideCommand}" ToolTip="Close this window and keep Relight in the tray (Ctrl+W)." Margin="0,0,0,8" />
                     <Button Content="E_xit Relight" Command="{Binding ExitCommand}" ToolTip="Exit Relight (Ctrl+Q)." />
                 </StackPanel>

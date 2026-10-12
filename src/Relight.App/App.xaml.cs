@@ -651,7 +651,7 @@ public partial class App : Application
 
         ShowDashboard();
         if (MessageBox.Show(_dashboard!,
-                "Relight will leave the system tray. Other applications will keep running.",
+                "Relight will stop monitoring and leave the system tray. Other applications will keep running.",
                 "Exit Relight?", MessageBoxButton.OKCancel, MessageBoxImage.Information,
                 MessageBoxResult.Cancel) != MessageBoxResult.OK)
         {
@@ -659,24 +659,34 @@ public partial class App : Application
         }
 
         _exiting = true;
+        _viewModel?.ShowMonitoringProblem("Exiting Relight. Monitoring is stopping…");
+        if (_dashboard is not null) _dashboard.IsEnabled = false;
         _ = CompleteExitAsync();
     }
 
     private async Task CompleteExitAsync()
     {
+        int exitCode = 0;
         _statusTimer?.Stop();
-        _historyCancellation?.Cancel();
-        _monitoringCancellation?.Cancel();
         try
         {
-            if (_monitoringTask is not null) await _monitoringTask;
+            _historyCancellation?.Cancel();
+            _monitoringCancellation?.Cancel();
+            await MonitoringShutdown.DrainAsync(_monitoringTask);
+        }
+        catch (TimeoutException)
+        {
+            exitCode = 1;
+            System.Diagnostics.Trace.WriteLine(
+                "Relight Exit: monitoring cleanup exceeded 10 seconds; exiting with incomplete cleanup. Target applications are left running.");
         }
         catch (Exception error)
         {
-            MessageBox.Show(_dashboard!, $"Relight could not finish monitoring cleanly.\n\n{error.Message}",
-                "Relight exit problem", MessageBoxButton.OK, MessageBoxImage.Warning);
+            exitCode = 1;
+            System.Diagnostics.Trace.WriteLine(
+                $"Relight Exit: monitoring cleanup failed ({error.GetType().Name}, HRESULT {error.HResult}); exiting with incomplete cleanup.");
         }
-        finally { Shutdown(); }
+        finally { Shutdown(exitCode); }
     }
 
     private void OnSystemParametersChanged(object? sender, PropertyChangedEventArgs e)
@@ -754,7 +764,11 @@ public partial class App : Application
         _monitoringCancellation?.Cancel();
         CancellationTokenSource? cancellation = _monitoringCancellation;
         if (_monitoringTask is { IsCompleted: false } task)
-            _ = task.ContinueWith(_ => cancellation?.Dispose(), TaskScheduler.Default);
+            _ = task.ContinueWith(completed =>
+            {
+                _ = completed.Exception;
+                cancellation?.Dispose();
+            }, TaskScheduler.Default);
         else cancellation?.Dispose();
         SystemParameters.StaticPropertyChanged -= OnSystemParametersChanged;
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;

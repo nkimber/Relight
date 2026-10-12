@@ -1096,6 +1096,11 @@ try {
             $primary.Refresh()
             $primary.HasExited
         } 'explicit Relight exit' 20 | Out-Null
+        if ($primary.ExitCode -ne 0) { throw "Explicit Relight exit reported incomplete cleanup: $($primary.ExitCode)." }
+        $shutdownEvents = @(Get-ChildItem (Join-Path $root 'Logs') -Filter 'events-*.jsonl' |
+            Get-Content | ForEach-Object { ConvertFrom-Json $_ } |
+            Where-Object { $_.kind -eq 'Shutdown' })
+        if ($shutdownEvents.Count -ne 1) { throw 'Explicit exit did not flush exactly one Shutdown event.' }
         $finalBudget = Read-Configuration $budgetPath
         if ($null -eq $finalBudget -or
             $finalBudget.budget.reservedAutomaticAttempts -ne
