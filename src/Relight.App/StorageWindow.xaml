@@ -16,6 +16,17 @@
             <CheckBox x:Name="NotificationsInput" Content="Notify when a drive enters warning or critical space" Margin="0,0,0,12" />
             <Label Target="{Binding ElementName=IntervalInput}" Content="Check interval in seconds (10–3600)" />
             <TextBox x:Name="IntervalInput" Width="120" HorizontalAlignment="Left" AutomationProperties.Name="Storage check interval seconds" />
+            <Label Target="{Binding ElementName=ReminderInput}" Content="Low-space reminder interval in minutes (0 = off; 15–10080)" />
+            <TextBox x:Name="ReminderInput" Width="120" HorizontalAlignment="Left" AutomationProperties.Name="Storage reminder interval minutes" />
+            <TextBlock Text="Reminders repeat while a drive remains low. Snooze quiets all disk-space warning/critical notices in this Relight instance. Readings and tray attention continue while monitoring is enabled; recovery and cleanup settings are unchanged. Snooze ends when its time expires or Relight exits."
+                       TextWrapping="Wrap" Margin="0,12,0,8" />
+            <WrapPanel>
+                <Label Target="{Binding ElementName=SnoozeInput}" Content="Snooze minutes (5–1440)" />
+                <TextBox x:Name="SnoozeInput" Text="60" Width="70" AutomationProperties.Name="Storage notification snooze minutes" />
+                <Button x:Name="SnoozeButton" Content="Snooze disk-space notifications" Click="SnoozeClick" Margin="8,0" />
+                <Button x:Name="ResumeButton" Content="Resume disk-space notifications" Click="ResumeClick" />
+            </WrapPanel>
+            <TextBlock x:Name="SnoozeStatus" TextWrapping="Wrap" Margin="0,8,0,0" AutomationProperties.AutomationId="StorageSnoozeStatus" />
             <TextBlock Text="Thresholds use percent OR GiB free. Critical values must be lower than warning values. Enter a drive root such as C:\. Empty drive list uses the system drive with default thresholds."
                        TextWrapping="Wrap" Margin="0,16,0,8" />
             <DataGrid x:Name="DrivesInput" AutoGenerateColumns="False" CanUserAddRows="True"

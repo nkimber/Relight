@@ -3,7 +3,8 @@ param(
     [switch]$ExerciseScan,
     [switch]$ExerciseCleanup,
     [switch]$ExerciseAutomaticApproval,
-    [switch]$ExerciseCleanupHistory
+    [switch]$ExerciseCleanupHistory,
+    [switch]$ExerciseStorageNotifications
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
@@ -99,6 +100,25 @@ try {
         $config.configuration.settings.storage.checkIntervalSeconds -eq 10 -and
             $config.configuration.settings.storage.notificationsEnabled -eq $false
     } 'saved storage preferences' | Out-Null
+    if ($ExerciseStorageNotifications) {
+        $reminder = (Find-Control $storage 'Storage reminder interval minutes').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        $reminder.SetValue('14')
+        Invoke-Button $storage 'Save storage settings'
+        Wait-For { Find-Control $storage 'Settings were not saved: Reminder interval must be 0 (off), or 15–10080 minutes.' } 'invalid reminder rejection' | Out-Null
+        $reminder.SetValue('120')
+        Invoke-Button $storage 'Save storage settings'
+        Wait-For { (Read-Json (Join-Path $root 'configuration.json')).configuration.settings.storage.reminderIntervalMinutes -eq 120 } 'persisted reminder interval' | Out-Null
+        $snooze = (Find-Control $storage 'Storage notification snooze minutes').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        $snooze.SetValue('4')
+        Invoke-Button $storage 'Snooze disk-space notifications'
+        Wait-For { Find-Control $storage 'Snooze was not changed: Enter 5–1440 whole minutes for snooze.' } 'invalid snooze rejection' | Out-Null
+        $snooze.SetValue('60')
+        Invoke-Button $storage 'Snooze disk-space notifications'
+        Wait-For {
+            $all = $storage.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+            foreach ($item in $all) { if ($item.Current.Name -like 'Disk-space notifications snoozed for*') {return $true} }
+        } 'active snooze status' | Out-Null
+    }
     if ($ExerciseScan) {
         $fixture = Join-Path $root 'scan-fixture'
         [IO.Directory]::CreateDirectory($fixture) | Out-Null
@@ -244,6 +264,16 @@ try {
     $interval = Find-Control $storage 'Storage check interval seconds'
     if ($interval.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value -ne '10') {
         throw 'Saved interval was not restored.'
+    }
+    if ($ExerciseStorageNotifications) {
+        $reminder = (Find-Control $storage 'Storage reminder interval minutes').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        if ($reminder.Current.Value -ne '120') { throw 'Reminder interval was not restored.' }
+        $resume = Find-Control $storage 'Resume disk-space notifications'
+        Wait-For { $resume.Current.IsEnabled } 'snooze survives storage/dashboard closure' | Out-Null
+        Invoke-Button $storage 'Resume disk-space notifications'
+        Wait-For { -not $resume.Current.IsEnabled } 'notification resume' | Out-Null
+        if (Test-Path (Join-Path $root 'Storage/cleanup-rules.json')) {throw 'Notification settings created cleanup authority.'}
+        Write-Output 'PASS: reminder validation/persistence; snooze validation, survives window closure, and resume; no cleanup authority.'
     }
     if ($ExerciseScan) {
         Wait-For {

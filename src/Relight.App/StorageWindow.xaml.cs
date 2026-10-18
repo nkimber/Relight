@@ -21,15 +21,20 @@ public partial class StorageWindow : Window
     private readonly SemaphoreSlim _gate;
     private readonly Action? _stopAutomatic;
     private readonly Action? _allowAutomatic;
+    private readonly Action<TimeSpan>? _snooze;
+    private readonly Action? _resume;
+    private readonly Func<TimeSpan>? _snoozeRemaining;
     private ReviewedCleanupWindow? _cleanupWindow;
     private CleanupHistoryWindow? _historyWindow;
     public StorageWindow(DiskSpaceSettings settings, Func<DiskSpaceSettings, Task> save,
-        string dataDirectory, SemaphoreSlim scanGate, Action? stopAutomatic = null, Action? allowAutomatic = null)
+        string dataDirectory, SemaphoreSlim scanGate, Action? stopAutomatic = null, Action? allowAutomatic = null,
+        Action<TimeSpan>? snooze = null, Action? resume = null, Func<TimeSpan>? snoozeRemaining = null)
     {
         InitializeComponent();
         _save = save;
         _dataDirectory = dataDirectory; _gate = scanGate;
         _stopAutomatic = stopAutomatic; _allowAutomatic = allowAutomatic;
+        _snooze = snooze; _resume = resume; _snoozeRemaining = snoozeRemaining;
         _scan = new StorageScanViewModel(dataDirectory, scanGate);
         ScanPanel.DataContext = _scan;
         _scanAgeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
@@ -40,6 +45,8 @@ public partial class StorageWindow : Window
         EnabledInput.IsChecked = settings.Enabled;
         NotificationsInput.IsChecked = settings.NotificationsEnabled;
         IntervalInput.Text = settings.CheckIntervalSeconds.ToString();
+        ReminderInput.Text = settings.ReminderIntervalMinutes.ToString();
+        RefreshSnooze();
         DrivesInput.ItemsSource = new ObservableCollection<DriveEditor>(
             DiskSpaceMonitor.EffectiveDrives(settings).Select(d => new DriveEditor
             {
@@ -73,7 +80,35 @@ public partial class StorageWindow : Window
             ScanRootInput.SetCurrentValue(TextBox.TextProperty, dialog.FolderName);
     }
 
-    public void UpdateStatus(string status) => ReadingsText.Text = status;
+    public void UpdateStatus(string status) { ReadingsText.Text = status; RefreshSnooze(); }
+
+    private void RefreshSnooze()
+    {
+        var remaining = _snoozeRemaining?.Invoke() ?? TimeSpan.Zero;
+        SnoozeStatus.Text = remaining > TimeSpan.Zero
+            ? $"Disk-space notifications snoozed for {Math.Ceiling(remaining.TotalMinutes):N0} more minute(s). A fresh low-space reading can notify when snooze ends."
+            : "Disk-space notifications are not snoozed. Your saved notification preference still applies.";
+        SnoozeButton.IsEnabled = _snooze is not null;
+        ResumeButton.IsEnabled = _resume is not null && remaining > TimeSpan.Zero;
+    }
+
+    private void SnoozeClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (!int.TryParse(SnoozeInput.Text, out int minutes) || minutes is < 5 or > 1440)
+                throw new ArgumentException("Enter 5–1440 whole minutes for snooze.");
+            _snooze?.Invoke(TimeSpan.FromMinutes(minutes)); RefreshSnooze();
+            SaveStatus.Text = "Disk-space notices snoozed in this instance. Monitoring and cleanup preferences are unchanged.";
+        }
+        catch (Exception error) { SaveStatus.Text = $"Snooze was not changed: {error.Message}"; }
+    }
+
+    private void ResumeClick(object sender, RoutedEventArgs e)
+    {
+        _resume?.Invoke(); RefreshSnooze();
+        SaveStatus.Text = "Snooze ended. The next check evaluates current space using your saved notification preference.";
+    }
 
     private async void SaveClick(object sender, RoutedEventArgs e)
     {
@@ -85,11 +120,14 @@ public partial class StorageWindow : Window
                 throw new ArgumentException("Correct the highlighted drive values before saving.");
             if (!int.TryParse(IntervalInput.Text, out int seconds))
                 throw new ArgumentException("Enter a whole number of seconds.");
+            if (!int.TryParse(ReminderInput.Text, out int reminderMinutes))
+                throw new ArgumentException("Enter a whole number of minutes for reminders.");
             var settings = new DiskSpaceSettings
             {
                 Enabled = EnabledInput.IsChecked == true,
                 NotificationsEnabled = NotificationsInput.IsChecked == true,
                 CheckIntervalSeconds = seconds,
+                ReminderIntervalMinutes = reminderMinutes,
                 Drives = DrivesInput.ItemsSource.Cast<DriveEditor>().Select(d => new DiskSpaceDrivePolicy(
                     d.Root.Trim().ToUpperInvariant(), d.WarningPercent, d.CriticalPercent,
                     d.WarningGigabytes, d.CriticalGigabytes)).ToArray()

@@ -7,6 +7,7 @@ namespace Relight.Windows;
 public sealed record DiskSpaceReading(string Drive, DiskSpaceLevel Level, long? AvailableBytes,
     long? TotalBytes, DateTimeOffset CheckedUtc, string? Problem, bool Notify)
 {
+    public bool IsReminder { get; init; }
     public string FreeSpace => AvailableBytes is { } free && TotalBytes is > 0
         ? $"{free / 1_073_741_824d:N1} GiB ({100d * free / TotalBytes.Value:N1}%) free"
         : "Unknown";
@@ -16,12 +17,40 @@ public sealed record DiskSpaceReading(string Drive, DiskSpaceLevel Level, long? 
 
 public sealed class DiskSpaceMonitor
 {
-    private readonly Dictionary<string, (DiskSpaceDrivePolicy Policy, DiskSpaceAlert Alert)> _alerts =
+    private readonly Dictionary<string, (DiskSpaceDrivePolicy Policy, DiskSpaceAlert Alert, DiskSpaceNotificationSchedule Notices)> _alerts =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Func<string, (long Available, long Total)> _read;
+    private readonly TimeProvider _clock;
+    private readonly object _snoozeSync = new();
+    private long _snoozeStarted, _snoozeVersion;
+    private TimeSpan _snoozeDuration;
 
-    public DiskSpaceMonitor(Func<string, (long Available, long Total)>? read = null) =>
-        _read = read ?? ReadWindows;
+    public DiskSpaceMonitor(Func<string, (long Available, long Total)>? read = null, TimeProvider? clock = null)
+    { _read = read ?? ReadWindows; _clock = clock ?? TimeProvider.System; }
+
+    public TimeSpan SnoozeRemaining
+    {
+        get
+        {
+            lock (_snoozeSync)
+            {
+                var remaining = _snoozeDuration - _clock.GetElapsedTime(_snoozeStarted);
+                return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+            }
+        }
+    }
+
+    public void SnoozeNotifications(TimeSpan duration)
+    {
+        if (duration < TimeSpan.FromMinutes(5) || duration > TimeSpan.FromDays(1))
+            throw new ArgumentException("Snooze must be 5–1440 minutes.");
+        lock (_snoozeSync) { _snoozeStarted = _clock.GetTimestamp(); _snoozeDuration = duration; _snoozeVersion++; }
+    }
+
+    public void ResumeNotifications()
+    {
+        lock (_snoozeSync) _snoozeDuration = TimeSpan.Zero;
+    }
 
     public static string SystemDrive => Path.GetPathRoot(Environment.SystemDirectory)!;
     public static DiskSpaceDrivePolicy[] EffectiveDrives(DiskSpaceSettings settings) =>
@@ -38,20 +67,28 @@ public sealed class DiskSpaceMonitor
         return drives.Select(policy =>
         {
             if (!_alerts.TryGetValue(policy.Root, out var state) || state.Policy != policy)
-                _alerts[policy.Root] = state = (policy, new DiskSpaceAlert());
-            DateTimeOffset now = DateTimeOffset.UtcNow;
+                _alerts[policy.Root] = state = (policy, new DiskSpaceAlert(), new DiskSpaceNotificationSchedule(_clock));
+            DateTimeOffset now = _clock.GetUtcNow();
             try
             {
                 var (available, total) = _read(policy.Root);
                 var level = state.Alert.Evaluate(policy, available, total);
-                bool notify = state.Alert.Observe(level) && settings.NotificationsEnabled;
+                state.Alert.Observe(level);
+                (bool notify, bool reminder) = Notice(level);
                 return new DiskSpaceReading(policy.Root, level, available, total, now,
-                    level == DiskSpaceLevel.Unavailable ? "Invalid capacity reading" : null, notify);
+                    level == DiskSpaceLevel.Unavailable ? "Invalid capacity reading" : null, notify) { IsReminder = reminder };
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or Win32Exception)
             {
+                Notice(DiskSpaceLevel.Unavailable);
                 return new DiskSpaceReading(policy.Root, DiskSpaceLevel.Unavailable,
                     null, null, now, error.Message, false);
+            }
+            (bool, bool) Notice(DiskSpaceLevel level)
+            {
+                lock (_snoozeSync)
+                    return state.Notices.Observe(level, settings.NotificationsEnabled, settings.ReminderIntervalMinutes,
+                        SnoozeRemaining > TimeSpan.Zero, _snoozeVersion);
             }
         }).ToArray();
     }

@@ -86,11 +86,12 @@ public sealed class DiskSpaceTests
             var store = new ConfigurationStore(directory);
             var initial = store.Initialize(RelightConfiguration.Empty);
             Assert.True(initial.Configuration.Settings.Storage.Enabled);
-            var storage = new DiskSpaceSettings { CheckIntervalSeconds = 25, Drives = [new("D:\\")] };
+            var storage = new DiskSpaceSettings { CheckIntervalSeconds = 25, ReminderIntervalMinutes = 120, Drives = [new("D:\\")] };
             var next = initial.Configuration with { Settings = initial.Configuration.Settings with { Storage = storage } };
             store.Save(initial, next);
             var loaded = store.Load().Configuration.Settings.Storage;
             Assert.Equal(25, loaded.CheckIntervalSeconds);
+            Assert.Equal(120, loaded.ReminderIntervalMinutes);
             Assert.Equal("D:\\", Assert.Single(loaded.Drives).Root);
             Assert.Throws<StaleConfigurationException>(() => store.Save(initial, initial.Configuration));
         }
@@ -121,6 +122,7 @@ public sealed class DiskSpaceTests
             File.WriteAllText(path, json.ToJsonString());
             var legacy = store.Load();
             Assert.Equal(60, legacy.Configuration.Settings.Storage.CheckIntervalSeconds);
+            Assert.Equal(0, legacy.Configuration.Settings.Storage.ReminderIntervalMinutes);
             store.Save(legacy, legacy.Configuration);
             json = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path))!;
             json["configuration"]!["settings"]!["storage"]!["checkIntervalSeconds"] = 0;
@@ -142,7 +144,7 @@ public sealed class DiskSpaceTests
             await using (var host = await RecoveryApplicationHost.OpenSharedSessionPreviewAsync(directory))
             {
                 var before = host.Configuration!.Configuration;
-                await host.SetDiskSpaceSettingsAsync(new() { CheckIntervalSeconds = 15, Enabled = false });
+                await host.SetDiskSpaceSettingsAsync(new() { CheckIntervalSeconds = 15, ReminderIntervalMinutes = 30, Enabled = false });
                 Assert.Equal(before.Profiles, host.Configuration!.Configuration.Profiles);
                 Assert.Equal(before.Settings.StartAtSignIn, host.Configuration.Configuration.Settings.StartAtSignIn);
                 Assert.False(host.Configuration.Configuration.Settings.Storage.Enabled);
@@ -153,6 +155,7 @@ public sealed class DiskSpaceTests
             await using var reopened = await RecoveryApplicationHost.OpenSharedSessionPreviewAsync(directory);
             Assert.False(reopened.Configuration!.Configuration.Settings.Storage.Enabled);
             Assert.Equal(15, reopened.Configuration.Configuration.Settings.Storage.CheckIntervalSeconds);
+            Assert.Equal(30, reopened.Configuration.Configuration.Settings.Storage.ReminderIntervalMinutes);
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
     }

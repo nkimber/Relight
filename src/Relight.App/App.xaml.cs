@@ -87,14 +87,18 @@ public partial class App : Application
             await host.SetDiskSpaceSettingsAsync(settings);
             _nextStorageCheck = 0;
         }, _viewModel?.DataDirectory ?? RecoveryApplicationHost.DefaultDataDirectory,
-            _storageScanGate, _automaticCleanup.Stop, _automaticCleanup.AllowApprovedRules) { Owner = _dashboard };
+            _storageScanGate, _automaticCleanup.Stop, _automaticCleanup.AllowApprovedRules,
+            duration => { _diskSpaceMonitor.SnoozeNotifications(duration); _nextStorageCheck = 0; PublishStorageStatus(); },
+            () => { _diskSpaceMonitor.ResumeNotifications(); _nextStorageCheck = 0; PublishStorageStatus(); },
+            () => _diskSpaceMonitor.SnoozeRemaining) { Owner = _dashboard };
         _storageWindow.Closed += (_, _) => _storageWindow = null;
-        _storageWindow.UpdateStatus(_storageStatus);
+        PublishStorageStatus();
         _storageWindow.Show();
     }
 
     private async void OnStorageTick(object? sender, EventArgs e)
     {
+        if (!_exiting) PublishStorageStatus();
         if (_checkingStorage || _exiting || Environment.TickCount64 < _nextStorageCheck) return;
         var settings = Volatile.Read(ref _host)?.Configuration?.Configuration.Settings.Storage;
         if (settings is null) return;
@@ -108,7 +112,10 @@ public partial class App : Application
                 string.Join("\n", readings.Select(r => $"{r.Status} · checked {r.CheckedUtc.ToLocalTime():g}"));
             foreach (var reading in readings.Where(r => r.Notify))
             {
-                try { _tray?.ShowRecoveryNotification($"Disk space {reading.Level}: {reading.Drive}",
+                if (!ReferenceEquals(settings, Volatile.Read(ref _host)?.Configuration?.Configuration.Settings.Storage)) continue;
+                if (_diskSpaceMonitor.SnoozeRemaining > TimeSpan.Zero ||
+                    Volatile.Read(ref _host)?.Configuration?.Configuration.Settings.Storage is not { Enabled: true, NotificationsEnabled: true }) continue;
+                try { _tray?.ShowRecoveryNotification($"Disk space {(reading.IsReminder ? "reminder · " : "")}{reading.Level}: {reading.Drive}",
                     reading.FreeSpace + ". Open Settings / Disk space monitoring to review.", true); }
                 catch (Exception error) { _storageStatus += $"\nStorage notification failed: {error.Message}"; }
             }
@@ -124,9 +131,17 @@ public partial class App : Application
                 Volatile.Read(ref _host)?.Configuration?.Configuration.Settings.Storage)
                 ? Environment.TickCount64 + settings.CheckIntervalSeconds * 1000L : 0;
             _checkingStorage = false;
-            _viewModel?.UpdateStorageStatus(_storageStatus);
-            _storageWindow?.UpdateStatus(_storageStatus);
+            PublishStorageStatus();
         }
+    }
+
+    private void PublishStorageStatus()
+    {
+        var remaining = _diskSpaceMonitor.SnoozeRemaining;
+        string status = _storageStatus + (remaining > TimeSpan.Zero
+            ? $"\nDisk-space notifications snoozed for {Math.Ceiling(remaining.TotalMinutes):N0} more minute(s) in this instance. Monitoring preference is unchanged." : "");
+        _viewModel?.UpdateStorageStatus(status);
+        _storageWindow?.UpdateStatus(status);
     }
 
     private SingleInstanceService? _instance;
