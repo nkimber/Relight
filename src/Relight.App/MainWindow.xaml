@@ -319,6 +319,7 @@
                             <StackPanel>
                                 <Button Content="Disk space monitoring…" Click="StorageClick" HorizontalAlignment="Left" Margin="0,0,0,8" />
                                 <TextBlock Text="{Binding StorageStatus}" TextWrapping="Wrap" Margin="0,0,0,16" />
+                                <TextBlock Text="{Binding AutomaticCleanupStatus}" TextWrapping="Wrap" Margin="0,0,0,16" />
                                 <TextBlock Text="Application behavior" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,16" />
                                 <TextBlock Text="Close to tray" FontWeight="SemiBold" />
                                 <TextBlock Text="The close button hides the dashboard. Use Exit Relight to quit." Style="{StaticResource Muted}" Margin="0,4,0,18" />

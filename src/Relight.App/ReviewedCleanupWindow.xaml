@@ -6,7 +6,7 @@
     <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="24">
             <TextBlock Text="Reviewed cleanup" FontSize="24" FontWeight="SemiBold" />
-            <TextBlock Text="Automatic deletion is disabled. Nothing runs on a schedule. Preview a rule, select individual files, then confirm permanent deletion. Saving a rule never deletes files."
+            <TextBlock Text="{Binding AutomaticStatus}"
                        TextWrapping="Wrap" Margin="0,8,0,16" />
             <WrapPanel IsEnabled="{Binding IsIdle}">
                 <ComboBox ItemsSource="{Binding Rules}" SelectedItem="{Binding SelectedRule}" DisplayMemberPath="Name"
@@ -48,6 +48,16 @@
                 <Button Content="Open Windows Storage settings" Click="WindowsStorageClick" />
             </WrapPanel>
             <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Margin="0,12,0,12" />
+            <WrapPanel IsEnabled="{Binding IsIdle}" Margin="0,0,0,12">
+                <Label Content="Automatic minimum interval (hours):" />
+                <TextBox Text="{Binding AutomaticIntervalHours, UpdateSourceTrigger=PropertyChanged}" Width="60" AutomationProperties.Name="Automatic cleanup interval hours" />
+                <Label Content="Only below free GiB:" />
+                <TextBox Text="{Binding AutomaticTriggerGiB, UpdateSourceTrigger=PropertyChanged}" Width="60" AutomationProperties.Name="Automatic cleanup trigger GiB" />
+            </WrapPanel>
+            <WrapPanel Margin="0,0,0,12">
+                <Button Content="Approve automatic cleanup…" Click="ApproveAutomaticClick" IsEnabled="{Binding CanApproveAutomatic}" Margin="0,0,8,0" />
+                <Button Content="Disable all automatic cleanup" Click="DisableAutomaticClick" IsEnabled="{Binding IsIdle}" />
+            </WrapPanel>
             <DataGrid x:Name="CandidatesGrid" ItemsSource="{Binding Candidates}" AutoGenerateColumns="False" CanUserAddRows="False"
                       IsEnabled="{Binding IsIdle}" Height="220" AutomationProperties.Name="Reviewed cleanup candidates">
                 <DataGrid.Columns>
@@ -63,6 +73,8 @@
             <DataGrid ItemsSource="{Binding Issues}" AutoGenerateColumns="True" IsReadOnly="True" CanUserAddRows="False" Height="130" Margin="0,8,0,16" />
             <TextBlock Text="Latest run outcomes" FontSize="18" />
             <DataGrid ItemsSource="{Binding Outcomes}" AutoGenerateColumns="True" IsReadOnly="True" CanUserAddRows="False" Height="180" Margin="0,8,0,0" AutomationProperties.Name="Cleanup run outcomes" />
+            <TextBlock Text="Recent runs (up to 100; pending outcomes may be unknown)" FontSize="18" Margin="0,16,0,8" />
+            <DataGrid ItemsSource="{Binding History}" AutoGenerateColumns="True" IsReadOnly="True" CanUserAddRows="False" Height="170" AutomationProperties.Name="Cleanup history" />
             <TextBlock Text="Estimated allocation is not guaranteed reclaimed space. Recycle Bin moves on the same drive do not free capacity. Relight's reviewed action bypasses the Recycle Bin; use Windows settings for Windows-managed temporary files and bin cleanup."
                        TextWrapping="Wrap" Margin="0,12,0,0" />
         </StackPanel>

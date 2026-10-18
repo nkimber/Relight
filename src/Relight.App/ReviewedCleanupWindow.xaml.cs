@@ -10,10 +10,10 @@ namespace Relight;
 public partial class ReviewedCleanupWindow : Window
 {
     private readonly ReviewedCleanupViewModel _model;
-    public ReviewedCleanupWindow(string dataDirectory, SemaphoreSlim gate)
+    public ReviewedCleanupWindow(string dataDirectory, SemaphoreSlim gate, Action? stopAutomatic = null, Action? allowAutomatic = null)
     {
         InitializeComponent();
-        _model = new(dataDirectory, gate); DataContext = _model;
+        _model = new(dataDirectory, gate, stopAutomatic, allowAutomatic); DataContext = _model;
         Loaded += Load;
         Closed += (_, _) => _model.Close();
     }
@@ -23,6 +23,17 @@ public partial class ReviewedCleanupWindow : Window
     private async void SaveClick(object sender, RoutedEventArgs e) => await _model.SaveAsync();
     private async void RemoveClick(object sender, RoutedEventArgs e) => await _model.RemoveAsync();
     private async void PreviewClick(object sender, RoutedEventArgs e) => await _model.PreviewAsync();
+    private async void DisableAutomaticClick(object sender, RoutedEventArgs e) => await _model.DisableAutomaticAsync();
+    private async void ApproveAutomaticClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (MessageBox.Show(this, _model.AutomaticConfirmation(), "Approve automatic permanent cleanup?",
+                MessageBoxButton.OKCancel, MessageBoxImage.Warning, MessageBoxResult.Cancel) != MessageBoxResult.OK) return;
+            await _model.ApproveAutomaticAsync();
+        }
+        catch (Exception error) { MessageBox.Show(this, error.Message, "Automatic cleanup not enabled"); }
+    }
     private async void DeleteClick(object sender, RoutedEventArgs e)
     {
         try

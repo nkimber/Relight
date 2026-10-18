@@ -32,6 +32,14 @@ public sealed class ReviewedCleanupService
     }
 
     public void InvalidatePreview() => _preview = null;
+    public CleanupRule RuleForAutomaticApproval(Guid previewId)
+    {
+        var preview = _preview;
+        if (preview is null || preview.Id != previewId || !preview.Complete ||
+            _clock.GetElapsedTime(_previewTimestamp) > TimeSpan.FromMinutes(10))
+            throw new InvalidOperationException("Generate a fresh, complete preview before automatic approval.");
+        return preview.Rule with { Exclusions = [.. preview.Rule.Exclusions] };
+    }
 
     public void ValidateRoot(CleanupRule rule)
     {
@@ -97,7 +105,7 @@ public sealed class ReviewedCleanupService
     }
 
     public async Task<CleanupRun> ExecuteReviewedAsync(Guid previewId, IReadOnlyList<string> selectedPaths,
-        CancellationToken token = default)
+        CancellationToken token = default, Func<IDisposable>? acquireAuthorization = null)
     {
         var preview = _preview;
         _preview = null; // Single-use even if execution fails or cancellation arrives.
@@ -111,7 +119,8 @@ public sealed class ReviewedCleanupService
             throw new ArgumentException("Select unique files from the current preview only.");
         var selected = preview.Candidates.Where(f => paths.Contains(f.Path)).ToArray();
         var run = new CleanupRun(Guid.NewGuid(), preview.Rule.Id, _clock.GetUtcNow(), null,
-            selected.Select(f => new CleanupItemOutcome(f.Path, "Not attempted")).ToArray(), null, null);
+            selected.Select(f => new CleanupItemOutcome(f.Path, "Not attempted")).ToArray(), null, null)
+            { Origin = acquireAuthorization is null ? "Reviewed" : "Automatic" };
         using var runLease = await Task.Run(() => _store.AcquireRunLease(), token).ConfigureAwait(false);
         await Task.Run(() => _store.SaveRun(run), token).ConfigureAwait(false); // Durable record required before dispatch.
         try
@@ -126,8 +135,21 @@ public sealed class ReviewedCleanupService
                 token.ThrowIfCancellationRequested();
                 try
                 {
-                    await Task.Run(() => _files.DeleteVerified(selected[i]), token).ConfigureAwait(false);
+                    await Task.Run(() =>
+                    {
+                        token.ThrowIfCancellationRequested();
+                        using var authorization = acquireAuthorization?.Invoke();
+                        token.ThrowIfCancellationRequested();
+                        if (!StillEligible(preview.Rule, selected[i], token))
+                            throw new IOException("Age or newest-file retention changed since preview; file was left alone.");
+                        _files.DeleteVerified(selected[i]);
+                    }, token).ConfigureAwait(false);
                     run.Items[i] = new(selected[i].Path, "Deleted permanently");
+                }
+                catch (InvalidOperationException) when (acquireAuthorization is not null)
+                {
+                    run.Items[i] = new(selected[i].Path, "Not attempted", "Automatic authorization was revoked before dispatch.");
+                    throw;
                 }
                 catch (Exception error) when (ReadFailure(error)) { run.Items[i] = new(selected[i].Path, "Skipped", error.Message); }
                 await Task.Run(() => _store.SaveRun(run)).ConfigureAwait(false);
@@ -140,6 +162,25 @@ public sealed class ReviewedCleanupService
     }
 
     private static bool ReadFailure(Exception error) => error is IOException or UnauthorizedAccessException or Win32Exception;
+    private bool StillEligible(CleanupRule rule, CleanupFile selected, CancellationToken token)
+    {
+        if (selected.LastWriteUtc > _clock.GetUtcNow().AddDays(-rule.MinimumAgeDays)) return false;
+        if (rule.RetainNewest == 0) return true;
+        int inspected = 0, newer = 0;
+        foreach (string path in _files.Enumerate(rule.Root))
+        {
+            token.ThrowIfCancellationRequested();
+            if (++inspected > 10000) return false;
+            if (!rule.Matches(Path.GetFileName(path)) || string.Equals(path, selected.Path, StringComparison.OrdinalIgnoreCase)) continue;
+            CleanupFile file;
+            try { file = _files.ReadCleanup(path); }
+            catch (CleanupExcludedException) { continue; }
+            if (file.LastWriteUtc > selected.LastWriteUtc || file.LastWriteUtc == selected.LastWriteUtc &&
+                StringComparer.OrdinalIgnoreCase.Compare(file.Path, selected.Path) < 0)
+                if (++newer >= rule.RetainNewest) return true;
+        }
+        return false;
+    }
     private static async Task<bool> GuardAbsentAsync(CleanupRule rule, CancellationToken token) => rule.GuardExecutable is null ||
         (await new ExecutableDiscovery(new(rule.GuardExecutable, [])).DetectAsync(token).ConfigureAwait(false)).Kind == DetectionKind.Absent;
 }

@@ -494,10 +494,20 @@ Previews inspect at most 10,000 entries, retain the first 100 issues, and show f
 
 Durable pending evidence is required before each dispatch. Audit failure stops remaining files; interrupted pending results remain unknown and are never resumed automatically. Keep one latest run, at most 200 outcomes/2 MiB, outside recovery history and diagnostic exports. Show observed available-space change separately from allocation estimates. Closing cancels between native operations; already-dispatched deletion cannot be undone. Provide Windows Storage settings for Windows-managed cleanup rather than claiming Recycle Bin moves reclaim capacity.
 
-### Later storage increments
+### Cleanup scope overview
 
 - **S3 — Reviewed cleanup:** Explain candidate location, reason, age, estimated reclaim and reversibility. Preview and explicitly select actions. Offer Windows Storage settings for OS-managed cleanup. Capture exact-root rules with file filters, exclusions, age, retention and application-running constraints. Recheck candidates immediately before action. Report actual free-space change separately from file-size estimates. Recycle Bin moves on the same volume do not count as reclaimed capacity.
 - **S4 — Opt-in automation:** Promote individually approved rules from report-only to reviewed or automatic execution. Never infer deletion authority from prior manual actions. Bound each run, skip changed/locked files, protect Relight configuration/recovery state, prevent reparse-point escapes, provide a disable switch and bounded local audit history. Specify permanent deletion explicitly. Add dedicated destructive-operation acceptance before enabling this stage.
+
+### S4 — Individually approved automatic cleanup
+
+The subsequent request to build the next part authorizes opt-in automation implementation. It does not enable any rule by default. A saved rule and a fresh complete preview are required before a separate, default-Cancel confirmation approves future matching files. Approval binds a unique consent ID to the exact saved-rule fingerprint, a 1–168 hour minimum interval (default 24) and a below-free-space trigger of 1–1024 GiB (default 20). Current preview file checkboxes do not constrain future approved matches; the confirmation must say so explicitly.
+
+The global preference defaults off and only the approval action turns it on. Saving/removing any rule clears all approvals and returns global execution to off. Disable all cancels pending work locally before persisting off, and rejects future native dispatches after acknowledgement. An already dispatched delete cannot be undone. If persistence fails, show the failure and retain the local stop; do not claim the saved preference changed. Reapproval is needed to resume locally stopped execution.
+
+A separate resident minute check runs off the dispatcher and recovery scheduler, shares the storage work gate, and dispatches at most one bounded run per pulse. Unknown capacity is not a trigger. Require both the durable UTC next-eligible deadline and a full monotonic interval in the current worker. One exclusive per-data-directory worker lease prevents concurrent sign-in owners; takeover/restart starts a full interval again. Reserve the next deadline durably before preview/dispatch; empty, failed or interrupted runs consume that interval. No catch-up burst or interrupted-run replay. Invalid application configuration prevents new automatic checks; invalid cleanup configuration blocks native dispatch. In-flight cleanup retains its rule snapshot and continues to require live cleanup authorization.
+
+Each run obtains a new bounded preview, preserves S3 exclusions and same-handle verification, and rechecks age/newest-file retention before every file. Per-file authorization is serialized with approval changes; revoked approval stops remaining work. Keep the latest detailed run plus 100 bounded summaries, with reviewed/automatic origin and unknown pending outcomes. Show status/failures in Settings and notify for automatic outcomes; notification failure must not affect accounting or recovery.
 
 ### Storage acceptance
 
@@ -519,5 +529,8 @@ These IDs extend, rather than replace, AT-01–AT-30.
 | DSAT-12 | Reviewed rules and preview | Filters, retention, age and caps apply; save/preview never delete; stale/corrupt rules are rejected and preserved. |
 | DSAT-13 | Reviewed execution | Only selected, freshly verified files are deleted once; unselected, changed/locked files and junction replacements survive. |
 | DSAT-14 | Cleanup authority and audit | Protected paths, unknown guards, incomplete/expired previews and failed pre-dispatch accounting block deletion; audit failures stop remaining files. |
+| DSAT-15 | Automatic consent/defaults | Off by default; fresh saved-rule preview and explicit confirmation are needed; Cancel does not enable; edits revoke approval. |
+| DSAT-16 | Trigger, timing and ownership | Unknown/high capacity, busy storage, unelapsed interval or unavailable worker lease cannot dispatch; reservation survives restart and clock jumps do not bypass the monotonic delay. |
+| DSAT-17 | Revocation and outcomes | Disable stops pending work, per-file approval is rechecked, caps/retention still apply, and bounded history distinguishes automatic outcomes and unknown pending results. |
 
 See [storage checkpoint](storage-checkpoint.md) for actual evidence and remaining acceptance.

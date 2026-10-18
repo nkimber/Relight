@@ -1,10 +1,20 @@
 param(
     [string]$Executable = (Join-Path $PSScriptRoot '..\src\Relight.App\bin\Release\net10.0-windows\Relight.exe'),
     [switch]$ExerciseScan,
-    [switch]$ExerciseCleanup
+    [switch]$ExerciseCleanup,
+    [switch]$ExerciseAutomaticApproval
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class CleanupUiChoice {
+    [DllImport("user32.dll")]
+    public static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+}
+'@
+if ($ExerciseAutomaticApproval) { $ExerciseCleanup = $true }
 function Wait-For([scriptblock]$Condition, [string]$Description) {
     $until = [DateTime]::UtcNow.AddSeconds(20)
     while ([DateTime]::UtcNow -lt $until) {
@@ -29,6 +39,12 @@ function Invoke-Button($Parent, [string]$Name) {
     $control = Find-Control $Parent $Name
     if ($null -eq $control) { throw "Missing control: $Name" }
     $control.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+}
+function Choose-Native($Parent, [string]$Name) {
+    $button = Find-Control $Parent $Name
+    if ($null -eq $button -or $button.Current.NativeWindowHandle -eq 0) { throw "Native choice unavailable: $Name" }
+    [CleanupUiChoice]::SendMessage([IntPtr]::new($button.Current.NativeWindowHandle), 0xF5,
+        [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
 }
 $executablePath = (Resolve-Path -LiteralPath $Executable).Path
 $root = Join-Path ([IO.Path]::GetTempPath()) ('relight-storage-ui-' + [guid]::NewGuid().ToString('N'))
@@ -144,6 +160,24 @@ try {
             }
         }
         if (-not (Test-Path -LiteralPath $oldLog)) { throw 'Preview deleted a file.' }
+        if ($ExerciseAutomaticApproval) {
+            foreach ($field in @(@('Automatic cleanup interval hours', '1'), @('Automatic cleanup trigger GiB', '1'))) {
+                (Find-Control $cleanup $field[0]).GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($field[1])
+            }
+            Invoke-Button $cleanup 'Approve automatic cleanup…'
+            $approval = Wait-For { Find-Control $cleanup 'Approve automatic permanent cleanup?' } 'automatic approval confirmation'
+            Choose-Native $approval 'Cancel'
+            if ((Read-Json $rulesPath).AutomaticEnabled) { throw 'Cancel enabled automatic cleanup.' }
+            Invoke-Button $cleanup 'Approve automatic cleanup…'
+            $approval = Wait-For { Find-Control $cleanup 'Approve automatic permanent cleanup?' } 'second automatic approval confirmation'
+            Choose-Native $approval 'OK'
+            Wait-For { $book = Read-Json $rulesPath; $book.AutomaticEnabled -and $book.AutomaticApprovals.Count -eq 1 } 'saved explicit approval' | Out-Null
+            if (-not (Test-Path -LiteralPath $oldLog)) { throw 'Approving caused an immediate deletion.' }
+            Wait-For { (Find-Control $cleanup 'Disable all automatic cleanup').Current.IsEnabled } 'disable available' | Out-Null
+            Invoke-Button $cleanup 'Disable all automatic cleanup'
+            Wait-For { $book = Read-Json $rulesPath; $null -ne $book -and -not $book.AutomaticEnabled } 'persisted disable' | Out-Null
+            Write-Output 'PASS: Cancel preserves off; explicit approval persists; no immediate deletion; disable-all persists.'
+        }
         $cleanup.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
         Write-Output 'PASS: reviewed rule save and preview preserve disposable files; preview selections default off.'
     }

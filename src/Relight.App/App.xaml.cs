@@ -26,6 +26,51 @@ public partial class App : Application
     private long _nextStorageCheck;
     private string _storageStatus = "Waiting for the first storage check.";
     private bool _storageAttention;
+    private AutomaticCleanupService? _automaticCleanup;
+    private bool _checkingAutomaticCleanup;
+    private long _nextAutomaticCleanupCheck;
+    private string? _automaticCleanupProblem;
+
+    private async void OnAutomaticCleanupTick(object? sender, EventArgs e)
+    {
+        if (_exiting || _checkingAutomaticCleanup || Environment.TickCount64 < _nextAutomaticCleanupCheck) return;
+        _nextAutomaticCleanupCheck = Environment.TickCount64 + 60_000;
+        RecoveryApplicationHost? host = Volatile.Read(ref _host);
+        if (host is null || host.Configuration?.AutomaticActionsAllowed != true || host.ConfigurationProblem is not null)
+        {
+            _viewModel?.UpdateAutomaticCleanupStatus("Automatic cleanup suspended until application configuration is available.");
+            return;
+        }
+        _automaticCleanup ??= new(_viewModel?.DataDirectory ?? RecoveryApplicationHost.DefaultDataDirectory);
+        _checkingAutomaticCleanup = true;
+        try
+        {
+            CancellationToken token = _monitoringCancellation?.Token ?? CancellationToken.None;
+            var pulse = await Task.Run(() => _automaticCleanup.PulseAsync(_storageScanGate,
+                token));
+            if (_exiting) return;
+            _viewModel?.UpdateAutomaticCleanupStatus(pulse.Status);
+            _automaticCleanupProblem = null;
+            if (pulse.Run is { } run)
+            {
+                try { _tray?.ShowRecoveryNotification("Relight automatic cleanup", pulse.Status, run.Problem is not null); }
+                catch (Exception error) { _viewModel?.UpdateAutomaticCleanupStatus($"{pulse.Status} Notification unavailable: {error.Message}"); }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            string problem = $"Automatic cleanup suspended: {error.Message}";
+            _viewModel?.UpdateAutomaticCleanupStatus(problem);
+            if (_automaticCleanupProblem != problem && !_exiting)
+            {
+                try { _tray?.ShowRecoveryNotification("Automatic cleanup needs attention", problem, true); }
+                catch (Exception notice) { _viewModel?.UpdateAutomaticCleanupStatus($"{problem} Notification unavailable: {notice.Message}"); }
+            }
+            _automaticCleanupProblem = problem;
+        }
+        finally { _checkingAutomaticCleanup = false; }
+    }
 
     public void ShowStorageWindow()
     {
@@ -36,12 +81,13 @@ public partial class App : Application
             MessageBox.Show(_dashboard!, "Wait for configuration to load before opening storage settings.", "Storage unavailable");
             return;
         }
+        _automaticCleanup ??= new(_viewModel?.DataDirectory ?? RecoveryApplicationHost.DefaultDataDirectory);
         _storageWindow = new StorageWindow(config.Configuration.Settings.Storage, async settings =>
         {
             await host.SetDiskSpaceSettingsAsync(settings);
             _nextStorageCheck = 0;
         }, _viewModel?.DataDirectory ?? RecoveryApplicationHost.DefaultDataDirectory,
-            _storageScanGate) { Owner = _dashboard };
+            _storageScanGate, _automaticCleanup.Stop, _automaticCleanup.AllowApprovedRules) { Owner = _dashboard };
         _storageWindow.Closed += (_, _) => _storageWindow = null;
         _storageWindow.UpdateStatus(_storageStatus);
         _storageWindow.Show();
@@ -194,6 +240,7 @@ public partial class App : Application
                 _statusTimer.Start();
                 _storageTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
                 _storageTimer.Tick += OnStorageTick;
+                _storageTimer.Tick += OnAutomaticCleanupTick;
                 _storageTimer.Start();
                 SystemEvents.PowerModeChanged += OnPowerModeChanged;
                 SystemEvents.SessionSwitch += OnSessionSwitch;
@@ -831,6 +878,7 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         _exiting = true;
+        _automaticCleanup?.Dispose();
         _storageTimer?.Stop();
         _storageWindow?.Close();
         _statusTimer?.Stop();

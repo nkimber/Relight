@@ -19,13 +19,16 @@ public partial class StorageWindow : Window
     private readonly DispatcherTimer _scanAgeTimer;
     private readonly string _dataDirectory;
     private readonly SemaphoreSlim _gate;
+    private readonly Action? _stopAutomatic;
+    private readonly Action? _allowAutomatic;
     private ReviewedCleanupWindow? _cleanupWindow;
     public StorageWindow(DiskSpaceSettings settings, Func<DiskSpaceSettings, Task> save,
-        string dataDirectory, SemaphoreSlim scanGate)
+        string dataDirectory, SemaphoreSlim scanGate, Action? stopAutomatic = null, Action? allowAutomatic = null)
     {
         InitializeComponent();
         _save = save;
         _dataDirectory = dataDirectory; _gate = scanGate;
+        _stopAutomatic = stopAutomatic; _allowAutomatic = allowAutomatic;
         _scan = new StorageScanViewModel(dataDirectory, scanGate);
         ScanPanel.DataContext = _scan;
         _scanAgeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
@@ -47,7 +50,7 @@ public partial class StorageWindow : Window
     private void ReviewedCleanupClick(object sender, RoutedEventArgs e)
     {
         if (_cleanupWindow is not null) { _cleanupWindow.Activate(); return; }
-        _cleanupWindow = new ReviewedCleanupWindow(_dataDirectory, _gate) { Owner = this };
+        _cleanupWindow = new ReviewedCleanupWindow(_dataDirectory, _gate, _stopAutomatic, _allowAutomatic) { Owner = this };
         _cleanupWindow.Closed += (_, _) => _cleanupWindow = null;
         _cleanupWindow.Show();
     }

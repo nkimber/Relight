@@ -16,6 +16,8 @@ internal sealed class ReviewedCleanupViewModel : INotifyPropertyChanged
     private readonly CleanupStore _store;
     private readonly ReviewedCleanupService _service;
     private readonly SemaphoreSlim _gate;
+    private readonly Action _stopAutomatic;
+    private readonly Action _allowAutomatic;
     private readonly CancellationTokenSource _cancel = new();
     private CleanupRuleBook _book = new(1, 0, []);
     private CleanupPreview? _preview;
@@ -25,14 +27,22 @@ internal sealed class ReviewedCleanupViewModel : INotifyPropertyChanged
     public CleanupRule? SelectedRule { get; set; }
     public bool IsIdle { get; private set; }
     public bool CanDelete => IsIdle && _preview is { Complete: true } && Candidates.Count > 0;
+    public bool CanApproveAutomatic => IsIdle && _preview is { Complete: true };
+    public string AutomaticIntervalHours { get; set; } = "24";
+    public string AutomaticTriggerGiB { get; set; } = "20";
+    public string AutomaticStatus => _book.AutomaticEnabled
+        ? $"Automatic cleanup is enabled for {_book.AutomaticApprovals.Length} individually approved rule(s). Saving/removing any rule revokes all automatic approvals."
+        : "Automatic cleanup is off. Saving a rule never enables it. Automatic execution requires separate approval below.";
     public string Status { get; private set; } = "Loading reviewed cleanup rules…";
     public IReadOnlyList<CleanupCandidateRow> Candidates { get; private set; } = [];
     public IReadOnlyList<CleanupIssue> Issues { get; private set; } = [];
     public IReadOnlyList<CleanupItemOutcome> Outcomes { get; private set; } = [];
+    public IReadOnlyList<CleanupRunSummary> History { get; private set; } = [];
 
-    public ReviewedCleanupViewModel(string dataDirectory, SemaphoreSlim gate)
+    public ReviewedCleanupViewModel(string dataDirectory, SemaphoreSlim gate, Action? stopAutomatic = null, Action? allowAutomatic = null)
     {
         _store = new(dataDirectory); _service = new(dataDirectory); _gate = gate;
+        _stopAutomatic = stopAutomatic ?? (() => { }); _allowAutomatic = allowAutomatic ?? (() => { });
         WatchEditor();
     }
 
@@ -51,12 +61,13 @@ internal sealed class ReviewedCleanupViewModel : INotifyPropertyChanged
             _book = await Task.Run(() => _store.LoadRules());
             var last = await Task.Run(() => _store.LoadLastRun());
             Outcomes = last?.Items ?? [];
+            History = (await Task.Run(() => _store.LoadHistory())).Reverse().ToArray();
             Status = last is null ? "Automatic deletion is disabled. Save or preview a reviewed rule."
                 : $"Last run {last.Id}: {(last.FinishedUtc is null ? "interrupted; pending outcomes are unknown" : "finished")} " +
                   $"{last.Problem}";
         }
         catch (Exception error) { Status = $"Cleanup data unavailable: {error.Message}. Original files were preserved."; }
-        finally { IsIdle = true; Changed(); }
+        finally { IsIdle = true; if (_closed) _cancel.Dispose(); else Changed(); }
     }
 
     public void NewRule()
@@ -110,8 +121,45 @@ internal sealed class ReviewedCleanupViewModel : INotifyPropertyChanged
         if (selected.Length == 0) throw new ArgumentException("Select the individual files to delete.");
         return $"Permanently delete {selected.Length} selected file(s) from:\n{_preview!.Rule.Root}\n\n" +
             $"Estimated allocation: {selected.Sum(c => c.File.AllocatedBytes) / 1_048_576d:N2} MiB.\n" +
-            "This bypasses the Recycle Bin and cannot be undone. Each file will be reverified; changed or locked files will be skipped. Automatic deletion stays disabled.";
+            "This bypasses the Recycle Bin and cannot be undone. Each file will be reverified; changed or locked files will be skipped. This action does not change automatic-cleanup approvals.";
     }
+
+    public string AutomaticConfirmation()
+    {
+        var rule = _service.RuleForAutomaticApproval(_preview?.Id ?? Guid.Empty);
+        if (!_book.Rules.Any(r => r.Id == rule.Id && r.Fingerprint() == rule.Fingerprint()))
+            throw new InvalidOperationException("Save this exact rule, then generate a fresh preview before automatic approval.");
+        int hours = int.Parse(AutomaticIntervalHours, CultureInfo.InvariantCulture);
+        long gib = long.Parse(AutomaticTriggerGiB, CultureInfo.InvariantCulture);
+        if (hours is < 1 or > 168 || gib is < 1 or > 1024) throw new ArgumentException("Use 1–168 hours and 1–1024 GiB.");
+        return $"Allow future automatic PERMANENT deletion for rule '{rule.Name}'?\n\nFolder: {rule.Root}\n" +
+            $"Pattern: {rule.Pattern}; exclusions: {string.Join(';', rule.Exclusions)}\nAge: {rule.MinimumAgeDays} days; keep newest {rule.RetainNewest}.\n" +
+            $"Limits: {rule.MaximumFiles} files / {rule.MaximumBytes / 1_048_576d:N0} logical MiB per run.\nGuard: {rule.GuardExecutable ?? "none"}\n\n" +
+            $"Trigger: below {gib} GiB free, at most once per {hours} hours. Starts no earlier than a full interval after approval or Relight restart.\n\n" +
+            "This applies to future matching files, regardless of the current file checkboxes. No further confirmation will be requested for approved automatic runs. There is no undo. Use Disable all automatic cleanup to revoke execution.";
+    }
+
+    public async Task ApproveAutomaticAsync() => await WorkAsync(async () =>
+    {
+        var rule = _service.RuleForAutomaticApproval(_preview?.Id ?? Guid.Empty);
+        _book = await Task.Run(() => _store.ApproveAutomatic(_book.Revision, rule,
+            int.Parse(AutomaticIntervalHours, CultureInfo.InvariantCulture),
+            checked(long.Parse(AutomaticTriggerGiB, CultureInfo.InvariantCulture) * 1_073_741_824)));
+        _allowAutomatic();
+        Invalidate(); Status = "Automatic approval saved for this exact rule. First run waits a full interval and requires low space.";
+    });
+
+    public async Task DisableAutomaticAsync() => await WorkAsync(async () =>
+    {
+        _stopAutomatic();
+        for (int attempt = 0; ; attempt++)
+        {
+            try { _book = await Task.Run(() => _store.DisableAutomatic()); break; }
+            catch (System.IO.IOException) when (attempt < 99) { await Task.Delay(50, _cancel.Token); }
+            catch (UnauthorizedAccessException) when (attempt < 99) { await Task.Delay(50, _cancel.Token); }
+        }
+        Invalidate(); Status = "All automatic cleanup is disabled. An already dispatched deletion cannot be undone.";
+    });
 
     public async Task DeleteAsync() => await WorkAsync(async () =>
     {
@@ -123,6 +171,7 @@ internal sealed class ReviewedCleanupViewModel : INotifyPropertyChanged
         {
             var run = await Task.Run(() => _service.ExecuteReviewedAsync(preview.Id, selected, _cancel.Token));
             Outcomes = run.Items;
+            History = (await Task.Run(() => _store.LoadHistory())).Reverse().ToArray();
             string delta = run.AvailableBefore is { } before && run.AvailableAfter is { } after
                 ? $"Observed free-space change: {(after - before) / 1_048_576d:N2} MiB (other activity can affect this)."
                 : "Free-space change could not be measured.";
@@ -144,9 +193,14 @@ internal sealed class ReviewedCleanupViewModel : INotifyPropertyChanged
             try { Outcomes = (await Task.Run(() => _store.LoadLastRun()))?.Items ?? Outcomes; }
             catch (Exception evidence) { Status += $" Run evidence unavailable: {evidence.Message}"; }
         }
-        finally { IsIdle = true; if (!_closed) Changed(); }
+        finally { IsIdle = true; if (_closed) _cancel.Dispose(); else Changed(); }
     }
-    public void Close() { _closed = true; _cancel.Cancel(); _service.InvalidatePreview(); }
+    public void Close()
+    {
+        if (_closed) return;
+        _closed = true; _cancel.Cancel(); _service.InvalidatePreview();
+        if (IsIdle) _cancel.Dispose();
+    }
     private void Changed() { if (!_closed) PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null)); }
     public event PropertyChangedEventHandler? PropertyChanged;
 }

@@ -52,6 +52,19 @@ public sealed class ReviewedCleanupTests
     }
 
     [Fact]
+    public async Task NewestRetentionIsCheckedAgainBeforeDeletion()
+    {
+        using var fixture = new Fixture();
+        string old = fixture.File("old.log", 30), newer = fixture.File("newer.log", 20);
+        var preview = await fixture.Service.PreviewAsync(fixture.Rule with { RetainNewest = 1 });
+        Assert.Equal(old, Assert.Single(preview.Candidates).Path);
+        File.Delete(newer);
+        var run = await fixture.Service.ExecuteReviewedAsync(preview.Id, [old]);
+        Assert.True(File.Exists(old));
+        Assert.Equal("Skipped", Assert.Single(run.Items).Outcome);
+    }
+
+    [Fact]
     public async Task NativeAncestorJunctionReplacementCannotRedirectDeletion()
     {
         using var fixture = new Fixture();

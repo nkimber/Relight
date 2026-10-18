@@ -734,6 +734,12 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     }
 
     public string StorageStatus { get; private set; } = "Waiting for the first storage check.";
+    public string AutomaticCleanupStatus { get; private set; } = "Automatic cleanup is off unless a saved rule is separately approved.";
+    public void UpdateAutomaticCleanupStatus(string status)
+    {
+        AutomaticCleanupStatus = status;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AutomaticCleanupStatus)));
+    }
     public void UpdateStorageStatus(string status)
     {
         StorageStatus = status;

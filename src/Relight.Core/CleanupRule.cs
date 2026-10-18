@@ -29,6 +29,8 @@ public sealed record CleanupRule(Guid Id, string Name, string Root, string Patte
 
     public bool Matches(string name) => FileSystemName.MatchesSimpleExpression(Pattern, name, true) &&
         !Exclusions.Any(p => FileSystemName.MatchesSimpleExpression(p, name, true));
+    public string Fingerprint() => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+        System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(this)));
 }
 
 public sealed record CleanupFile(string Path, string Identity, long Length, long AllocatedBytes,
@@ -38,5 +40,16 @@ public sealed record CleanupPreview(Guid Id, CleanupRule Rule, DateTimeOffset Cr
     CleanupFile[] Candidates, CleanupIssue[] Issues, int IssueCount, bool Complete);
 public sealed record CleanupItemOutcome(string Path, string Outcome, string? Detail = null);
 public sealed record CleanupRun(Guid Id, Guid RuleId, DateTimeOffset StartedUtc, DateTimeOffset? FinishedUtc,
-    CleanupItemOutcome[] Items, long? AvailableBefore, long? AvailableAfter, string? Problem = null);
-public sealed record CleanupRuleBook(int SchemaVersion, long Revision, CleanupRule[] Rules);
+    CleanupItemOutcome[] Items, long? AvailableBefore, long? AvailableAfter, string? Problem = null)
+{
+    public string Origin { get; init; } = "Reviewed";
+}
+public sealed record CleanupRuleBook(int SchemaVersion, long Revision, CleanupRule[] Rules)
+{
+    public bool AutomaticEnabled { get; init; }
+    public AutomaticCleanupApproval[] AutomaticApprovals { get; init; } = [];
+}
+public sealed record AutomaticCleanupApproval(Guid Id, Guid RuleId, string RuleFingerprint,
+    int IntervalHours, long TriggerBelowBytes, DateTimeOffset NextEligibleUtc);
+public sealed record CleanupRunSummary(Guid Id, Guid RuleId, string Origin, DateTimeOffset StartedUtc,
+    DateTimeOffset? FinishedUtc, int Deleted, int Skipped, int NotCompleted, long? AvailableChangeBytes, string? Problem);
