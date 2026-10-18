@@ -509,6 +509,14 @@ A separate resident minute check runs off the dispatcher and recovery scheduler,
 
 Each run obtains a new bounded preview, preserves S3 exclusions and same-handle verification, and rechecks age/newest-file retention before every file. Per-file authorization is serialized with approval changes; revoked approval stops remaining work. Keep the latest detailed run plus 100 bounded summaries, with reviewed/automatic origin and unknown pending outcomes. Show status/failures in Settings and notify for automatic outcomes; notification failure must not affect accounting or recovery.
 
+### S5 — Cleanup history and run details
+
+**Authorized implementation — 18 October 2026:** Add a read-only history window accessible from Storage and Reviewed cleanup. Show up to 100 summaries, newest first, with reviewed/automatic origin, local start time, deleted/skipped/uncompleted counts, finality and observed free-space change. Filter by origin or problems/skips/unfinished runs. Refresh explicitly to see new resident runs.
+
+Select a run to see its ID, rule ID, local and UTC timestamps, recorded rule settings at execution, before/after available bytes, problem and per-file path/outcome/reason. Historical rule settings are descriptive evidence, never execution authority. Missing final outcomes mean in progress or interrupted, with pending results unknown. Do not infer success from a missing error, promise undo, or replay a historical operation. Free-space change remains an observation affected by other activity.
+
+Retain a schema-versioned detail archive for at most 100 runs and 4 MiB in addition to the bounded latest-run and summary files. Archive final outcomes and preserve an unfinished latest run before a new run replaces it; update pending per-file evidence in the latest-run file. Evict whole oldest archived details under the byte cap, retaining summaries independently. Legacy/evicted details and older runs without rule snapshots must be labeled unavailable rather than reconstructed from current rules. Preserve corrupt/unsupported evidence and surface read/write failures; untrustworthy accounting continues to block cleanup. Keep paths local and outside diagnostic exports. Merely opening, filtering or refreshing history must not create rules, approve cleanup or delete files.
+
 ### Storage acceptance
 
 These IDs extend, rather than replace, AT-01–AT-30.
@@ -532,5 +540,6 @@ These IDs extend, rather than replace, AT-01–AT-30.
 | DSAT-15 | Automatic consent/defaults | Off by default; fresh saved-rule preview and explicit confirmation are needed; Cancel does not enable; edits revoke approval. |
 | DSAT-16 | Trigger, timing and ownership | Unknown/high capacity, busy storage, unelapsed interval or unavailable worker lease cannot dispatch; reservation survives restart and clock jumps do not bypass the monotonic delay. |
 | DSAT-17 | Revocation and outcomes | Disable stops pending work, per-file approval is rechecked, caps/retention still apply, and bounded history distinguishes automatic outcomes and unknown pending results. |
+| DSAT-18 | Cleanup history and selected run details | Older retained runs show original outcomes/settings; filters and refresh work; byte/count bounds hold; legacy/evicted, corrupt and unfinished evidence is explicit; read-only browsing grants no cleanup authority. |
 
 See [storage checkpoint](storage-checkpoint.md) for actual evidence and remaining acceptance.

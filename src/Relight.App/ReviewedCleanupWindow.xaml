@@ -6,6 +6,7 @@
     <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="24">
             <TextBlock Text="Reviewed cleanup" FontSize="24" FontWeight="SemiBold" />
+            <Button Content="Cleanup history…" Click="CleanupHistoryClick" HorizontalAlignment="Left" Margin="0,8,0,0" />
             <TextBlock Text="{Binding AutomaticStatus}"
                        TextWrapping="Wrap" Margin="0,8,0,16" />
             <WrapPanel IsEnabled="{Binding IsIdle}">

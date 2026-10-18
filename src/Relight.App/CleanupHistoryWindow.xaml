@@ -1,0 +1,49 @@
+<Window x:Class="Relight.CleanupHistoryWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Relight — Cleanup history" Width="1050" Height="760" MinWidth="780" MinHeight="560"
+        Background="{DynamicResource CanvasBrush}" Foreground="{DynamicResource TextBrush}">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+            <RowDefinition Height="2*" /><RowDefinition Height="Auto" /><RowDefinition Height="2*" />
+            <RowDefinition Height="Auto" /><RowDefinition Height="3*" />
+        </Grid.RowDefinitions>
+        <TextBlock Text="Cleanup history" FontSize="24" FontWeight="SemiBold" />
+        <WrapPanel Grid.Row="1" Margin="0,12,0,8">
+            <Label Content="Show" Target="{Binding ElementName=OriginFilter}" />
+            <ComboBox x:Name="OriginFilter" ItemsSource="{Binding Origins}" SelectedItem="{Binding Origin}"
+                      Width="140" AutomationProperties.Name="Cleanup history origin" />
+            <CheckBox Content="Problems, skips or unfinished only" IsChecked="{Binding ProblemsOnly}" VerticalAlignment="Center" Margin="16,0" />
+            <Button Content="Refresh history" Click="RefreshClick" IsEnabled="{Binding IsIdle}" />
+        </WrapPanel>
+        <TextBlock Grid.Row="2" Text="{Binding Status}" TextWrapping="Wrap" Margin="0,0,0,8" AutomationProperties.Name="Cleanup history status" />
+        <DataGrid Grid.Row="3" ItemsSource="{Binding Runs}" SelectedItem="{Binding SelectedRun}"
+                  SelectionChanged="RunSelected" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False"
+                  SelectionMode="Single" AutomationProperties.Name="Cleanup history runs">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Started (local)" Binding="{Binding Started}" Width="145" />
+                <DataGridTextColumn Header="Rule" Binding="{Binding Rule}" Width="*" />
+                <DataGridTextColumn Header="Origin" Binding="{Binding Origin}" Width="85" />
+                <DataGridTextColumn Header="Deleted" Binding="{Binding Deleted}" Width="60" />
+                <DataGridTextColumn Header="Skipped" Binding="{Binding Skipped}" Width="60" />
+                <DataGridTextColumn Header="Uncompleted" Binding="{Binding UnknownOrNotAttempted}" Width="90" />
+                <DataGridTextColumn Header="Result" Binding="{Binding Result}" Width="160" />
+                <DataGridTextColumn Header="Free-space change" Binding="{Binding AvailableChange}" Width="120" />
+            </DataGrid.Columns>
+        </DataGrid>
+        <TextBlock Grid.Row="4" Text="Selected run details" FontSize="18" Margin="0,12,0,8" />
+        <TextBox Grid.Row="5" Text="{Binding Details, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap"
+                 VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Cleanup selected run details" />
+        <TextBlock Grid.Row="6" Text="File outcomes — pending means unknown if interrupted; history never retries or restores deleted files."
+                   TextWrapping="Wrap" Margin="0,12,0,8" />
+        <DataGrid Grid.Row="7" ItemsSource="{Binding Items}" AutoGenerateColumns="False" IsReadOnly="True"
+                  CanUserAddRows="False" AutomationProperties.Name="Cleanup selected file outcomes">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Path" Binding="{Binding Path}" Width="2*" />
+                <DataGridTextColumn Header="Outcome" Binding="{Binding Outcome}" Width="180" />
+                <DataGridTextColumn Header="Detail" Binding="{Binding Detail}" Width="*" />
+            </DataGrid.Columns>
+        </DataGrid>
+    </Grid>
+</Window>

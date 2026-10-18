@@ -22,6 +22,7 @@ public partial class StorageWindow : Window
     private readonly Action? _stopAutomatic;
     private readonly Action? _allowAutomatic;
     private ReviewedCleanupWindow? _cleanupWindow;
+    private CleanupHistoryWindow? _historyWindow;
     public StorageWindow(DiskSpaceSettings settings, Func<DiskSpaceSettings, Task> save,
         string dataDirectory, SemaphoreSlim scanGate, Action? stopAutomatic = null, Action? allowAutomatic = null)
     {
@@ -56,6 +57,13 @@ public partial class StorageWindow : Window
     }
 
     private async void LoadScan(object sender, RoutedEventArgs e) => await _scan.LoadAsync();
+    private void CleanupHistoryClick(object sender, RoutedEventArgs e)
+    {
+        if (_historyWindow is not null) { _historyWindow.Activate(); return; }
+        _historyWindow = new CleanupHistoryWindow(_dataDirectory) { Owner = this };
+        _historyWindow.Closed += (_, _) => _historyWindow = null;
+        _historyWindow.Show();
+    }
     private async void ScanClick(object sender, RoutedEventArgs e) => await _scan.ScanAsync();
     private void CancelScanClick(object sender, RoutedEventArgs e) => _scan.Cancel();
     private void BrowseScanClick(object sender, RoutedEventArgs e)

@@ -43,6 +43,7 @@ public sealed record CleanupRun(Guid Id, Guid RuleId, DateTimeOffset StartedUtc,
     CleanupItemOutcome[] Items, long? AvailableBefore, long? AvailableAfter, string? Problem = null)
 {
     public string Origin { get; init; } = "Reviewed";
+    public CleanupRule? RuleSnapshot { get; init; }
 }
 public sealed record CleanupRuleBook(int SchemaVersion, long Revision, CleanupRule[] Rules)
 {
@@ -52,4 +53,9 @@ public sealed record CleanupRuleBook(int SchemaVersion, long Revision, CleanupRu
 public sealed record AutomaticCleanupApproval(Guid Id, Guid RuleId, string RuleFingerprint,
     int IntervalHours, long TriggerBelowBytes, DateTimeOffset NextEligibleUtc);
 public sealed record CleanupRunSummary(Guid Id, Guid RuleId, string Origin, DateTimeOffset StartedUtc,
-    DateTimeOffset? FinishedUtc, int Deleted, int Skipped, int NotCompleted, long? AvailableChangeBytes, string? Problem);
+    DateTimeOffset? FinishedUtc, int Deleted, int Skipped, int NotCompleted, long? AvailableChangeBytes, string? Problem)
+{
+    public string? RuleName { get; init; }
+}
+
+public sealed record CleanupRunArchive(int SchemaVersion, CleanupRun[] Runs);

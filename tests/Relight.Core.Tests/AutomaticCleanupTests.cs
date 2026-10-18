@@ -144,6 +144,8 @@ public sealed class AutomaticCleanupTests
             var pulse = await service.PulseAsync(gate);
             Assert.NotNull(pulse.Run); Assert.False(File.Exists(old)); Assert.True(File.Exists(excluded));
             Assert.Equal("Deleted permanently", Assert.Single(pulse.Run!.Items).Outcome);
+            Assert.Equal(rule.Fingerprint(), pulse.Run.RuleSnapshot!.Fingerprint());
+            Assert.Equal(rule.Name, Assert.Single(store.LoadHistory()).RuleName);
         }
         finally { Directory.Delete(root, true); }
     }

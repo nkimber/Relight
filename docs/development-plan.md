@@ -241,6 +241,7 @@ This user-requested work proceeds alongside the recovery milestones. It does not
 | S2 | Cancellable offender scans, largest consumers, growth comparisons and explicit coverage limits; DSAT-07–DSAT-11. | Implemented checkpoint; see [S2 evidence and remaining acceptance](storage-checkpoint.md#s2--offender-analysis-checkpoint). |
 | S3 | Reviewed cleanup previews, actual reclaimed-space reporting and reusable exact-root rules. | Implemented checkpoint; evidence and remaining interactive acceptance are recorded in the storage checkpoint. |
 | S4 | Individually opted-in automatic rules, execution limits, protected locations, revalidation and audit history; DSAT-15–DSAT-17. | Implemented opt-in checkpoint; default off. See storage checkpoint for tested behavior and remaining acceptance. |
+| S5 | Read-only cleanup history, filters, selected run/file details and bounded original-rule snapshots; DSAT-18. | Implemented checkpoint; 70 focused tests and isolated native history UI check passed. See storage checkpoint for evidence and remaining acceptance; real automatic cleanup remains off. |
 
 S1 defaults to the system drive, with explicit additional fixed drive selection. Automatic inference of application-data volumes, trends, snooze, reminders and predicted exhaustion remain later work. Use a fake capacity reader for low-space tests; never fill the user's disk to trigger an alert. No folder scan, cleanup or target termination belongs to S1.
 

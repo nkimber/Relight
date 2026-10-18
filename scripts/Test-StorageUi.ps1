@@ -2,7 +2,8 @@ param(
     [string]$Executable = (Join-Path $PSScriptRoot '..\src\Relight.App\bin\Release\net10.0-windows\Relight.exe'),
     [switch]$ExerciseScan,
     [switch]$ExerciseCleanup,
-    [switch]$ExerciseAutomaticApproval
+    [switch]$ExerciseAutomaticApproval,
+    [switch]$ExerciseCleanupHistory
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
@@ -180,6 +181,55 @@ try {
         }
         $cleanup.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
         Write-Output 'PASS: reviewed rule save and preview preserve disposable files; preview selections default off.'
+    }
+    if ($ExerciseCleanupHistory) {
+        # Synthetic local audit evidence only; this check never dispatches cleanup or creates approvals.
+        $storageData = Join-Path $root 'Storage'
+        [IO.Directory]::CreateDirectory($storageData) | Out-Null
+        $ruleId = [guid]::NewGuid().ToString()
+        $pendingId = [guid]::NewGuid().ToString()
+        $reviewedId = [guid]::NewGuid().ToString()
+        $legacyId = [guid]::NewGuid().ToString()
+        $now = [DateTimeOffset]::UtcNow
+        $pending = @{ Id=$pendingId; RuleId=$ruleId; Origin='Automatic'; StartedUtc=$now.ToString('o'); FinishedUtc=$null;
+            Items=@(@{Path='disposable-pending.log';Outcome='Pending; outcome unknown if interrupted';Detail=$null});
+            AvailableBefore=100;AvailableAfter=$null;Problem=$null }
+        $reviewed = @{ Id=$reviewedId; RuleId=$ruleId; Origin='Reviewed'; StartedUtc=$now.AddMinutes(-5).ToString('o');FinishedUtc=$now.AddMinutes(-4).ToString('o');
+            Items=@(@{Path='disposable-skipped.log';Outcome='Skipped';Detail='File changed after preview'});
+            AvailableBefore=100;AvailableAfter=80;Problem=$null }
+        $summaries = @(
+            @{Id=$pendingId;RuleId=$ruleId;Origin='Automatic';StartedUtc=$pending.StartedUtc;FinishedUtc=$null;Deleted=0;Skipped=0;NotCompleted=1;AvailableChangeBytes=$null;Problem=$null},
+            @{Id=$reviewedId;RuleId=$ruleId;Origin='Reviewed';StartedUtc=$reviewed.StartedUtc;FinishedUtc=$reviewed.FinishedUtc;Deleted=0;Skipped=1;NotCompleted=0;AvailableChangeBytes=-20;Problem=$null},
+            @{Id=$legacyId;RuleId=$ruleId;Origin='Reviewed';StartedUtc=$now.AddMinutes(-10).ToString('o');FinishedUtc=$now.AddMinutes(-9).ToString('o');Deleted=0;Skipped=0;NotCompleted=0;AvailableChangeBytes=$null;Problem=$null}
+        )
+        [IO.File]::WriteAllText((Join-Path $storageData 'cleanup-last-run.json'), ($pending | ConvertTo-Json -Depth 10))
+        [IO.File]::WriteAllText((Join-Path $storageData 'cleanup-history.json'), (ConvertTo-Json -InputObject $summaries -Depth 10))
+        [IO.File]::WriteAllText((Join-Path $storageData 'cleanup-run-details.json'), (@{SchemaVersion=1;Runs=@($reviewed)} | ConvertTo-Json -Depth 10))
+        Invoke-Button $storage 'Cleanup history…'
+        $historyWindow = Wait-For { Find-Control $storage 'Relight — Cleanup history' } 'cleanup history window'
+        $details = Wait-For { Find-Control $historyWindow 'Cleanup selected run details' } 'history detail text'
+        function Read-Details { $details.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value }
+        Wait-For { (Read-Details) -like '*in progress or interrupted*' } 'pending outcome explanation' | Out-Null
+        $grid = Find-Control $historyWindow 'Cleanup history runs'
+        $rowCondition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [System.Windows.Automation.ControlType]::DataItem)
+        $rows = $grid.FindAll([System.Windows.Automation.TreeScope]::Children, $rowCondition)
+        if ($rows.Count -ne 3) { throw "Expected 3 synthetic history rows, got $($rows.Count)" }
+        $rows[1].GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+        Wait-For { (Read-Details) -like '*Observed change: -20 bytes*' } 'older reviewed run details' | Out-Null
+        $outcomes = Find-Control $historyWindow 'Cleanup selected file outcomes'
+        Wait-For { Find-Control $outcomes 'File changed after preview' } 'per-file skip reason' | Out-Null
+        $rows[2].GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+        Wait-For { (Read-Details) -like '*file details were not retained*' } 'legacy detail limitation' | Out-Null
+        $problems = Find-Control $historyWindow 'Problems, skips or unfinished only'
+        $problems.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle()
+        Wait-For { $grid.FindAll([System.Windows.Automation.TreeScope]::Children, $rowCondition).Count -eq 2 } 'problem history filter' | Out-Null
+        $problems.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle()
+        Invoke-Button $historyWindow 'Refresh history'
+        Wait-For { (Find-Control $historyWindow 'Refresh history').Current.IsEnabled } 'history refresh complete' | Out-Null
+        $historyWindow.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
+        if (-not $ExerciseCleanup -and (Test-Path (Join-Path $storageData 'cleanup-rules.json'))) { throw 'Read-only history created cleanup authority.' }
+        Write-Output 'PASS: native cleanup history, older run selection, pending/legacy explanations, skip details and refresh; no cleanup dispatched.'
     }
     $storage.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
     $dashboard.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()

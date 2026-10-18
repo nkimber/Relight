@@ -106,7 +106,8 @@ public sealed class AutomaticCleanupService : IDisposable
     private AutomaticCleanupPulse RecordNoDispatch(CleanupRule rule, DateTimeOffset started, string reason)
     {
         using var lease = _store.AcquireRunLease();
-        var run = new CleanupRun(Guid.NewGuid(), rule.Id, started, _clock.GetUtcNow(), [], null, null, reason) { Origin = "Automatic" };
+        var run = new CleanupRun(Guid.NewGuid(), rule.Id, started, _clock.GetUtcNow(), [], null, null, reason)
+            { Origin = "Automatic", RuleSnapshot = rule };
         _store.SaveRun(run);
         return new(reason, run);
     }

@@ -10,14 +10,24 @@ namespace Relight;
 public partial class ReviewedCleanupWindow : Window
 {
     private readonly ReviewedCleanupViewModel _model;
+    private readonly string _dataDirectory;
+    private CleanupHistoryWindow? _historyWindow;
     public ReviewedCleanupWindow(string dataDirectory, SemaphoreSlim gate, Action? stopAutomatic = null, Action? allowAutomatic = null)
     {
         InitializeComponent();
+        _dataDirectory = dataDirectory;
         _model = new(dataDirectory, gate, stopAutomatic, allowAutomatic); DataContext = _model;
         Loaded += Load;
         Closed += (_, _) => _model.Close();
     }
     private async void Load(object sender, RoutedEventArgs e) => await _model.LoadAsync();
+    private void CleanupHistoryClick(object sender, RoutedEventArgs e)
+    {
+        if (_historyWindow is not null) { _historyWindow.Activate(); return; }
+        _historyWindow = new CleanupHistoryWindow(_dataDirectory) { Owner = this };
+        _historyWindow.Closed += (_, _) => _historyWindow = null;
+        _historyWindow.Show();
+    }
     private void RuleSelected(object sender, SelectionChangedEventArgs e) => _model?.EditSelected();
     private void NewClick(object sender, RoutedEventArgs e) => _model.NewRule();
     private async void SaveClick(object sender, RoutedEventArgs e) => await _model.SaveAsync();

@@ -11,6 +11,7 @@ public sealed class CleanupStore(string dataDirectory, TimeProvider? clock = nul
     private readonly string _directory = Path.Combine(Path.GetFullPath(dataDirectory), "Storage");
     private static readonly JsonSerializerOptions Json = new() { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow };
     private const int MaximumBytes = 2 * 1024 * 1024;
+    private const int MaximumDetailBytes = 4 * 1024 * 1024;
     public FileStream AcquireAutomaticWorkerLease()
     {
         Directory.CreateDirectory(_directory);
@@ -115,24 +116,68 @@ public sealed class CleanupStore(string dataDirectory, TimeProvider? clock = nul
     public CleanupRun? LoadLastRun()
     {
         var run = Read<CleanupRun>("cleanup-last-run.json");
-        if (run is not null && (run.Id == Guid.Empty || run.RuleId == Guid.Empty || run.Items is null ||
-            run.Items.Length > 200 || run.Items.Any(i => i is null || string.IsNullOrWhiteSpace(i.Path) || string.IsNullOrWhiteSpace(i.Outcome))))
-            throw new InvalidDataException("Cleanup run evidence is invalid; it was preserved.");
+        if (run is not null) ValidateRun(run);
         return run;
+    }
+
+    private static void ValidateRun(CleanupRun run)
+    {
+        if (run.Id == Guid.Empty || run.RuleId == Guid.Empty || run.Items is null ||
+            run.Origin is not "Reviewed" and not "Automatic" || run.StartedUtc == default ||
+            run.Items.Length > 200 || run.Items.Any(i => i is null || string.IsNullOrWhiteSpace(i.Path) || string.IsNullOrWhiteSpace(i.Outcome)))
+            throw new InvalidDataException("Cleanup run evidence is invalid; it was preserved.");
+        if (run.RuleSnapshot is { } rule)
+        {
+            rule.Validate();
+            if (rule.Id != run.RuleId) throw new InvalidDataException("Cleanup run rule identity is invalid.");
+        }
+    }
+
+    public CleanupRun? LoadRun(Guid id)
+    {
+        var latest = LoadLastRun();
+        return latest?.Id == id ? latest : LoadDetails().SingleOrDefault(r => r.Id == id);
+    }
+
+    private CleanupRun[] LoadDetails()
+    {
+        var archive = Read<CleanupRunArchive>("cleanup-run-details.json", MaximumDetailBytes);
+        if (archive is null) return [];
+        if (archive.SchemaVersion != 1 || archive.Runs is null || archive.Runs.Length > 100 ||
+            archive.Runs.Any(r => r is null) || archive.Runs.Select(r => r.Id).Distinct().Count() != archive.Runs.Length)
+            throw new InvalidDataException("Cleanup run details are invalid or unsupported; they were preserved.");
+        foreach (var run in archive.Runs) ValidateRun(run);
+        return archive.Runs;
     }
     public void SaveRun(CleanupRun run)
     {
-        if (run.Items.Length > 200) throw new ArgumentException("Cleanup run is too large.");
+        ValidateRun(run);
+        if (JsonSerializer.SerializeToUtf8Bytes(run, Json).Length > MaximumBytes)
+            throw new InvalidDataException("Cleanup run exceeds its size limit.");
         using var lease = Lock();
         // Refuse to overwrite unreadable evidence from a previous interrupted run.
-        _ = LoadLastRun();
+        var previous = LoadLastRun();
         var history = LoadHistory();
+        var details = LoadDetails();
+        // Archive final results, and retain unfinished/legacy last evidence before a new run replaces it.
+        // Pending per-file updates remain in the latest file, avoiding large archive rewrites per dispatch.
+        var additions = new List<CleanupRun>();
+        if (previous is not null && previous.Id != run.Id &&
+            (previous.FinishedUtc is null || !details.Any(r => r.Id == previous.Id))) additions.Add(previous);
+        if (run.FinishedUtc is not null) additions.Add(run);
+        if (additions.Count > 0)
+        {
+            var retained = details.Where(r => !additions.Any(a => a.Id == r.Id)).Concat(additions).TakeLast(100).ToArray();
+            while (JsonSerializer.SerializeToUtf8Bytes(new CleanupRunArchive(1, retained), Json).Length > MaximumDetailBytes && retained.Length > 1)
+                retained = retained[1..];
+            Write("cleanup-run-details.json", new CleanupRunArchive(1, retained), false, MaximumDetailBytes);
+        }
         Write("cleanup-last-run.json", run, backup: false);
         var summary = new CleanupRunSummary(run.Id, run.RuleId, run.Origin, run.StartedUtc, run.FinishedUtc,
             run.Items.Count(i => i.Outcome == "Deleted permanently"), run.Items.Count(i => i.Outcome == "Skipped"),
             run.Items.Count(i => i.Outcome is not "Deleted permanently" and not "Skipped"),
             run.AvailableBefore is { } before && run.AvailableAfter is { } after ? after - before : null,
-            run.Problem is { Length: > 500 } problem ? problem[..500] : run.Problem);
+            run.Problem is { Length: > 500 } problem ? problem[..500] : run.Problem) { RuleName = run.RuleSnapshot?.Name };
         Write("cleanup-history.json", history.Where(h => h.Id != run.Id).Append(summary).TakeLast(100).ToArray(), false);
     }
 
@@ -152,19 +197,19 @@ public sealed class CleanupStore(string dataDirectory, TimeProvider? clock = nul
             FileAccess.ReadWrite, FileShare.None);
     }
 
-    private T? Read<T>(string name) where T : class
+    private T? Read<T>(string name, int maximumBytes = MaximumBytes) where T : class
     {
         string path = Path.Combine(_directory, name);
         if (!File.Exists(path)) return null;
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        if (stream.Length > MaximumBytes) throw new InvalidDataException("Cleanup data exceeds its size limit.");
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        if (stream.Length > maximumBytes) throw new InvalidDataException("Cleanup data exceeds its size limit.");
         return JsonSerializer.Deserialize<T>(stream, Json) ?? throw new InvalidDataException("Cleanup data is empty.");
     }
 
-    private void Write<T>(string name, T value, bool backup)
+    private void Write<T>(string name, T value, bool backup, int maximumBytes = MaximumBytes)
     {
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(value, Json);
-        if (bytes.Length > MaximumBytes) throw new InvalidDataException("Cleanup data exceeds its size limit.");
+        if (bytes.Length > maximumBytes) throw new InvalidDataException("Cleanup data exceeds its size limit.");
         string path = Path.Combine(_directory, name), temporary = path + ".tmp";
         try
         {

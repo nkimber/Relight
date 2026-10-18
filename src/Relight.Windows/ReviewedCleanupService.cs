@@ -120,7 +120,7 @@ public sealed class ReviewedCleanupService
         var selected = preview.Candidates.Where(f => paths.Contains(f.Path)).ToArray();
         var run = new CleanupRun(Guid.NewGuid(), preview.Rule.Id, _clock.GetUtcNow(), null,
             selected.Select(f => new CleanupItemOutcome(f.Path, "Not attempted")).ToArray(), null, null)
-            { Origin = acquireAuthorization is null ? "Reviewed" : "Automatic" };
+            { Origin = acquireAuthorization is null ? "Reviewed" : "Automatic", RuleSnapshot = preview.Rule };
         using var runLease = await Task.Run(() => _store.AcquireRunLease(), token).ConfigureAwait(false);
         await Task.Run(() => _store.SaveRun(run), token).ConfigureAwait(false); // Durable record required before dispatch.
         try
