@@ -18,6 +18,7 @@ namespace Relight;
 
 public partial class App : Application
 {
+    private readonly SemaphoreSlim _storageScanGate = new(1, 1);
     private readonly DiskSpaceMonitor _diskSpaceMonitor = new();
     private DispatcherTimer? _storageTimer;
     private StorageWindow? _storageWindow;
@@ -39,7 +40,8 @@ public partial class App : Application
         {
             await host.SetDiskSpaceSettingsAsync(settings);
             _nextStorageCheck = 0;
-        }) { Owner = _dashboard };
+        }, _viewModel?.DataDirectory ?? RecoveryApplicationHost.DefaultDataDirectory,
+            _storageScanGate) { Owner = _dashboard };
         _storageWindow.Closed += (_, _) => _storageWindow = null;
         _storageWindow.UpdateStatus(_storageStatus);
         _storageWindow.Show();

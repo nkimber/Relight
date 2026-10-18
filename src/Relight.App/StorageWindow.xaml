@@ -6,7 +6,7 @@
     <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="24">
             <TextBlock Text="Disk space monitoring" FontSize="24" FontWeight="SemiBold" />
-            <TextBlock Text="Checks continue when this window closes. Only fixed local drives are supported. No files are scanned or deleted."
+            <TextBlock Text="Checks continue when this window closes. Only fixed local drives are supported. Folder analysis below runs only when requested. No files are deleted."
                        TextWrapping="Wrap" Margin="0,8,0,16" />
             <CheckBox x:Name="EnabledInput" Content="Enable disk space monitoring" Margin="0,0,0,8" />
             <CheckBox x:Name="NotificationsInput" Content="Notify when a drive enters warning or critical space" Margin="0,0,0,12" />
@@ -30,6 +30,63 @@
             <TextBlock x:Name="ReadingsText" TextWrapping="Wrap" />
             <TextBlock Text="Alerts clear above both warning thresholds plus 2 percentage points and 1 GiB. Notifications use the Windows tray and may be suppressed by Windows settings."
                        TextWrapping="Wrap" Margin="0,16,0,0" />
+
+            <StackPanel x:Name="ScanPanel" Margin="0,28,0,0">
+                <TextBlock Text="Where is the space going?" FontSize="22" FontWeight="SemiBold" />
+                <TextBlock Text="Analyze a local folder or drive. Sizes identify consumers, not safe cleanup candidates. Reparse points and cloud/offline entries are skipped."
+                           TextWrapping="Wrap" Margin="0,8,0,8" />
+                <Label Target="{Binding ElementName=ScanRootInput}" Content="Folder or drive to analyze" />
+                <TextBox x:Name="ScanRootInput" Text="{Binding Root, UpdateSourceTrigger=PropertyChanged}"
+                         IsEnabled="{Binding IsIdle}" AutomationProperties.Name="Folder to analyze" />
+                <WrapPanel Margin="0,8,0,8">
+                    <Button Content="Browse scan folder…" Click="BrowseScanClick" IsEnabled="{Binding IsIdle}" Margin="0,0,8,0" />
+                    <Button Content="Scan folder" Click="ScanClick" IsEnabled="{Binding IsIdle}" Margin="0,0,8,0" />
+                    <Button Content="Cancel scan" Click="CancelScanClick" IsEnabled="{Binding CanCancel}" />
+                </WrapPanel>
+                <TextBlock Text="{Binding ScanAge}" TextWrapping="Wrap" Margin="0,0,0,8" />
+                <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Margin="0,0,0,12" />
+                <TextBlock Text="Logical size counts file paths. Allocated space counts each file identity once, charged to its first encountered path; folder totals overlap. These are measured file-stream bytes, not guaranteed reclaimable space. Directory overhead, alternate streams and excluded entries are not measured."
+                           TextWrapping="Wrap" Margin="0,0,0,12" />
+                <TextBlock Text="Largest files by allocated space" FontSize="18" />
+                <DataGrid ItemsSource="{Binding Files}" AutoGenerateColumns="False" IsReadOnly="True"
+                          CanUserAddRows="False" Height="190" Margin="0,8,0,16" AutomationProperties.Name="Largest files">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Path" Binding="{Binding Path}" Width="*" />
+                        <DataGridTextColumn Header="Logical size" Binding="{Binding LogicalMiB, StringFormat='{}{0:N2} MiB'}" Width="110" />
+                        <DataGridTextColumn Header="Allocated" Binding="{Binding AllocatedMiB, StringFormat='{}{0:N2} MiB'}" Width="110" />
+                    </DataGrid.Columns>
+                </DataGrid>
+                <TextBlock Text="Largest folders by allocated space (includes descendants)" FontSize="18" />
+                <DataGrid ItemsSource="{Binding Folders}" AutoGenerateColumns="False" IsReadOnly="True"
+                          CanUserAddRows="False" Height="190" Margin="0,8,0,16" AutomationProperties.Name="Largest folders">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Path" Binding="{Binding Path}" Width="*" />
+                        <DataGridTextColumn Header="Logical size" Binding="{Binding LogicalMiB, StringFormat='{}{0:N2} MiB'}" Width="100" />
+                        <DataGridTextColumn Header="Allocated" Binding="{Binding AllocatedMiB, StringFormat='{}{0:N2} MiB'}" Width="100" />
+                        <DataGridTextColumn Header="Coverage" Binding="{Binding Coverage}" Width="80" />
+                    </DataGrid.Columns>
+                </DataGrid>
+                <TextBlock Text="What grew?" FontSize="18" />
+                <TextBlock Text="{Binding BaselineStatus}" TextWrapping="Wrap" Margin="0,8,0,8" />
+                <DataGrid ItemsSource="{Binding Growth}" AutoGenerateColumns="False" IsReadOnly="True"
+                          CanUserAddRows="False" Height="160" AutomationProperties.Name="Storage growth">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Path" Binding="{Binding Path}" Width="*" />
+                        <DataGridTextColumn Header="Type" Binding="{Binding Kind}" Width="80" />
+                        <DataGridTextColumn Header="Logical growth" Binding="{Binding Growth}" Width="120" />
+                    </DataGrid.Columns>
+                </DataGrid>
+                <TextBlock Text="Coverage issues (up to 100)" FontSize="18" Margin="0,16,0,8" />
+                <DataGrid ItemsSource="{Binding Issues}" AutoGenerateColumns="False" IsReadOnly="True"
+                          CanUserAddRows="False" Height="160" AutomationProperties.Name="Scan coverage issues">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Location" Binding="{Binding Path}" Width="*" />
+                        <DataGridTextColumn Header="Reason" Binding="{Binding Reason}" Width="*" />
+                    </DataGrid.Columns>
+                </DataGrid>
+                <TextBlock Text="Closing this window cancels the scan. One latest scan is saved locally for comparison; scanning a different root replaces that baseline. Results are limited to 100,000 inspected entries and depth 128."
+                           TextWrapping="Wrap" Margin="0,12,0,0" />
+            </StackPanel>
         </StackPanel>
     </ScrollViewer>
 </Window>

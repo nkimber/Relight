@@ -1,10 +1,13 @@
 using System;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using Relight.Core;
+using Relight.ViewModels;
 using Relight.Windows;
 
 namespace Relight;
@@ -12,10 +15,20 @@ namespace Relight;
 public partial class StorageWindow : Window
 {
     private readonly Func<DiskSpaceSettings, Task> _save;
-    public StorageWindow(DiskSpaceSettings settings, Func<DiskSpaceSettings, Task> save)
+    private readonly StorageScanViewModel _scan;
+    private readonly DispatcherTimer _scanAgeTimer;
+    public StorageWindow(DiskSpaceSettings settings, Func<DiskSpaceSettings, Task> save,
+        string dataDirectory, SemaphoreSlim scanGate)
     {
         InitializeComponent();
         _save = save;
+        _scan = new StorageScanViewModel(dataDirectory, scanGate);
+        ScanPanel.DataContext = _scan;
+        _scanAgeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+        _scanAgeTimer.Tick += (_, _) => _scan.RefreshAge();
+        _scanAgeTimer.Start();
+        Loaded += LoadScan;
+        Closed += (_, _) => { _scanAgeTimer.Stop(); _scan.Close(); };
         EnabledInput.IsChecked = settings.Enabled;
         NotificationsInput.IsChecked = settings.NotificationsEnabled;
         IntervalInput.Text = settings.CheckIntervalSeconds.ToString();
@@ -25,6 +38,16 @@ public partial class StorageWindow : Window
                 Root = d.Root, WarningPercent = d.WarningPercent, CriticalPercent = d.CriticalPercent,
                 WarningGigabytes = d.WarningGigabytes, CriticalGigabytes = d.CriticalGigabytes
             }));
+    }
+
+    private async void LoadScan(object sender, RoutedEventArgs e) => await _scan.LoadAsync();
+    private async void ScanClick(object sender, RoutedEventArgs e) => await _scan.ScanAsync();
+    private void CancelScanClick(object sender, RoutedEventArgs e) => _scan.Cancel();
+    private void BrowseScanClick(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFolderDialog { Title = "Choose a folder to analyze" };
+        if (dialog.ShowDialog(this) == true)
+            ScanRootInput.SetCurrentValue(TextBox.TextProperty, dialog.FolderName);
     }
 
     public void UpdateStatus(string status) => ReadingsText.Text = status;

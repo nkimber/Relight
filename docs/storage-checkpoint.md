@@ -37,4 +37,46 @@ Environment: local Windows 11 x64 interactive session, .NET SDK 10.0.401. Low-sp
 | DSAT-05 | Partial: native UI save/reopen and resident process checked. Long hidden-window sampling, recovery under concurrent blocked native storage I/O, full keyboard/screen-reader and scaling review not run. |
 | DSAT-06 | Partial: policy suppression and existing tray submission wired. Visual balloon delivery, notification suppression, Explorer restart and physical sleep/resume not run. |
 
-The complete recovery suite, actual-target pilot and soak were not rerun for this storage increment. Existing recovery acceptance gates remain open. S2 offender scans, growth history, S3 reviewed cleanup and S4 automatic deletion remain planned and unimplemented; so do snooze, reminder cadence, forecasts, mounted-folder volumes and removable/network drive support.
+The complete recovery suite, actual-target pilot and soak were not rerun for this storage increment. Existing recovery acceptance gates remain open. The S2 checkpoint below supersedes the initial scan deferral. S3 reviewed cleanup and S4 automatic deletion remain unimplemented, along with snooze, reminder cadence, forecasts, mounted-folder volumes and removable/network drive support.
+
+
+## S2 — Offender analysis checkpoint
+
+**Date:** 18 October 2026. This implements the next requested storage increment, with explicit remaining acceptance below. Existing recovery release gates remain open.
+
+### Delivered and usage
+
+Open Settings → Disk space monitoring… and use **Where is the space going?**. Enter or browse to a fixed-local-drive folder/root, then select **Scan folder**. Scanning is explicit and independent of capacity monitoring. A cancel button stops traversal between native operations; closing the Storage window also requests cancellation. Reopening loads the latest saved results without starting a new scan.
+
+Results show the largest 100 files and folders by allocated space, logical size alongside allocation, positive logical-size growth, scan timestamp/age, progress and partial coverage. Folder totals include descendants and overlap parent totals; they must not be added together. Logical totals count every file path. Allocated totals deduplicate volume/file identity, assigning shared allocation to the first encountered hard-link path. This makes folder allocation depend on traversal order, so growth uses logical size rather than potentially reassigned allocation. File/folder rows are consumers, not cleanup recommendations.
+
+Growth compares only the same scan root and retained paths fully measured in both scans. Newly encountered, omitted or inaccessible paths have unknown growth. The baseline timestamp and limitation are shown. Only the latest scan is saved; choosing another root replaces the single baseline. This is a bounded comparison, not complete growth history or a forecast.
+
+### Safety, privacy and bounds
+
+- One sequential scan worker per application process, coordinated across window lifetimes. Work runs off the dispatcher and recovery scheduler. Progress reports every 250 inspected entries. No new dependencies or elevation.
+- Native directory enumeration uses verified handles with write/delete sharing; it does not hold directories against application rename/delete. Metadata-only handles use open-existing, open-reparse-point and no-recall flags, with canonical-path verification. Changed/unavailable paths are reported as skipped. No file contents are opened or read.
+- Reparse points, cloud/offline/recall entries and roots beneath excluded ancestors are skipped. This deliberately omits cloud-backed folders and mounted/junction locations rather than following them. Short-name or other aliases that fail canonical-path verification are also skipped.
+- Native identity uses volume plus 128-bit file ID; logical/allocation metadata is separate, with compression metadata for sparse/compressed streams. Directory storage overhead, alternate data streams and excluded entries are unmeasured. Allocation is not promised reclaimable space, and totals need not reconcile with volume-used capacity.
+- Traversal stops at 100,000 inspected entries or depth 128, retaining at most 100 file rows, 2,000 folder rows and 100 issue details. The UI shows 100 rows per size category and at most 100 positive growth rows. Counts include all observed failures even when issue details are capped. Select a narrower folder after a capped scan.
+- One versioned baseline of at most 4 MiB under `%LOCALAPPDATA%\Relight\Storage\latest-scan.json`, with an exclusive writer lease and one bounded owned staging file. Writes flush before atomic replacement. Cancellation before commit preserves the baseline; once a completed scan starts its short commit, that commit may finish even if the window closes. No scan task holds up application shutdown; interruption may leave the one staging file for reuse.
+- Invalid/unsupported baselines are preserved and block replacement; the current scan remains visible with a save error. Scanned paths remain local, outside recovery logs and diagnostic ZIPs. No scans are uploaded. Live filesystem changes can affect measurements; this is not a point-in-time filesystem snapshot.
+
+Windows implementation references: [directory metadata enumeration](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_full_dir_info), [file allocation metadata](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_standard_info), [compression metadata](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_compression_info), and [metadata-only/no-recall handle flags](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew).
+
+### Verification and remaining acceptance
+
+Environment: local Windows 11 x64 / NTFS, .NET SDK 10.0.401. Tests use self-owned temporary trees; no valuable target or existing user file was modified or terminated.
+
+| Check / acceptance | Evidence and limits |
+|---|---|
+| Release solution build | Passed with zero warnings/errors. |
+| DSAT-07 | Passed: fake aggregation/hard-link accounting plus native hard-link and sparse-allocation checks. Native multi-buffer enumeration checks 800 Unicode-named files and permits directory rename while its enumeration handle is open. |
+| DSAT-08 | Passed for injected access denial, interrupted enumeration, excluded ancestors, and native junction exclusion. Actual cloud-provider hydration, physical ACL changes and hostile path replacement were not exercised. |
+| DSAT-09 | Passed for deterministic cancellation during traversal, queued cancellation preserving a baseline, entry/result/issue/depth bounds, and the shared worker gate in composition. UI cancellation of a deliberately blocked native call and full-drive responsiveness/soak were not run. |
+| DSAT-10 | Passed for same-root growth, partial/missing baseline exclusion, baseline round-trip, drive-root handling, unsupported schema, corrupt evidence preservation and size limits. Physical disk-full during baseline commit was not injected. |
+| DSAT-11 | Passed `pwsh -File scripts/Test-StorageUi.ps1 -ExerciseScan`: controlled folder scan, rendered growth after file expansion, saved baseline/root restored on reopen, invalid settings rejected and normal settings persistence retained; complete accessibility, scaling and recovery-under-scan stress remain not run. |
+
+The final focused storage/configuration/notification/shutdown/diagnostics regression group passed all **42 tests**, including **12 scanner tests**. One preceding run alongside the UI harness had 41 passes and a failure in the existing `MonitoringShutdownTests.Exit_waits_for_cleanup_and_releases_its_deadline` immediate timer-disposal assertion; inspection showed that assertion observes cleanup immediately after the wait task completes. The unchanged group passed when rerun without concurrent UI work. This records a test timing limitation, not a storage or shutdown acceptance claim. The Release solution build passed with zero warnings/errors; `pwsh -File scripts/Test-Shell.ps1` passed resident startup, activation and restart after interruption. The storage UI harness initially encountered a transient configuration read lock during save; it now retries that expected read contention and the rerun passed.
+
+The complete recovery suite, actual-target pilot, large-drive performance and overnight soak are not rerun for S2. S3 reviewed cleanup and S4 automatic deletion remain planned; this increment never deletes scanned files.

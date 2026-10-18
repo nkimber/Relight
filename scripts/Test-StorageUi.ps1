@@ -1,5 +1,6 @@
 param(
-    [string]$Executable = (Join-Path $PSScriptRoot '..\src\Relight.App\bin\Release\net10.0-windows\Relight.exe')
+    [string]$Executable = (Join-Path $PSScriptRoot '..\src\Relight.App\bin\Release\net10.0-windows\Relight.exe'),
+    [switch]$ExerciseScan
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
@@ -11,6 +12,11 @@ function Wait-For([scriptblock]$Condition, [string]$Description) {
         Start-Sleep -Milliseconds 150
     }
     throw "Timed out waiting for $Description."
+}
+function Read-Json([string]$Path) {
+    try { Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json }
+    catch [IO.IOException] { return $null }
+    catch [UnauthorizedAccessException] { return $null }
 }
 function Find-Control($Parent, [string]$Name) {
     $condition = [System.Windows.Automation.PropertyCondition]::new(
@@ -70,10 +76,44 @@ try {
     $notifications.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle()
     Invoke-Button $storage 'Save storage settings'
     Wait-For {
-        $config = Get-Content -LiteralPath (Join-Path $root 'configuration.json') -Raw | ConvertFrom-Json
+        $config = Read-Json (Join-Path $root 'configuration.json')
         $config.configuration.settings.storage.checkIntervalSeconds -eq 10 -and
             $config.configuration.settings.storage.notificationsEnabled -eq $false
     } 'saved storage preferences' | Out-Null
+    if ($ExerciseScan) {
+        $fixture = Join-Path $root 'scan-fixture'
+        [IO.Directory]::CreateDirectory($fixture) | Out-Null
+        $large = Join-Path $fixture 'large.bin'
+        [IO.File]::WriteAllBytes($large, [byte[]]::new(1048576))
+        [IO.File]::WriteAllBytes((Join-Path $fixture 'small.bin'), [byte[]]::new(42))
+        $scanInput = Find-Control $storage 'Folder to analyze'
+        $scanInput.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($fixture)
+        Invoke-Button $storage 'Scan folder'
+        $baselinePath = Join-Path $root 'Storage/latest-scan.json'
+        $first = Wait-For {
+            if (Test-Path -LiteralPath $baselinePath) {
+                $snapshot = Read-Json $baselinePath
+                if ($snapshot.Root -eq $fixture -and $snapshot.FilesMeasured -eq 2) { return $snapshot }
+            }
+        } 'first folder scan'
+        $largeEntry = $first.Entries | Where-Object { $_.Path -eq $large }
+        if ($largeEntry.LogicalBytes -ne 1048576 -or -not $first.CoverageComplete) { throw 'Incorrect fixture scan.' }
+        [IO.File]::WriteAllBytes($large, [byte[]]::new(2097152))
+        Wait-For { (Find-Control $storage 'Scan folder').Current.IsEnabled } 'scan ready' | Out-Null
+        Invoke-Button $storage 'Scan folder'
+        Wait-For {
+            $snapshot = Read-Json $baselinePath
+            $entry = $snapshot.Entries | Where-Object { $_.Path -eq $large }
+            $entry.LogicalBytes -eq 2097152
+        } 'second folder scan' | Out-Null
+        Wait-For {
+            $growth = Find-Control $storage 'Storage growth'
+            $all = $growth.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition)
+            foreach ($item in $all) { if ($item.Current.Name -like '+1*MiB') { return $true } }
+        } 'rendered growth comparison' | Out-Null
+        Write-Output 'PASS: folder scan measures controlled files, persists baseline and renders growth on rescan.'
+    }
     $storage.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
     $dashboard.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
     $primary.Refresh()
@@ -87,6 +127,12 @@ try {
     $interval = Find-Control $storage 'Storage check interval seconds'
     if ($interval.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value -ne '10') {
         throw 'Saved interval was not restored.'
+    }
+    if ($ExerciseScan) {
+        Wait-For {
+            $input = Find-Control $storage 'Folder to analyze'
+            $input.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value -eq $fixture
+        } 'reloaded scan root' | Out-Null
     }
     Write-Output 'PASS: native readings, invalid save, interval/notification persistence, close-to-tray and reopened storage settings.'
     Write-Output "Isolated evidence directory: $root"
