@@ -5,7 +5,7 @@ using Microsoft.Win32.SafeHandles;
 
 namespace Relight.Windows;
 
-internal sealed class WindowsStorageScanFileSystem : IStorageScanFileSystem
+internal sealed partial class WindowsStorageScanFileSystem : IStorageScanFileSystem, ICleanupFileSystem
 {
     private const uint ExcludedAttributes = 0x400 | 0x1000 | 0x40000 | 0x400000;
     private const uint DirectoryAttribute = 0x10;
@@ -13,6 +13,11 @@ internal sealed class WindowsStorageScanFileSystem : IStorageScanFileSystem
     public StorageFileMetadata Read(string path)
     {
         using var handle = Open(path, enumerate: false);
+        return ReadHandle(handle);
+    }
+
+    private static StorageFileMetadata ReadHandle(SafeFileHandle handle)
+    {
         if (!GetFileInformationByHandle(handle, out var basic)) ThrowLastError();
         bool directory = (basic.Attributes & DirectoryAttribute) != 0;
         bool excluded = (basic.Attributes & ExcludedAttributes) != 0;
@@ -70,11 +75,11 @@ internal sealed class WindowsStorageScanFileSystem : IStorageScanFileSystem
         finally { Marshal.FreeHGlobal(buffer); }
     }
 
-    private static SafeFileHandle Open(string path, bool enumerate)
+    private static SafeFileHandle Open(string path, bool enumerate, uint? access = null, uint share = 7)
     {
         // Only directory-list or zero content access; sharing includes write/delete.
         // OPEN_EXISTING, BACKUP_SEMANTICS | OPEN_REPARSE_POINT | OPEN_NO_RECALL.
-        var handle = CreateFile(path, enumerate ? 1u : 0u, 7, IntPtr.Zero, 3, 0x02300000, IntPtr.Zero);
+        var handle = CreateFile(path, access ?? (enumerate ? 1u : 0u), share, IntPtr.Zero, 3, 0x02300000, IntPtr.Zero);
         if (handle.IsInvalid)
         {
             int error = Marshal.GetLastWin32Error();

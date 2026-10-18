@@ -1,0 +1,70 @@
+<Window x:Class="Relight.ReviewedCleanupWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Relight — Reviewed cleanup" Width="980" Height="780" MinWidth="780" MinHeight="600"
+        Background="{DynamicResource CanvasBrush}" Foreground="{DynamicResource TextBrush}">
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="24">
+            <TextBlock Text="Reviewed cleanup" FontSize="24" FontWeight="SemiBold" />
+            <TextBlock Text="Automatic deletion is disabled. Nothing runs on a schedule. Preview a rule, select individual files, then confirm permanent deletion. Saving a rule never deletes files."
+                       TextWrapping="Wrap" Margin="0,8,0,16" />
+            <WrapPanel IsEnabled="{Binding IsIdle}">
+                <ComboBox ItemsSource="{Binding Rules}" SelectedItem="{Binding SelectedRule}" DisplayMemberPath="Name"
+                          SelectionChanged="RuleSelected" Width="240" AutomationProperties.Name="Saved reviewed rules" />
+                <Button Content="New rule" Click="NewClick" Margin="8,0" />
+                <Button Content="Remove saved rule" Click="RemoveClick" />
+            </WrapPanel>
+            <Grid IsEnabled="{Binding IsIdle}" Margin="0,12,0,0">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="210" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Label Grid.Row="0" Content="Rule name" Target="{Binding ElementName=RuleName}" />
+                <TextBox Grid.Row="0" Grid.Column="1" x:Name="RuleName" Text="{Binding Editor.Name, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Cleanup rule name" />
+                <Label Grid.Row="1" Content="Exact folder (immediate files)" Target="{Binding ElementName=RuleRoot}" />
+                <TextBox Grid.Row="1" Grid.Column="1" x:Name="RuleRoot" Text="{Binding Editor.Root, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Cleanup folder" />
+                <Label Grid.Row="2" Content="Filename pattern" Target="{Binding ElementName=RulePattern}" />
+                <TextBox Grid.Row="2" Grid.Column="1" x:Name="RulePattern" Text="{Binding Editor.Pattern, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Cleanup filename pattern" />
+                <Label Grid.Row="3" Content="Exclusions (semicolon separated)" Target="{Binding ElementName=RuleExclusions}" />
+                <TextBox Grid.Row="3" Grid.Column="1" x:Name="RuleExclusions" Text="{Binding Editor.Exclusions, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Cleanup exclusions" />
+                <Label Grid.Row="4" Content="Minimum age in days" Target="{Binding ElementName=RuleAge}" />
+                <TextBox Grid.Row="4" Grid.Column="1" x:Name="RuleAge" Text="{Binding Editor.Age, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Cleanup minimum age days" />
+                <Label Grid.Row="5" Content="Keep newest matching files" Target="{Binding ElementName=RuleKeep}" />
+                <TextBox Grid.Row="5" Grid.Column="1" x:Name="RuleKeep" Text="{Binding Editor.Keep, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Cleanup retain newest" />
+                <Label Grid.Row="6" Content="Maximum files per run (1–200)" Target="{Binding ElementName=RuleFiles}" />
+                <TextBox Grid.Row="6" Grid.Column="1" x:Name="RuleFiles" Text="{Binding Editor.Files, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Cleanup maximum files" />
+                <Label Grid.Row="7" Content="Maximum logical MiB per run" Target="{Binding ElementName=RuleMiB}" />
+                <TextBox Grid.Row="7" Grid.Column="1" x:Name="RuleMiB" Text="{Binding Editor.MiB, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Cleanup maximum MiB" />
+                <Label Grid.Row="8" Content="Require executable absent (optional)" Target="{Binding ElementName=RuleGuard}" />
+                <TextBox Grid.Row="8" Grid.Column="1" x:Name="RuleGuard" Text="{Binding Editor.Guard, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Cleanup executable guard" />
+            </Grid>
+            <TextBlock Text="Supported file types: .log, .tmp, .bak, .old, .dmp, .cache, .etl. Subfolders are never deleted or traversed. Protected locations and cloud, reparse, hidden, read-only, system, encrypted and hard-linked files are excluded. Application guard checks the current user's interactive session; it cannot prevent an app from starting afterward."
+                       TextWrapping="Wrap" Margin="0,8,0,12" />
+            <WrapPanel>
+                <Button Content="Save reviewed rule" Click="SaveClick" IsEnabled="{Binding IsIdle}" Margin="0,0,8,0" />
+                <Button Content="Preview cleanup" Click="PreviewClick" IsEnabled="{Binding IsIdle}" Margin="0,0,8,0" />
+                <Button Content="Open Windows Storage settings" Click="WindowsStorageClick" />
+            </WrapPanel>
+            <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Margin="0,12,0,12" />
+            <DataGrid x:Name="CandidatesGrid" ItemsSource="{Binding Candidates}" AutoGenerateColumns="False" CanUserAddRows="False"
+                      IsEnabled="{Binding IsIdle}" Height="220" AutomationProperties.Name="Reviewed cleanup candidates">
+                <DataGrid.Columns>
+                    <DataGridCheckBoxColumn Header="Delete?" Binding="{Binding Selected, UpdateSourceTrigger=PropertyChanged}" Width="60" />
+                    <DataGridTextColumn Header="Path" Binding="{Binding File.Path}" IsReadOnly="True" Width="*" />
+                    <DataGridTextColumn Header="Modified" Binding="{Binding Modified}" IsReadOnly="True" Width="140" />
+                    <DataGridTextColumn Header="Logical MiB" Binding="{Binding LogicalMiB, StringFormat=N2}" IsReadOnly="True" Width="90" />
+                    <DataGridTextColumn Header="Allocated MiB" Binding="{Binding AllocatedMiB, StringFormat=N2}" IsReadOnly="True" Width="100" />
+                </DataGrid.Columns>
+            </DataGrid>
+            <Button Content="Permanently delete selected…" Click="DeleteClick" IsEnabled="{Binding CanDelete}" HorizontalAlignment="Left" Margin="0,12,0,12" />
+            <TextBlock Text="Exclusions and coverage issues (first 100)" FontSize="18" />
+            <DataGrid ItemsSource="{Binding Issues}" AutoGenerateColumns="True" IsReadOnly="True" CanUserAddRows="False" Height="130" Margin="0,8,0,16" />
+            <TextBlock Text="Latest run outcomes" FontSize="18" />
+            <DataGrid ItemsSource="{Binding Outcomes}" AutoGenerateColumns="True" IsReadOnly="True" CanUserAddRows="False" Height="180" Margin="0,8,0,0" AutomationProperties.Name="Cleanup run outcomes" />
+            <TextBlock Text="Estimated allocation is not guaranteed reclaimed space. Recycle Bin moves on the same drive do not free capacity. Relight's reviewed action bypasses the Recycle Bin; use Windows settings for Windows-managed temporary files and bin cleanup."
+                       TextWrapping="Wrap" Margin="0,12,0,0" />
+        </StackPanel>
+    </ScrollViewer>
+</Window>

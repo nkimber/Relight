@@ -486,6 +486,14 @@ Version 1 is successful when the user's selected desktop application is recovere
 - **DS-10:** Bound each scan to 100,000 inspected entries and depth 128, retaining the largest 100 files, 2,000 folders and first 100 coverage issues; display at most 100 rows per result category. Keep one latest local baseline (at most 4 MiB) plus one bounded staging file under `%LOCALAPPDATA%\Relight\Storage`. Use an exclusive writer lease, flushed staging write and atomic replacement. Preserve corrupt/unsupported baselines and report persistence failures while still displaying the current scan. Full scanned paths remain local and outside diagnostic bundles.
 - **DS-11:** Compare positive logical-size growth only for the same root and retained paths with complete measurements in both scans. Missing/unmeasured paths have unknown growth, never assumed zero or deleted. Show baseline timestamp and limitations. Scanning a different root replaces the single baseline; canceled traversal does not replace it. Reopening loads the latest saved results without automatically scanning. No durable multi-root history or predictive forecast is included.
 
+### S3 — Reviewed cleanup
+
+Rules apply to one exact local folder's immediate files. Configure filename pattern/exclusions, minimum age (1–3650 days), newest-file retention, maximum 1–200 files and at most 10 GiB logical bytes per run. Supported extensions initially: .log, .tmp, .bak, .old, .dmp, .cache and .etl. Up to 50 rules use versioned, revision-checked atomic storage and a backup. No directory removal or recursive cleanup.
+
+Previews inspect at most 10,000 entries, retain the first 100 issues, and show file identity, sizes, modification time and estimated allocation. Incomplete/unknown coverage blocks execution; individual selections default off. Edits invalidate preview; authority is single-use and expires after ten monotonic minutes. Confirm permanent deletion separately with Cancel as default. Reverify metadata/identity on the exclusive native DELETE handle used for disposition, while briefly guarding canonical ancestors. Skip changed, locked, hard-linked, hidden, system, read-only, encrypted and cloud/reparse files. Block protected system/application/repository/Relight locations, including ancestors of protected data. Optional executable guards must report absent in the current user's session; they cannot prevent later starts.
+
+Durable pending evidence is required before each dispatch. Audit failure stops remaining files; interrupted pending results remain unknown and are never resumed automatically. Keep one latest run, at most 200 outcomes/2 MiB, outside recovery history and diagnostic exports. Show observed available-space change separately from allocation estimates. Closing cancels between native operations; already-dispatched deletion cannot be undone. Provide Windows Storage settings for Windows-managed cleanup rather than claiming Recycle Bin moves reclaim capacity.
+
 ### Later storage increments
 
 - **S3 — Reviewed cleanup:** Explain candidate location, reason, age, estimated reclaim and reversibility. Preview and explicitly select actions. Offer Windows Storage settings for OS-managed cleanup. Capture exact-root rules with file filters, exclusions, age, retention and application-running constraints. Recheck candidates immediately before action. Report actual free-space change separately from file-size estimates. Recycle Bin moves on the same volume do not count as reclaimed capacity.
@@ -508,5 +516,8 @@ These IDs extend, rather than replace, AT-01–AT-30.
 | DSAT-09 | Cancellation, overlapping requests and resource limits | Traversal stops between calls, prior baseline survives cancellation, no overlapping worker, entry/depth/result bounds hold. |
 | DSAT-10 | Baseline load/save/corruption and growth | Same-root comparable paths show growth; missing/partial paths have unknown deltas; evidence is preserved and failures are visible. |
 | DSAT-11 | Native Storage window scan/rescan/reopen | User can scan a controlled folder, see rankings and growth, cancel, and reopen saved results while recovery/capacity monitoring remain independent. |
+| DSAT-12 | Reviewed rules and preview | Filters, retention, age and caps apply; save/preview never delete; stale/corrupt rules are rejected and preserved. |
+| DSAT-13 | Reviewed execution | Only selected, freshly verified files are deleted once; unselected, changed/locked files and junction replacements survive. |
+| DSAT-14 | Cleanup authority and audit | Protected paths, unknown guards, incomplete/expired previews and failed pre-dispatch accounting block deletion; audit failures stop remaining files. |
 
 See [storage checkpoint](storage-checkpoint.md) for actual evidence and remaining acceptance.

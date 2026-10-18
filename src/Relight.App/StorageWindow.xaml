@@ -6,8 +6,9 @@
     <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="24">
             <TextBlock Text="Disk space monitoring" FontSize="24" FontWeight="SemiBold" />
-            <TextBlock Text="Checks continue when this window closes. Only fixed local drives are supported. Folder analysis below runs only when requested. No files are deleted."
+            <TextBlock Text="Checks continue when this window closes. Only fixed local drives are supported. Folder analysis below runs only when requested. Monitoring and analysis do not delete files. Reviewed cleanup requires separate confirmation."
                        TextWrapping="Wrap" Margin="0,8,0,16" />
+            <Button Content="Reviewed cleanup…" Click="ReviewedCleanupClick" HorizontalAlignment="Left" Margin="0,0,0,12" />
             <CheckBox x:Name="EnabledInput" Content="Enable disk space monitoring" Margin="0,0,0,8" />
             <CheckBox x:Name="NotificationsInput" Content="Notify when a drive enters warning or critical space" Margin="0,0,0,12" />
             <Label Target="{Binding ElementName=IntervalInput}" Content="Check interval in seconds (10–3600)" />

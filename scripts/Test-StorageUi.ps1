@@ -1,6 +1,7 @@
 param(
     [string]$Executable = (Join-Path $PSScriptRoot '..\src\Relight.App\bin\Release\net10.0-windows\Relight.exe'),
-    [switch]$ExerciseScan
+    [switch]$ExerciseScan,
+    [switch]$ExerciseCleanup
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
@@ -14,6 +15,7 @@ function Wait-For([scriptblock]$Condition, [string]$Description) {
     throw "Timed out waiting for $Description."
 }
 function Read-Json([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
     try { Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json }
     catch [IO.IOException] { return $null }
     catch [UnauthorizedAccessException] { return $null }
@@ -113,6 +115,37 @@ try {
             foreach ($item in $all) { if ($item.Current.Name -like '+1*MiB') { return $true } }
         } 'rendered growth comparison' | Out-Null
         Write-Output 'PASS: folder scan measures controlled files, persists baseline and renders growth on rescan.'
+    }
+    if ($ExerciseCleanup) {
+        $cleanupFixture = Join-Path ([IO.Path]::GetTempPath()) ('relight-reviewed-ui-' + [guid]::NewGuid().ToString('N'))
+        [IO.Directory]::CreateDirectory($cleanupFixture) | Out-Null
+        $oldLog = Join-Path $cleanupFixture 'disposable.log'
+        [IO.File]::WriteAllText($oldLog, 'disposable UI test')
+        [IO.File]::SetLastWriteTimeUtc($oldLog, [DateTime]::UtcNow.AddDays(-30))
+        Invoke-Button $storage 'Reviewed cleanup…'
+        $cleanup = Wait-For { Find-Control $storage 'Relight — Reviewed cleanup' } 'reviewed cleanup window'
+        foreach ($field in @(@('Cleanup rule name', 'Disposable reviewed UI rule'), @('Cleanup folder', $cleanupFixture), @('Cleanup retain newest', '0'))) {
+            $edit = Wait-For { $control = Find-Control $cleanup $field[0]; if ($control.Current.IsEnabled) { $control } } 'cleanup editor ready'
+            $edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($field[1])
+        }
+        Invoke-Button $cleanup 'Save reviewed rule'
+        $rulesPath = Join-Path $root 'Storage/cleanup-rules.json'
+        Wait-For { $book = Read-Json $rulesPath; $book.Rules.Count -eq 1 } 'saved reviewed rule' | Out-Null
+        if (-not (Test-Path -LiteralPath $oldLog)) { throw 'Saving a rule deleted a file.' }
+        Wait-For { (Find-Control $cleanup 'Preview cleanup').Current.IsEnabled } 'preview available' | Out-Null
+        Invoke-Button $cleanup 'Preview cleanup'
+        Wait-For { (Find-Control $cleanup 'Permanently delete selected…').Current.IsEnabled } 'reviewed candidates' | Out-Null
+        $grid = Find-Control $cleanup 'Reviewed cleanup candidates'
+        $condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [System.Windows.Automation.ControlType]::CheckBox)
+        foreach ($checkbox in $grid.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)) {
+            if ($checkbox.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Current.ToggleState -ne [System.Windows.Automation.ToggleState]::Off) {
+                throw 'Preview preselected a file for deletion.'
+            }
+        }
+        if (-not (Test-Path -LiteralPath $oldLog)) { throw 'Preview deleted a file.' }
+        $cleanup.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
+        Write-Output 'PASS: reviewed rule save and preview preserve disposable files; preview selections default off.'
     }
     $storage.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
     $dashboard.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()

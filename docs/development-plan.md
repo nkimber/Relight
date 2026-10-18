@@ -239,7 +239,7 @@ This user-requested work proceeds alongside the recovery milestones. It does not
 |---|---|---|
 | S1 | Configurable fixed-drive capacity sampling, persisted thresholds/preferences, Settings UI and tray notifications. Verify DSAT-01–DSAT-06 at their appropriate policy, persistence, native and interactive levels. | Implemented checkpoint; see [evidence and remaining acceptance](storage-checkpoint.md). |
 | S2 | Cancellable offender scans, largest consumers, growth comparisons and explicit coverage limits; DSAT-07–DSAT-11. | Implemented checkpoint; see [S2 evidence and remaining acceptance](storage-checkpoint.md#s2--offender-analysis-checkpoint). |
-| S3 | Reviewed cleanup previews, actual reclaimed-space reporting and reusable exact-root rules. | Planned; deletion implementation requires its own acceptance and scope. |
+| S3 | Reviewed cleanup previews, actual reclaimed-space reporting and reusable exact-root rules. | Implemented checkpoint; evidence and remaining interactive acceptance are recorded in the storage checkpoint. |
 | S4 | Individually opted-in automatic rules, execution limits, protected locations, revalidation and audit history. | Planned; no inferred deletion authorization. |
 
 S1 defaults to the system drive, with explicit additional fixed drive selection. Automatic inference of application-data volumes, trends, snooze, reminders and predicted exhaustion remain later work. Use a fake capacity reader for low-space tests; never fill the user's disk to trigger an alert. No folder scan, cleanup or target termination belongs to S1.
