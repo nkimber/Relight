@@ -243,3 +243,5 @@ This user-requested work proceeds alongside the recovery milestones. It does not
 | S4 | Individually opted-in automatic rules, execution limits, protected locations, revalidation and audit history; DSAT-15–DSAT-17. | Implemented opt-in checkpoint; default off. See storage checkpoint for tested behavior and remaining acceptance. |
 
 S1 defaults to the system drive, with explicit additional fixed drive selection. Automatic inference of application-data volumes, trends, snooze, reminders and predicted exhaustion remain later work. Use a fake capacity reader for low-space tests; never fill the user's disk to trigger an alert. No folder scan, cleanup or target termination belongs to S1.
+
+S4 elapsed-time validation uses the disposable [cleanup probe](../tools/Relight.CleanupProbe/Program.cs), with a competing process and ownership transfer. The eight-hour run is pending until its final report is reviewed. Actual two-sign-in testing remains blocked by the availability of only one signed-in Windows session; the user requested available checks and an explicit gap record. Real cleanup rules remain off.
