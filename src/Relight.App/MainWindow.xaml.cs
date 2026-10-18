@@ -30,6 +30,9 @@ public partial class MainWindow : Window
     private readonly Func<Guid, Guid, string, Task<TargetStopResult>> _forceClosePaused;
     private readonly Func<Guid, Task<StopCommandResult>> _stopForRestart;
     private readonly Func<Guid, Guid, string?, Task<CoordinatorResult>> _completeRestart;
+    private void StorageClick(object sender, RoutedEventArgs e) =>
+        ((App)Application.Current).ShowStorageWindow();
+
     private bool _changingStartAtSignIn;
 
     public MainWindow(Func<Guid, bool, Task> setPaused, Func<Guid, Task> resetRecovery,

@@ -733,6 +733,13 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         Navigate(ShellPage.History);
     }
 
+    public string StorageStatus { get; private set; } = "Waiting for the first storage check.";
+    public void UpdateStorageStatus(string status)
+    {
+        StorageStatus = status;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(StorageStatus)));
+    }
+
     public event PropertyChangedEventHandler? PropertyChanged;
     public event EventHandler? HistoryRefreshRequested;
 }

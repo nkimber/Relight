@@ -18,6 +18,69 @@ namespace Relight;
 
 public partial class App : Application
 {
+    private readonly DiskSpaceMonitor _diskSpaceMonitor = new();
+    private DispatcherTimer? _storageTimer;
+    private StorageWindow? _storageWindow;
+    private bool _checkingStorage;
+    private long _nextStorageCheck;
+    private string _storageStatus = "Waiting for the first storage check.";
+    private bool _storageAttention;
+
+    public void ShowStorageWindow()
+    {
+        if (_storageWindow is not null) { _storageWindow.Activate(); return; }
+        var host = Volatile.Read(ref _host);
+        if (host?.Configuration is not { } config)
+        {
+            MessageBox.Show(_dashboard!, "Wait for configuration to load before opening storage settings.", "Storage unavailable");
+            return;
+        }
+        _storageWindow = new StorageWindow(config.Configuration.Settings.Storage, async settings =>
+        {
+            await host.SetDiskSpaceSettingsAsync(settings);
+            _nextStorageCheck = 0;
+        }) { Owner = _dashboard };
+        _storageWindow.Closed += (_, _) => _storageWindow = null;
+        _storageWindow.UpdateStatus(_storageStatus);
+        _storageWindow.Show();
+    }
+
+    private async void OnStorageTick(object? sender, EventArgs e)
+    {
+        if (_checkingStorage || _exiting || Environment.TickCount64 < _nextStorageCheck) return;
+        var settings = Volatile.Read(ref _host)?.Configuration?.Configuration.Settings.Storage;
+        if (settings is null) return;
+        _checkingStorage = true;
+        try
+        {
+            var readings = await Task.Run(() => _diskSpaceMonitor.Sample(settings));
+            if (_exiting) return;
+            _storageAttention = readings.Any(r => r.Level != DiskSpaceLevel.Healthy);
+            _storageStatus = !settings.Enabled ? "Disk space monitoring is disabled." :
+                string.Join("\n", readings.Select(r => $"{r.Status} · checked {r.CheckedUtc.ToLocalTime():g}"));
+            foreach (var reading in readings.Where(r => r.Notify))
+            {
+                try { _tray?.ShowRecoveryNotification($"Disk space {reading.Level}: {reading.Drive}",
+                    reading.FreeSpace + ". Open Settings / Disk space monitoring to review.", true); }
+                catch (Exception error) { _storageStatus += $"\nStorage notification failed: {error.Message}"; }
+            }
+        }
+        catch (Exception error)
+        {
+            _storageAttention = true;
+            _storageStatus = $"Disk space monitoring unavailable: {error.Message}";
+        }
+        finally
+        {
+            _nextStorageCheck = ReferenceEquals(settings,
+                Volatile.Read(ref _host)?.Configuration?.Configuration.Settings.Storage)
+                ? Environment.TickCount64 + settings.CheckIntervalSeconds * 1000L : 0;
+            _checkingStorage = false;
+            _viewModel?.UpdateStorageStatus(_storageStatus);
+            _storageWindow?.UpdateStatus(_storageStatus);
+        }
+    }
+
     private SingleInstanceService? _instance;
     private TrayService? _tray;
     private MainWindow? _dashboard;
@@ -127,6 +190,9 @@ public partial class App : Application
                 };
                 _statusTimer.Tick += OnStatusTick;
                 _statusTimer.Start();
+                _storageTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+                _storageTimer.Tick += OnStorageTick;
+                _storageTimer.Start();
                 SystemEvents.PowerModeChanged += OnPowerModeChanged;
                 SystemEvents.SessionSwitch += OnSessionSwitch;
             }
@@ -256,7 +322,8 @@ public partial class App : Application
             });
             _viewModel?.UpdateStartAtSignIn(registered, startupAvailable, explanation);
             if (_viewModel is not null)
-                _tray?.UpdateStatus(_viewModel.TrayStatus, _viewModel.TrayIconState);
+                _tray?.UpdateStatus(_storageAttention ? "Relight · Disk space needs attention" : _viewModel.TrayStatus,
+                    _storageAttention ? TrayIconState.Attention : _viewModel.TrayIconState);
             _tray?.UpdateStartupStatus(registered, startupAvailable, explanation);
             bool canPause = !_changingAllPause && profiles.Any(profile =>
                 profile.AutomaticActionsAllowed && profile.Problem is null &&
@@ -667,6 +734,8 @@ public partial class App : Application
     private async Task CompleteExitAsync()
     {
         int exitCode = 0;
+        _storageTimer?.Stop();
+        _storageWindow?.Close();
         _statusTimer?.Stop();
         try
         {
@@ -760,6 +829,8 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         _exiting = true;
+        _storageTimer?.Stop();
+        _storageWindow?.Close();
         _statusTimer?.Stop();
         _monitoringCancellation?.Cancel();
         CancellationTokenSource? cancellation = _monitoringCancellation;

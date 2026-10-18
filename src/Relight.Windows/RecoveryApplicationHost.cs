@@ -825,6 +825,27 @@ public sealed class RecoveryApplicationHost : IAsyncDisposable
 
     public IReadOnlyDictionary<Guid, Task> Pulse() => _scheduler.Pulse();
 
+    public Task SetDiskSpaceSettingsAsync(DiskSpaceSettings settings,
+        CancellationToken cancellationToken = default) => Task.Run(async () =>
+    {
+        settings.Validate();
+        await _changes.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(RecoveryApplicationHost));
+            StoredConfiguration current = Configuration ??
+                throw new ConfigurationUnavailableException("Configuration is unavailable.");
+            if (!current.AutomaticActionsAllowed)
+                throw new ConfigurationUnavailableException("Repair configuration before changing storage settings.");
+            cancellationToken.ThrowIfCancellationRequested();
+            Configuration = _configurationStore.Save(current, current.Configuration with
+            {
+                Settings = current.Configuration.Settings with { Storage = settings }
+            });
+        }
+        finally { _changes.Release(); }
+    }, CancellationToken.None);
+
     public Task SetStartAtSignInAsync(bool enabled,
         CurrentUserStartupRegistration startup,
         CancellationToken cancellationToken = default) => Task.Run(async () =>

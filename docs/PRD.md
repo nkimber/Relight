@@ -426,6 +426,9 @@ No delivery dates are committed before the target-adapter spike. That integratio
 
 ## 15. Planned extensions
 
+Storage protection is an explicitly authorized extension (18 October 2026). Section 18 defines its staged scope; increment S1 is authorized alongside the existing recovery work. It does not change recovery budgets or existing release acceptance gates.
+
+
 | Priority | Feature | Defined behavior / boundary |
 |---|---|---|
 | Next | Weekly protection windows | Select days, local time range and time zone; support overnight ranges. Outside the window, leave target running and suspend recovery. On reentry, reconcile; do not clear lockout. |
@@ -458,3 +461,38 @@ These do not prevent reviewing this PRD. Proposed defaults allow implementation 
 ## 17. Success definition
 
 Version 1 is successful when the user's selected desktop application is recovered after an unexpected exit, unstable starts never exceed the configured automatic attempt budget, a stable manual restart restores protection automatically, and the morning history explains what happened without guesswork. These properties must continue to hold across Relight restarts, session interruptions and ordinary application updates.
+
+
+## 18. Storage protection
+
+**Scope decision — 18 October 2026:** Add configurable disk-space monitoring and local notifications now (S1). Follow with offender analysis (S2), reviewed cleanup and reusable rules (S3), then explicitly opted-in automatic cleanup (S4). Application recovery remains independent. No deletion or folder scan is authorized by enabling monitoring.
+
+### S1 — Drive monitoring and notifications
+
+- **DS-01:** Monitor fixed local drives while resident, independently of dashboard visibility and recovery scheduling. Default to the Windows system drive; users can explicitly select additional drive-letter roots. Automatic selection of application data drives, removable/network drives and mounted-folder volumes is deferred.
+- **DS-02:** Show available space to the current user in GiB and percent, severity, last check time and an explicit unavailable result. An unreadable drive is never treated as empty or healthy. One failed reading must not hide other results. Use native capacity sampling, not directory enumeration.
+- **DS-03:** Persist enablement, notification preference, check interval (10–3600 seconds; default 60), and per-drive warning/critical percent and GiB thresholds. Defaults: warning below 10% OR 20 GiB; critical below 5% OR 5 GiB. Both threshold dimensions apply; critical must be positive and strictly below warning. Warning percentage is at most 95. Empty configured drive list means the system-drive default.
+- **DS-04:** Notify on entry into warning and escalation to critical, once per severity in the current alert episode. A repeat or unavailable reading does not rearm notifications. Clear the episode only when both warning thresholds are exceeded by at least 2 percentage points and 1 GiB. An alert retains critical severity until above both critical thresholds plus the same margins (bounded by warning margins). Notification failure is visible and independent of recovery. Windows can suppress delivery. Restarting Relight, re-enabling monitoring or changing a drive's thresholds starts a fresh evaluation; notifications are not durable delivery receipts.
+- **DS-05:** Show storage attention through the tray and latest readings in Settings / Disk space monitoring. Turning off notifications leaves sampling active; disabling storage monitoring does not pause application recovery. Save through the existing atomic, last-good, revision-checked configuration store. Invalid saves preserve active settings. No elevation or new runtime dependency is required.
+- **DS-06:** Run samples off the WPF dispatcher on a separate schedule. Missed intervals after sleep do not cause catch-up bursts. Keep only the latest readings and bounded per-drive episode state in memory. Trend history, reminder cadence, snooze and predicted exhaustion are deferred.
+
+### Later storage increments
+
+- **S2 — Offender analysis:** On-demand cancellable scans with limited I/O, largest files/folders and growth since prior scans. Display scan age, coverage and inaccessible locations. Separate large consumers from cleanup candidates; handle allocated size, hard links, reparse points and cloud placeholders without downloading content. Bound stored snapshots.
+- **S3 — Reviewed cleanup:** Explain candidate location, reason, age, estimated reclaim and reversibility. Preview and explicitly select actions. Offer Windows Storage settings for OS-managed cleanup. Capture exact-root rules with file filters, exclusions, age, retention and application-running constraints. Recheck candidates immediately before action. Report actual free-space change separately from file-size estimates. Recycle Bin moves on the same volume do not count as reclaimed capacity.
+- **S4 — Opt-in automation:** Promote individually approved rules from report-only to reviewed or automatic execution. Never infer deletion authority from prior manual actions. Bound each run, skip changed/locked files, protect Relight configuration/recovery state, prevent reparse-point escapes, provide a disable switch and bounded local audit history. Specify permanent deletion explicitly. Add dedicated destructive-operation acceptance before enabling this stage.
+
+### Storage acceptance
+
+These IDs extend, rather than replace, AT-01–AT-30.
+
+| ID | Scenario | Required outcome |
+|---|---|---|
+| DSAT-01 | Percent/absolute thresholds, equality and invalid values | Either limit triggers; equality alone does not; invalid settings are rejected. |
+| DSAT-02 | Repeated low readings, warning escalation, unavailable gap and recovery | No repeat notice within a severity/episode; critical escalates once; unknown does not rearm; recovery requires margin. |
+| DSAT-03 | Multiple drives including unavailable drive | Other readings remain available; unknown is explicit; no false empty-space alert. |
+| DSAT-04 | Save/restart, stale writes, invalid configuration | Settings persist, legacy configuration gains defaults, stale writes fail, last-good behavior remains intact. |
+| DSAT-05 | Close/reopen dashboard and storage window, disable/mute | Resident sampling continues; disable/mute behave independently of recovery; UI remains responsive. |
+| DSAT-06 | Windows tray notification and lifecycle | Safe simulated readings exercise warning/critical delivery and tray state; Windows suppression and sleep behavior documented. |
+
+See [storage checkpoint](storage-checkpoint.md) for actual evidence and remaining acceptance.

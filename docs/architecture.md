@@ -40,3 +40,8 @@ The shell singleton prevents duplicate UI processes within a user session. The s
 The selected first target is the `OpenAI.Codex_2p2nqsd0c76g0` ChatGPT package. Its package-family/main-process discovery and AUMID activation were checked against the already-running instance; activation from absence and job continuation remain unverified. Advancing the shell under the user's explicit request does not mark target-validation or engine milestones complete.
 
 Explicit Exit bounds asynchronous monitoring cleanup to ten seconds before WPF shutdown. Normal completion drains the recovery host and event recorder. Timeout/failure returns code 1 with safe Trace/debugger diagnostics; the application does not await another acknowledgement dialog or terminate monitored targets. This fallback can lose pending event writes, so it does not claim a clean drain. Window close continues to hide the dashboard independently of this explicit-exit path; see [shell-checkpoint.md](shell-checkpoint.md) for verification limits.
+
+
+## Storage monitoring extension
+
+The S1 storage coordinator is independent of recovery scheduling and remains in the same resident executable. Domain threshold/episode policy is in Core, native capacity sampling is in Windows, and the WPF composition root posts serial background batches and presents latest readings. Global storage preferences use the existing revision-checked configuration transaction; no separate store or runtime dependency was introduced. See [storage checkpoint](storage-checkpoint.md) for exact behavior and evidence. Scanning and deletion are deferred.

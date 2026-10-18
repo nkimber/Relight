@@ -229,3 +229,17 @@ The AT matrix is necessary but not exhaustive: milestone exits also cover APP/MO
 ## Post-Version 1 backlog
 
 Keep PRD Section 15 as the source for weekly protection windows, scheduled actions and DST semantics, bounded backoff, optional health probes, advanced shutdown, supervisor self-recovery, Resurrector import and ARM64/integrations. Promote an extension only through an explicit scope decision with acceptance criteria; do not let it delay the core watchdog release.
+
+
+## Storage protection extension — authorized 18 October 2026
+
+This user-requested work proceeds alongside the recovery milestones. It does not mark M0–M9 or AT-01–AT-30 complete. [PRD Section 18](PRD.md#18-storage-protection) governs behavior.
+
+| Increment | Deliverable and exit | Status |
+|---|---|---|
+| S1 | Configurable fixed-drive capacity sampling, persisted thresholds/preferences, Settings UI and tray notifications. Verify DSAT-01–DSAT-06 at their appropriate policy, persistence, native and interactive levels. | Implemented checkpoint; see [evidence and remaining acceptance](storage-checkpoint.md). |
+| S2 | Cancellable offender scans, largest consumers, growth comparisons and explicit coverage limits. | Planned; not implemented. |
+| S3 | Reviewed cleanup previews, actual reclaimed-space reporting and reusable exact-root rules. | Planned; deletion implementation requires its own acceptance and scope. |
+| S4 | Individually opted-in automatic rules, execution limits, protected locations, revalidation and audit history. | Planned; no inferred deletion authorization. |
+
+S1 defaults to the system drive, with explicit additional fixed drive selection. Automatic inference of application-data volumes, trends, snooze, reminders and predicted exhaustion remain later work. Use a fake capacity reader for low-space tests; never fill the user's disk to trigger an alert. No folder scan, cleanup or target termination belongs to S1.

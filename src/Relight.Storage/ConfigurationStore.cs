@@ -32,6 +32,8 @@ public sealed record GlobalConfiguration(
     long MaximumLogBytes,
     long LogRotationBytes)
 {
+    public DiskSpaceSettings Storage { get; init; } = new();
+
     public static GlobalConfiguration Default { get; } =
         new(false, RelightTheme.System, 30, 250L * 1024 * 1024, 10L * 1024 * 1024);
 }
@@ -350,6 +352,10 @@ public sealed class ConfigurationStore
             configuration.Settings.LogRotationBytes < 65_536 ||
             configuration.Settings.LogRotationBytes > configuration.Settings.MaximumLogBytes)
             throw new ArgumentException("Global settings are invalid.");
+
+        if (configuration.Settings.Storage is null)
+            throw new ArgumentException("Storage settings are required.");
+        configuration.Settings.Storage.Validate();
 
         var ids = new HashSet<Guid>();
         var enabledTargets = new List<(TargetKind Kind, string Key, string? Required, string? Excluded)>();
