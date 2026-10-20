@@ -573,7 +573,8 @@ public sealed class RecoveryWpfPreviewProcessTests
             EventHistoryResult interrupted = await history.ReadAsync(new EventHistoryQuery(
                 ProfileId: profileId, Kind: OperationalEventKind.ObservationInterrupted));
             OperationalEvent start = Assert.Single(started.Events);
-            OperationalEvent end = Assert.Single(interrupted.Events);
+            OperationalEvent end = Assert.Single(interrupted.Events,
+                entry => entry.NewState == RecoveryState.AwaitingIntervention);
             Assert.Equal(ObservationOrigin.AutomaticLaunch, start.Origin);
             Assert.Equal(ObservationOrigin.AutomaticLaunch, end.Origin);
             if (end.FailureCategory != OperationalFailureCategory.EarlyExit)
@@ -865,7 +866,7 @@ public sealed class RecoveryWpfPreviewProcessTests
             File.Delete(ready);
             await WaitForEventCountAsync(history, profileId,
                 OperationalEventKind.TargetDisappeared, 1,
-                TimeSpan.FromSeconds(75));
+                TimeSpan.FromSeconds(20));
             await WaitForEventCountAsync(history, profileId,
                 OperationalEventKind.LaunchDispatched, 1,
                 TimeSpan.FromSeconds(20));
