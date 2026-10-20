@@ -104,6 +104,154 @@ public sealed class RecoveryWpfPreviewProcessTests
 
     [Fact]
     [Trait("Category", "WindowsDesktop")]
+    public async Task Simultaneous_target_failures_keep_independent_budgets_and_responsive_dashboard()
+    {
+        string directory = Path.Combine(Path.GetTempPath(),
+            $"relight-wpf-concurrent-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        string sourceTarget = FindBuiltExecutable("Relight.TestTarget", "Relight.TestTarget.exe");
+        string firstTarget = CopyTestTarget(sourceTarget, Path.Combine(directory, "first"));
+        string secondTarget = CopyTestTarget(sourceTarget, Path.Combine(directory, "second"));
+        string relightExecutable = FindBuiltExecutable("Relight.App", "Relight.exe");
+        string firstLabel = $"concurrent-first-{Guid.NewGuid():N}";
+        string secondLabel = $"concurrent-second-{Guid.NewGuid():N}";
+        string firstReady = Path.Combine(directory, "first.ready");
+        string secondReady = Path.Combine(directory, "second.ready");
+        Process? preview = null, first = null, second = null;
+        try
+        {
+            first = StartDisposableTarget(firstTarget, firstLabel, firstReady);
+            second = StartDisposableTarget(secondTarget, secondLabel, secondReady);
+            await WaitUntilAsync(() => File.Exists(firstReady) && File.Exists(secondReady),
+                TimeSpan.FromSeconds(10));
+            var policy = RecoveryPolicy.Default with
+            {
+                StartAutomaticallyWhenInitiallyAbsent = false,
+                NormalPollInterval = TimeSpan.FromSeconds(60),
+                ObservationPeriod = TimeSpan.FromSeconds(60),
+                ObservationPollInterval = TimeSpan.FromSeconds(1),
+                RetryDelay = TimeSpan.FromSeconds(5),
+                AppearanceTimeout = TimeSpan.FromSeconds(5),
+                AbsenceConfirmationDelay = TimeSpan.FromSeconds(1),
+                LockoutDiscoveryInterval = TimeSpan.FromSeconds(5)
+            };
+            Guid firstId, secondId;
+            await using (var setup = await RecoveryApplicationHost
+                .OpenSharedSessionPreviewAsync(directory))
+            {
+                firstId = await setup.RegisterExecutableAsync("First disposable target",
+                    firstTarget, ["--label", firstLabel, "--ready-file", firstReady,
+                        "--attempt-file", Path.Combine(directory, "first-attempts.bin"),
+                        "--fail-first", "1", "--exit-after-ms", "150", "--hidden"],
+                    null, policy with { MaximumAutomaticAttempts = 1 });
+                secondId = await setup.RegisterExecutableAsync("Second disposable target",
+                    secondTarget, ["--label", secondLabel, "--ready-file", secondReady,
+                        "--attempt-file", Path.Combine(directory, "second-attempts.bin"),
+                        "--fail-first", "1", "--exit-after-ms", "150", "--hidden"],
+                    null, policy with { MaximumAutomaticAttempts = 2 });
+            }
+            var budgets = new SharedRecoveryBudgetStore(directory);
+            var history = new OperationalEventHistoryReader(directory);
+            preview = StartPreview(relightExecutable, directory);
+            await Task.WhenAll(
+                WaitForEventCountAsync(history, firstId, OperationalEventKind.ObservationCompleted,
+                    1, TimeSpan.FromSeconds(80)),
+                WaitForEventCountAsync(history, secondId, OperationalEventKind.ObservationCompleted,
+                    1, TimeSpan.FromSeconds(80)));
+            Assert.Equal(0, budgets.Load(firstId).ReservedAutomaticAttempts);
+            Assert.Equal(0, budgets.Load(secondId).ReservedAutomaticAttempts);
+
+            StopStartedProcess(first);
+            first = null;
+            StopStartedProcess(second);
+            second = null;
+            await Task.WhenAll(
+                WaitForEventCountAsync(history, firstId, OperationalEventKind.TargetDisappeared,
+                    1, TimeSpan.FromSeconds(80)),
+                WaitForEventCountAsync(history, secondId, OperationalEventKind.TargetDisappeared,
+                    1, TimeSpan.FromSeconds(80)));
+            using (Process activation = StartPreview(relightExecutable, directory))
+            {
+                await activation.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+                Assert.Equal(0, activation.ExitCode);
+            }
+            await WaitUntilAsync(() =>
+            {
+                preview.Refresh();
+                return preview.MainWindowHandle != nint.Zero;
+            }, TimeSpan.FromSeconds(10));
+            var response = Stopwatch.StartNew();
+            Assert.True(preview.CloseMainWindow());
+            await WaitUntilAsync(() =>
+            {
+                preview.Refresh();
+                return preview.MainWindowHandle == nint.Zero;
+            }, TimeSpan.FromSeconds(5));
+            response.Stop();
+            Assert.True(response.Elapsed < TimeSpan.FromSeconds(5),
+                $"Dashboard close took {response.Elapsed} during concurrent recovery.");
+
+            await Task.WhenAll(
+                WaitForEventCountAsync(history, firstId, OperationalEventKind.LockoutEntered,
+                    1, TimeSpan.FromSeconds(40)),
+                WaitForEventCountAsync(history, secondId, OperationalEventKind.LaunchDispatched,
+                    2, TimeSpan.FromSeconds(40)));
+            Assert.False(preview.HasExited);
+            SharedRecoveryBudget firstBudget = budgets.Load(firstId);
+            SharedRecoveryBudget secondBudget = budgets.Load(secondId);
+            Assert.True(firstBudget.LockedOut);
+            Assert.Equal(1, firstBudget.ReservedAutomaticAttempts);
+            Assert.False(secondBudget.LockedOut);
+            Assert.Equal(2, secondBudget.ReservedAutomaticAttempts);
+            EventHistoryResult firstDispatches = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: firstId, Kind: OperationalEventKind.LaunchDispatched));
+            EventHistoryResult secondDispatches = await history.ReadAsync(new EventHistoryQuery(
+                ProfileId: secondId, Kind: OperationalEventKind.LaunchDispatched));
+            Assert.Equal(1, firstDispatches.TotalMatches);
+            Assert.Equal(2, secondDispatches.TotalMatches);
+            OperationalEvent[] orderedSecond = secondDispatches.Events
+                .OrderBy(entry => entry.OccurredUtc).ToArray();
+            Assert.Equal(2, orderedSecond.Length);
+            Assert.NotEqual(orderedSecond[0].OperationId, orderedSecond[1].OperationId);
+            Assert.True(orderedSecond[1].OccurredUtc - orderedSecond[0].OccurredUtc >=
+                TimeSpan.FromSeconds(5));
+            using (Process activation = StartPreview(relightExecutable, directory))
+            {
+                await activation.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+                Assert.Equal(0, activation.ExitCode);
+            }
+            await WaitUntilAsync(() =>
+            {
+                preview.Refresh();
+                return preview.MainWindowHandle != nint.Zero;
+            }, TimeSpan.FromSeconds(10));
+            await WaitUntilAsync(() =>
+            {
+                try
+                {
+                    string[] identity = File.ReadAllText(secondReady).Split('|');
+                    int pid = int.Parse(identity[0], CultureInfo.InvariantCulture);
+                    long started = DateTimeOffset.Parse(identity[1], CultureInfo.InvariantCulture)
+                        .UtcTicks;
+                    return IsSameTargetAlive(pid, started, secondTarget);
+                }
+                catch (Exception error) when (error is IOException or FormatException or
+                    IndexOutOfRangeException) { return false; }
+            }, TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            StopStartedProcess(preview);
+            StopStartedProcess(first);
+            StopStartedProcess(second);
+            StopLabeledTestTargets(firstTarget, firstLabel);
+            StopLabeledTestTargets(secondTarget, secondLabel);
+            DeleteTemporaryDirectory(directory);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsDesktop")]
     public async Task Preview_crash_leaves_disposable_target_running_and_charged_budget_intact()
     {
         string directory = Path.Combine(Path.GetTempPath(),
@@ -1026,6 +1174,23 @@ public sealed class RecoveryWpfPreviewProcessTests
         start.ArgumentList.Add("--tray");
         return Process.Start(start) ??
             throw new InvalidOperationException("WPF preview did not start.");
+    }
+
+    private static string CopyTestTarget(string sourceExecutable, string directory)
+    {
+        Directory.CreateDirectory(directory);
+        foreach (string source in Directory.GetFiles(Path.GetDirectoryName(sourceExecutable)!))
+            File.Copy(source, Path.Combine(directory, Path.GetFileName(source)));
+        return Path.Combine(directory, Path.GetFileName(sourceExecutable));
+    }
+
+    private static Process StartDisposableTarget(string executable, string label, string ready)
+    {
+        var start = new ProcessStartInfo(executable) { UseShellExecute = false };
+        foreach (string argument in new[] { "--label", label, "--ready-file", ready, "--hidden" })
+            start.ArgumentList.Add(argument);
+        return Process.Start(start) ??
+            throw new InvalidOperationException("Disposable test target did not start.");
     }
 
     private static string FindBuiltExecutable(string project, string file)
