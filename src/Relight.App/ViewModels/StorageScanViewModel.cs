@@ -11,13 +11,14 @@ using Relight.Windows;
 namespace Relight.ViewModels;
 
 internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim scanGate,
-    Func<int>? getEntryLimit = null, TimeProvider? clock = null) : INotifyPropertyChanged
+    Func<int>? getEntryLimit = null, TimeProvider? clock = null, ApplicationDiagnostics? diagnostics = null) : INotifyPropertyChanged
 {
     private readonly StorageScanStore _store = new(dataDirectory);
     private CancellationTokenSource? _cancellation;
     private bool _closed;
     private DateTimeOffset? _lastFinishedUtc;
     private StorageScanSnapshot? _lastSnapshot;
+    private ScanDiagnosticSession? _diagnosticScan;
     private readonly StorageScanEstimator _estimator = new(clock);
     public string Root { get; set; } = DiskSpaceMonitor.SystemDrive;
     public bool IsIdle { get; private set; } = true;
@@ -129,26 +130,36 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
         {
             limit = getEntryLimit?.Invoke() ?? StorageScanSnapshot.DefaultEntryLimit;
             _estimator.Begin(root, limit, _lastSnapshot);
+            _diagnosticScan = diagnostics?.BeginScan(root, limit);
             ActiveEntryLimit = limit; Changed();
             await scanGate.WaitAsync(token);
             acquired = true;
             _estimator.Start();
-            var snapshot = await Task.Run(() => new StorageScanner().Scan(root, token, progress, limit), token);
+            _diagnosticScan?.Stage(DiagnosticScanStage.Traversing);
+            var snapshot = await Task.Run(() =>
+            {
+                var result = new StorageScanner().Scan(root, token, progress, limit, _diagnosticScan);
+                _diagnosticScan?.TraversalCompleted(result);
+                return result;
+            }, token);
             token.ThrowIfCancellationRequested();
             EntriesInspected = snapshot.EntriesVisited;
             _estimator.Observe(EntriesInspected); _estimator.Saving();
             CanCancel = false;
             Status = "Saving scan results…";
+            _diagnosticScan?.Stage(DiagnosticScanStage.Saving);
             Changed();
             // Once committing a completed scan, let the bounded atomic write finish.
             string? persistenceProblem = null;
             StorageScanSnapshot? previous = null;
             try { previous = await Task.Run(() => _store.Save(snapshot)); }
-            catch (Exception error) { persistenceProblem = error.Message; }
+            catch (Exception error) { persistenceProblem = error.Message; _diagnosticScan?.ReadFailure(error); }
             if (_closed) return;
+            _diagnosticScan?.Stage(DiagnosticScanStage.Presenting);
             Present(snapshot);
             EntriesInspected = snapshot.EntriesVisited;
             ScanVersion++;
+            _diagnosticScan?.Stage(DiagnosticScanStage.Comparing);
             Growth = StorageScanComparison.Compare(snapshot, previous)
                 .Select(e => new StorageGrowthRow(e.Path, e.Kind.ToString(), $"+{e.LogicalGrowthBytes / 1_048_576d:N2} MiB")).ToArray();
             BaselineStatus = persistenceProblem is not null
@@ -156,14 +167,17 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
                 : previous is null || !string.Equals(previous.Root, snapshot.Root, StringComparison.OrdinalIgnoreCase)
                     ? "No prior scan for this root. This scan becomes the next baseline."
                     : $"Compared with {previous.FinishedUtc.ToLocalTime():G}. Positive logical-size changes only, for paths retained and fully measured in both scans. Missing paths have unknown growth.";
+            _diagnosticScan?.End(DiagnosticScanStage.Completed, snapshot);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
+            _diagnosticScan?.End(DiagnosticScanStage.Canceled);
             if (!_closed) Status = "Scan canceled. Previously displayed results and saved baseline were retained.";
         }
-        catch (Exception error) { if (!_closed) Status = $"Scan failed: {error.Message}. Previous results were retained."; }
+        catch (Exception error) { _diagnosticScan?.End(DiagnosticScanStage.Failed, error: error); if (!_closed) Status = $"Scan failed: {error.Message}. Previous results were retained."; }
         finally
         {
+            _diagnosticScan?.End(DiagnosticScanStage.Canceled); _diagnosticScan = null;
             if (acquired) scanGate.Release();
             _cancellation.Dispose();
             _cancellation = null;
@@ -174,7 +188,7 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
         }
     }
 
-    public void Cancel() => _cancellation?.Cancel();
+    public void Cancel() { _diagnosticScan?.CancelRequested(); _cancellation?.Cancel(); }
     public void Close() { _closed = true; Cancel(); }
     public void RefreshAge()
     {

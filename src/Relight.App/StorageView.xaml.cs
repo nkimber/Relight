@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Threading;
 using Relight.Core;
 using Relight.ViewModels;
+using Relight.Windows;
 
 namespace Relight;
 
@@ -27,13 +28,13 @@ public partial class StorageView : UserControl
 
     public StorageView(string dataDirectory, SemaphoreSlim gate, Func<DiskSpaceSettings> settings,
         Func<DiskSpaceSettings, Task> save, Action stopAutomatic, Action allowAutomatic,
-        Action<TimeSpan> snooze, Action resume, Func<TimeSpan> remaining)
+        Action<TimeSpan> snooze, Action resume, Func<TimeSpan> remaining, ApplicationDiagnostics? diagnostics = null)
     {
         InitializeComponent();
         _dataDirectory = dataDirectory; _gate = gate; _settings = settings; _save = save;
         _stopAutomatic = stopAutomatic; _allowAutomatic = allowAutomatic;
         _snooze = snooze; _resume = resume; _remaining = remaining;
-        _scan = new(dataDirectory, gate, () => _settings().ScanEntryLimit); UsagePanel.DataContext = _scan;
+        _scan = new(dataDirectory, gate, () => _settings().ScanEntryLimit, diagnostics: diagnostics); UsagePanel.DataContext = _scan;
         _ageTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _ageTimer.Tick += (_, _) => _scan.RefreshAge();
         Loaded += Load;
@@ -50,6 +51,7 @@ public partial class StorageView : UserControl
     }
 
     public void ShowOverview() => Sections.SelectedIndex = 0;
+    private async void OpenDiagnosticLogsClick(object sender, RoutedEventArgs e) => await ((App)Application.Current).OpenDiagnosticLogsAsync();
     private void SectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!_ready || _closed || !ReferenceEquals(e.Source, Sections)) return;

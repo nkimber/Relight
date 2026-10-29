@@ -35,6 +35,7 @@ public partial class MainWindow : Window
         if (e.NewValue is true) ((App)Application.Current).EnsureStorageView();
     }
     public void SetStorageContent(UIElement content) => StorageContent.Content = content;
+    private async void OpenDiagnosticLogsClick(object sender, RoutedEventArgs e) => await ((App)Application.Current).OpenDiagnosticLogsAsync();
 
     private bool _changingStartAtSignIn;
 

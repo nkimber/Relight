@@ -3,7 +3,10 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         AutomationProperties.Name="Storage workspace">
     <DockPanel>
-        <Button DockPanel.Dock="Top" Content="Monitoring settings…" Click="SettingsClick" HorizontalAlignment="Right" Margin="0,0,0,12" />
+        <WrapPanel DockPanel.Dock="Top" HorizontalAlignment="Right" Margin="0,0,0,12">
+            <Button Content="Open diagnostic logs" Click="OpenDiagnosticLogsClick" Margin="0,0,8,0" />
+            <Button Content="Monitoring settings…" Click="SettingsClick" />
+        </WrapPanel>
         <TabControl x:Name="Sections" SelectionChanged="SectionChanged" AutomationProperties.Name="Storage sections">
             <TabItem Header="Overview" x:Name="OverviewTab">
                 <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel Margin="16">

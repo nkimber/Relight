@@ -181,6 +181,18 @@ try {
             foreach ($item in $all) { if ($item.Current.Name -like '+1*MiB') { return $true } }
         } 'rendered growth comparison' | Out-Null
         Write-Output 'PASS: folder scan measures controlled files, persists baseline and renders growth on rescan.'
+        if (-not (Find-Control $storage 'Open diagnostic logs')) { throw 'Diagnostic log button missing.' }
+        Wait-For {
+            $records = @(Get-ChildItem -LiteralPath (Join-Path $root 'Logs/Diagnostics') -Filter 'application-*.jsonl' | ForEach-Object {
+                Get-Content -LiteralPath $_.FullName | ForEach-Object { try { $_ | ConvertFrom-Json } catch { } }
+            })
+            $finished = @($records | Where-Object { $_.Entry.Kind -eq 'ScanFinished' -and $_.Entry.Scan.Measured -eq 2 })
+            $stages = @($records | Where-Object { $_.Entry.Kind -eq 'ScanStage' } | ForEach-Object { $_.Entry.Scan.Stage })
+            $finished.Count -ge 2 -and 'AwaitingUi' -in $stages -and 'Saving' -in $stages -and 'Comparing' -in $stages
+        } 'flushed correlated scan diagnostics' | Out-Null
+        $rawDiagnostics = Get-ChildItem -LiteralPath (Join-Path $root 'Logs/Diagnostics') -Filter 'application-*.jsonl' | Get-Content
+        if ($rawDiagnostics -match [regex]::Escape($fixture)) { throw 'Diagnostic logs expose the scan root.' }
+        Write-Output 'PASS: log-folder control and flushed scan completion/stages/counters; raw scan root omitted.'
         if ($ExerciseScanLimit) {
             $limitInput = (Find-Control $storage 'Scan entry limit').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
             $limitInput.SetValue('0'); Invoke-Button $storage 'Save scan limit'

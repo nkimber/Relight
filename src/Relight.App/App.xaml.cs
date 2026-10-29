@@ -2,6 +2,8 @@ using System;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -20,6 +22,7 @@ public partial class App : Application
 {
     private readonly SemaphoreSlim _storageScanGate = new(1, 1);
     private readonly DiskSpaceMonitor _diskSpaceMonitor = new();
+    private ApplicationDiagnostics? _applicationDiagnostics;
     private DispatcherTimer? _storageTimer;
     private StorageView? _storageView;
     private bool _checkingStorage;
@@ -96,7 +99,7 @@ public partial class App : Application
             _automaticCleanup.Stop, _automaticCleanup.AllowApprovedRules,
             duration => { _diskSpaceMonitor.SnoozeNotifications(duration); _nextStorageCheck = 0; PublishStorageStatus(); },
             () => { _diskSpaceMonitor.ResumeNotifications(); _nextStorageCheck = 0; PublishStorageStatus(); },
-            () => _diskSpaceMonitor.SnoozeRemaining);
+            () => _diskSpaceMonitor.SnoozeRemaining, _applicationDiagnostics);
         _dashboard.SetStorageContent(_storageView);
         PublishStorageStatus();
     }
@@ -146,6 +149,7 @@ public partial class App : Application
         string status = _storageStatus + (remaining > TimeSpan.Zero
             ? $"\nDisk-space notifications snoozed for {Math.Ceiling(remaining.TotalMinutes):N0} more minute(s) in this instance. Monitoring preference is unchanged." : "");
         _viewModel?.UpdateStorageStatus(status);
+        if (_applicationDiagnostics is { } diagnostics) _viewModel?.UpdateDiagnosticsStatus(diagnostics.Status, diagnostics.Degraded);
         if (_viewModel?.IsStorage == true && _storageView is null) EnsureStorageView();
         _storageView?.UpdateStatus(_storageStatus, _viewModel?.AutomaticCleanupStatus ?? "Waiting for cleanup status.");
     }
@@ -200,6 +204,19 @@ public partial class App : Application
                 Shutdown();
                 return;
             }
+
+            var assembly = typeof(App).Assembly;
+            using (var process = System.Diagnostics.Process.GetCurrentProcess())
+                _applicationDiagnostics = new(_sharedSessionPreviewDataDirectory ?? RecoveryApplicationHost.DefaultDataDirectory,
+                    callback => { _ = Dispatcher.BeginInvoke(callback, DispatcherPriority.Background); },
+                    new(assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unknown",
+                        assembly.GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration ?? "unknown",
+                        RuntimeInformation.FrameworkDescription, RuntimeInformation.OSDescription,
+                        RuntimeInformation.ProcessArchitecture.ToString(), Environment.ProcessorCount, process.SessionId)
+                    { ModuleId = assembly.ManifestModule.ModuleVersionId.ToString() });
+            DispatcherUnhandledException += OnDiagnosticDispatcherException;
+            AppDomain.CurrentDomain.UnhandledException += OnDiagnosticDomainException;
+            TaskScheduler.UnobservedTaskException += OnDiagnosticTaskException;
 
             ApplyAccessibilityColors();
             SystemParameters.StaticPropertyChanged += OnSystemParametersChanged;
@@ -274,6 +291,7 @@ public partial class App : Application
         }
         catch (Exception error)
         {
+            _applicationDiagnostics?.RecordException(error, DiagnosticKind.HandledException, terminal: true);
             MessageBox.Show($"Relight could not start.\n\n{error.Message}", "Relight startup problem",
                 MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(1);
@@ -296,6 +314,7 @@ public partial class App : Application
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (Exception error)
         {
+            _applicationDiagnostics?.RecordException(error, DiagnosticKind.HandledException);
             if (!cancellationToken.IsCancellationRequested)
                 await Dispatcher.InvokeAsync(() => SetMonitoringProblem(error.Message));
         }
@@ -825,7 +844,13 @@ public partial class App : Application
             System.Diagnostics.Trace.WriteLine(
                 $"Relight Exit: monitoring cleanup failed ({error.GetType().Name}, HRESULT {error.HResult}); exiting with incomplete cleanup.");
         }
-        finally { Shutdown(exitCode); }
+        finally
+        {
+            if (_applicationDiagnostics is not null)
+                try { await _applicationDiagnostics.DisposeAsync(); }
+                catch (TimeoutException) { System.Diagnostics.Trace.WriteLine("Relight diagnostics did not finish flushing within two seconds."); }
+            Shutdown(exitCode);
+        }
     }
 
     private void OnSystemParametersChanged(object? sender, PropertyChangedEventArgs e)
@@ -899,6 +924,10 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         _exiting = true;
+        DispatcherUnhandledException -= OnDiagnosticDispatcherException;
+        AppDomain.CurrentDomain.UnhandledException -= OnDiagnosticDomainException;
+        TaskScheduler.UnobservedTaskException -= OnDiagnosticTaskException;
+        _applicationDiagnostics?.RequestStop();
         _automaticCleanup?.Dispose();
         _storageTimer?.Stop();
         _storageView?.Close();
@@ -918,5 +947,25 @@ public partial class App : Application
         _tray?.Dispose();
         _instance?.Dispose();
         base.OnExit(e);
+    }
+
+    private void OnDiagnosticDispatcherException(object sender, DispatcherUnhandledExceptionEventArgs e) =>
+        _applicationDiagnostics?.RecordException(e.Exception, terminal: true);
+    private void OnDiagnosticDomainException(object sender, UnhandledExceptionEventArgs e)
+    { if (e.ExceptionObject is Exception error) _applicationDiagnostics?.RecordException(error, terminal: e.IsTerminating); }
+    private void OnDiagnosticTaskException(object? sender, UnobservedTaskExceptionEventArgs e) =>
+        _applicationDiagnostics?.RecordException(e.Exception, DiagnosticKind.TaskException);
+
+    public async Task OpenDiagnosticLogsAsync()
+    {
+        try
+        {
+            string path = _applicationDiagnostics?.DirectoryPath ?? System.IO.Path.Combine(RecoveryApplicationHost.DefaultDataDirectory, "Logs", "Diagnostics");
+            await Task.Run(() => Directory.CreateDirectory(path));
+            var start = new System.Diagnostics.ProcessStartInfo("explorer.exe") { UseShellExecute = true };
+            start.ArgumentList.Add(path); System.Diagnostics.Process.Start(start)?.Dispose();
+        }
+        catch (Exception error)
+        { _applicationDiagnostics?.RecordException(error, DiagnosticKind.HandledException); MessageBox.Show(_dashboard!, error.Message, "Diagnostic logs unavailable"); }
     }
 }

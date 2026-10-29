@@ -54,7 +54,7 @@ public sealed class RecoveryWpfPreviewProcessTests
                 }
                 primary.Dispose();
             }
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            DeleteTemporaryDirectory(directory);
         }
     }
 
@@ -98,7 +98,7 @@ public sealed class RecoveryWpfPreviewProcessTests
                 }
                 preview.Dispose();
             }
-            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+            DeleteTemporaryDirectory(root);
         }
     }
 
@@ -1121,10 +1121,16 @@ public sealed class RecoveryWpfPreviewProcessTests
     private static void DeleteTemporaryDirectory(string directory)
     {
         string fullPath = Path.GetFullPath(directory);
-        string temporaryRoot = Path.GetFullPath(Path.GetTempPath());
+        string temporaryRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetTempPath())) + Path.DirectorySeparatorChar;
         if (!fullPath.StartsWith(temporaryRoot, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Test cleanup path escaped the temporary directory.");
-        if (Directory.Exists(fullPath)) Directory.Delete(fullPath, recursive: true);
+        // Process exit can briefly precede release by filesystem/filter drivers.
+        // Retry only this verified disposable tree; persistent sharing failures still fail.
+        for (int attempt = 0; ; attempt++)
+        {
+            try { if (Directory.Exists(fullPath)) Directory.Delete(fullPath, recursive: true); return; }
+            catch (IOException) when (attempt < 20) { Thread.Sleep(100); }
+        }
     }
 
     private static bool IsSameTargetAlive(int pid, long startedTicks, string executable)

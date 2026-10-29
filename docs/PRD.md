@@ -304,6 +304,8 @@ Global settings include startup, notification preferences, retention, theme and 
 
 **LOG-07:** Launch errors must distinguish invalid configuration, missing target, activation failure, permission failure, timeout and early exit. Preserve useful native error codes and actionable remediation text.
 
+**LOG-08:** Default bounded application diagnostics must remain independent of UI responsiveness, correlating scan phases/progress, pending metadata/enumeration, resource pressure and dispatcher delays with process/build identity. Flush recent evidence during operation for forced-termination investigations. Exclude raw scan paths/messages and content; expose diagnostic loss/failures and provide local log-folder access and bounded bundle export. Delayed dispatch and missing shutdown markers must not be labeled proven hangs/crashes. See [diagnostic behavior and limits](application-diagnostics.md).
+
 ## 10. Persistence and data model
 
 Keep policy, live state and event history separate. Proposed storage is versioned JSON for policy and atomic state snapshots, with JSON Lines event files. An indexed history store can be introduced if profiling requires it.
@@ -579,5 +581,6 @@ These IDs extend, rather than replace, AT-01–AT-30.
 | DSAT-22 | Configurable traversal budget and prominent stops | Saved budgets validate/round-trip and control traversal beyond the former cap; actual budget persists with legacy defaults; pinned warning, acknowledgement and partial headings appear at a stop; saved partial coverage remains visible until replaced by a rescan. |
 | DSAT-23 | Active scan replaces old presentation | Waiting/traversing/saving show current progress and cancellation instead of old results/warnings; completion shows new results, cancellation/failure restore labeled prior evidence, and loading saved results is not presented as an active scan. |
 | DSAT-24 | Prior workload and estimated remaining time | Same-root persisted counts feed an approximate observed-work ETA; directories are counted correctly; queue/wall-clock changes cannot inflate or accelerate timing; partial/different-root, warmup, stalled, surpassed-reference and saving phases remain explicit; Cancel stays visible. |
+| DSAT-25 | Scan failure investigation | Correlated phase/counter/resource and dispatcher evidence is bounded, flushed and retained after disposable forced termination; raw paths/messages stay out of diagnostics/export; failures are visible. Original full-drive freeze and endurance acceptance remain separate. |
 
 See [storage checkpoint](storage-checkpoint.md) for actual evidence and remaining acceptance.

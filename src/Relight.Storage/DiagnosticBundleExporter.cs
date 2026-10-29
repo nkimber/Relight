@@ -53,6 +53,10 @@ public sealed class DiagnosticBundleExporter(string dataDirectory)
                         history = await new OperationalEventHistoryReader(_dataDirectory)
                             .ExportRedactedJsonLinesAsync(entry, cancellationToken)
                             .ConfigureAwait(false);
+                    ApplicationDiagnosticExport applicationDiagnostics;
+                    await using (Stream entry = archive.CreateEntry("application-diagnostics.jsonl", CompressionLevel.Fastest).Open())
+                        applicationDiagnostics = await new ApplicationDiagnosticReader(_dataDirectory)
+                            .ExportAsync(entry, cancellationToken).ConfigureAwait(false);
                     object redactedConfiguration = configuration is null
                         ? new { Available = false }
                         : new
@@ -89,6 +93,7 @@ public sealed class DiagnosticBundleExporter(string dataDirectory)
                             logging.Journal.DroppedCount
                         },
                         Targets = targets?.ToArray(),
+                        ApplicationDiagnostics = applicationDiagnostics,
                         Events = new
                         {
                             Exported = history.ExportedEvents,

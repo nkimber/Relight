@@ -43,6 +43,7 @@ Ordinary launch now uses per-logon-session live state and a shared durable attem
 - Close the dashboard or press **Ctrl+W** to hide it and keep Relight resident.
 - Double-click the flame in the notification area, choose **Open dashboard** from its menu, or launch Relight again to return to the existing instance. Windows may place the icon in its tray overflow.
 - Choose **Exit Relight** or press **Ctrl+Q** to quit. The confirmation defaults to Cancel. Monitoring stops and other applications stay running. Cleanup has a ten-second deadline so a stuck adapter cannot keep the tray process resident; incomplete cleanup returns exit code 1 and writes a diagnostic to the debugger/Trace output.
+- For an unresponsive scan, retain `%LOCALAPPDATA%\Relight\Logs\Diagnostics` or export a diagnostic bundle after restarting. **Storage → Open diagnostic logs** opens the folder. See [application diagnostics](docs/application-diagnostics.md) for recorded scan/resource/dispatcher evidence and limitations.
 - The Applications page shows configured profiles and monitoring status. Unimplemented controls are disabled and labeled. First run creates empty local configuration; profile state is stored separately under `%LOCALAPPDATA%\Relight\State`, and operational events under `Logs`. It does not register sign-in startup.
 
 ## Verify
