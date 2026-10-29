@@ -34,7 +34,7 @@ public partial class StorageView : UserControl
         _stopAutomatic = stopAutomatic; _allowAutomatic = allowAutomatic;
         _snooze = snooze; _resume = resume; _remaining = remaining;
         _scan = new(dataDirectory, gate, () => _settings().ScanEntryLimit); UsagePanel.DataContext = _scan;
-        _ageTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+        _ageTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _ageTimer.Tick += (_, _) => _scan.RefreshAge();
         Loaded += Load;
         Unloaded += (_, _) => _ageTimer.Stop();

@@ -214,6 +214,18 @@ try {
                 if (-not (Find-Control $storage 'Cancel scan').Current.IsEnabled) {throw 'Active scan cancellation unavailable.'}
                 Wait-For { $next=Read-Json $baselinePath; $next.Root -eq $progressFixture -and $next.CoverageComplete } 'active scan completion' | Out-Null
                 Wait-For { $control=Find-Control $storage 'Scan folder'; $control -and $control.Current.IsEnabled } 'idle scan controls restored' | Out-Null
+                Invoke-Button $storage 'Scan folder'
+                Wait-For { $active=Find-Control $storage 'Scan in progress'; $active -and -not $active.Current.IsOffscreen } 'repeat scan progress with prior counts' | Out-Null
+                $priorCondition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'PriorScanWork')
+                $priorText = $storage.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $priorCondition).Current.Name
+                if ($priorText -notlike '*file paths measured*' -or $priorText -notlike '*Complete prior coverage*') {throw 'Previous workload missing from active scan.'}
+                $etaCondition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'ScanWorkEstimate')
+                $etaText = $storage.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $etaCondition).Current.Name
+                if ($etaText -notlike '*remaining*') {throw 'Remaining-work estimate missing.'}
+                $cancel = Find-Control $storage 'Cancel scan'
+                if ($cancel.Current.IsOffscreen -or -not $cancel.Current.IsEnabled) {throw 'Cancel scrolled out of the active header.'}
+                Wait-For { $control=Find-Control $storage 'Scan folder'; $control -and $control.Current.IsEnabled } 'repeat scan completion' | Out-Null
+                Write-Output 'PASS: same-root rescan shows retained file/entry counts and estimated remaining-work text; Cancel stays visible.'
                 $scanInput = Find-Control $storage 'Folder to analyze'
                 $scanInput.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($fixture)
                 Write-Output 'PASS: active root/progress/cancel view replaces prior warning and result tables; completion restores scan content.'

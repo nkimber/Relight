@@ -11,12 +11,14 @@ using Relight.Windows;
 namespace Relight.ViewModels;
 
 internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim scanGate,
-    Func<int>? getEntryLimit = null) : INotifyPropertyChanged
+    Func<int>? getEntryLimit = null, TimeProvider? clock = null) : INotifyPropertyChanged
 {
     private readonly StorageScanStore _store = new(dataDirectory);
     private CancellationTokenSource? _cancellation;
     private bool _closed;
     private DateTimeOffset? _lastFinishedUtc;
+    private StorageScanSnapshot? _lastSnapshot;
+    private readonly StorageScanEstimator _estimator = new(clock);
     public string Root { get; set; } = DiskSpaceMonitor.SystemDrive;
     public bool IsIdle { get; private set; } = true;
     public bool IsScanning { get; private set; }
@@ -26,6 +28,43 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
     public int ActiveEntryLimit { get; private set; }
     public int EntriesInspected { get; private set; }
     public string ProgressSummary => $"{EntriesInspected:N0} entries inspected · scan limit {ActiveEntryLimit:N0}";
+    public string PriorWorkSummary
+    {
+        get
+        {
+            var estimate = _estimator.Estimate();
+            return estimate.PriorEntries is { } entries
+                ? $"Prior scan {estimate.PriorFinishedUtc!.Value.ToLocalTime():G}: {estimate.PriorFiles:N0} file paths measured; {entries:N0} files/folders inspected. " +
+                  (estimate.PriorComplete ? "Complete prior coverage; current contents may differ." :
+                   estimate.PriorTraversalFinished ? "Prior traversal finished with coverage gaps; estimates cover observed work only." :
+                   "PARTIAL prior coverage — observed counts are a lower bound, not a total.")
+                : "No comparable prior count for this root in the latest scan. Remaining work is unknown.";
+        }
+    }
+    public string WorkEstimateText
+    {
+        get
+        {
+            var estimate = _estimator.Estimate();
+            string target = estimate.ToEntryLimit ? "to entry limit (not full coverage)" : "based on prior observed work";
+            string elapsed = $"Elapsed: {(int)estimate.Elapsed.TotalHours}:{estimate.Elapsed.Minutes:00}:{estimate.Elapsed.Seconds:00}. ";
+            return estimate.State switch
+            {
+                StorageEstimateState.Waiting => "Waiting for the scan worker; scan timing has not started.",
+                StorageEstimateState.Saving => elapsed + "Traversal finished; saving results. Save time remaining is unknown.",
+                StorageEstimateState.NoReference => elapsed + "Remaining work and time: unknown until a comparable completed traversal is available.",
+                StorageEstimateState.PartialReference => elapsed + "Remaining work and time: unknown — the prior scan was incomplete.",
+                StorageEstimateState.ReferenceExceeded => elapsed + (estimate.ToEntryLimit
+                    ? "Scan budget target reached; finalizing traversal. Remaining time is unknown."
+                    : "Previous work estimate reached or exceeded; still scanning. Remaining work and time are unknown."),
+                StorageEstimateState.Stalled => elapsed + $"Approximately {estimate.RemainingEntries:N0} entries remaining {target}; time remaining unknown — no recent progress.",
+                StorageEstimateState.Measuring => elapsed + $"Approximately {estimate.RemainingEntries:N0} entries remaining {target}; estimating scan speed…",
+                StorageEstimateState.Estimated => elapsed + $"Approximately {estimate.RemainingEntries:N0} entries remaining {target}; estimated time remaining: {Math.Ceiling(estimate.RemainingTime!.Value.TotalSeconds):N0} seconds. " +
+                    "Approximate; file counts and scan speed can change.",
+                _ => elapsed + "Remaining time is unknown."
+            };
+        }
+    }
     public string ResultsLabel { get; private set; } = "No scan results yet.";
     public bool CanCancel { get; private set; }
     public bool HasCoverageWarning { get; private set; }
@@ -81,6 +120,7 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
         {
             if (_closed || !CanCancel || _cancellation?.Token != token || token.IsCancellationRequested) return;
             EntriesInspected = Math.Max(EntriesInspected, count);
+            _estimator.Observe(EntriesInspected);
             Status = $"Scanning {root} · {count:N0} entries inspected…";
             Changed();
         });
@@ -88,11 +128,15 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
         try
         {
             limit = getEntryLimit?.Invoke() ?? StorageScanSnapshot.DefaultEntryLimit;
+            _estimator.Begin(root, limit, _lastSnapshot);
             ActiveEntryLimit = limit; Changed();
             await scanGate.WaitAsync(token);
             acquired = true;
+            _estimator.Start();
             var snapshot = await Task.Run(() => new StorageScanner().Scan(root, token, progress, limit), token);
             token.ThrowIfCancellationRequested();
+            EntriesInspected = snapshot.EntriesVisited;
+            _estimator.Observe(EntriesInspected); _estimator.Saving();
             CanCancel = false;
             Status = "Saving scan results…";
             Changed();
@@ -135,11 +179,13 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
     public void RefreshAge()
     {
         if (!_closed) PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ScanAge)));
+        if (!_closed && IsScanning) PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(WorkEstimateText)));
     }
 
     private void Present(StorageScanSnapshot snapshot)
     {
         _lastFinishedUtc = snapshot.FinishedUtc;
+        _lastSnapshot = snapshot;
         ResultsLabel = $"Results from {snapshot.Root}";
         HasCoverageWarning = !snapshot.CoverageComplete;
         EntryLimitReached = snapshot.EntryLimitReached;
