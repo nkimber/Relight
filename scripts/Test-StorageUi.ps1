@@ -31,6 +31,7 @@ function Read-Json([string]$Path) {
     try { Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json }
     catch [IO.IOException] { return $null }
     catch [UnauthorizedAccessException] { return $null }
+    catch [System.Management.Automation.ItemNotFoundException] { return $null }
 }
 function Find-Control($Parent, [string]$Name) {
     $condition = [System.Windows.Automation.PropertyCondition]::new(
@@ -67,14 +68,31 @@ try {
         }
     } 'dashboard'
     Wait-For { Test-Path -LiteralPath (Join-Path $root 'configuration.json') } 'configuration' | Out-Null
-    $settings = Wait-For {
-        $candidate = Find-Control $dashboard 'Settings'
-        if ($null -eq $candidate) { $candidate = Find-Control $dashboard '_Settings' }
+    $navigation = Wait-For {
+        $candidate = Find-Control $dashboard 'Storage'
+        if ($null -eq $candidate) { $candidate = Find-Control $dashboard '_Storage' }
         $candidate
-    } 'settings navigation'
-    $settings.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
-    Invoke-Button $dashboard 'Disk space monitoring…'
-    $storage = Wait-For { Find-Control $dashboard 'Relight — Storage' } 'storage window'
+    } 'top-level Storage navigation'
+    $navigation.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+    $storage = Wait-For { Find-Control $dashboard 'Storage workspace' } 'embedded storage workspace'
+    function Select-StorageSection([string]$Name) {
+        $condition = [System.Windows.Automation.AndCondition]::new(
+            [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, $Name),
+            [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::TabItem))
+        $section = (Find-Control $storage 'Storage sections').FindFirst([System.Windows.Automation.TreeScope]::Children, $condition)
+        $section.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+    }
+    foreach ($section in @('Space usage','Cleanup rules','Cleanup history','Overview')) { Select-StorageSection $section }
+    foreach ($name in @('latest-scan.json','cleanup-rules.json','cleanup-last-run.json','cleanup-run-details.json')) {
+        if (Test-Path (Join-Path $root "Storage/$name")) {throw "Navigation created operational data: $name"}
+    }
+    $settingsNavigation = Find-Control $dashboard 'Settings'
+    if ($null -eq $settingsNavigation) {$settingsNavigation = Find-Control $dashboard '_Settings'}
+    $settingsNavigation.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+    if (Find-Control $dashboard 'Disk space monitoring…') {throw 'Old storage entry remains under general Settings.'}
+    $navigation.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+    Write-Output 'PASS: top-level Storage and four embedded sections; navigation performs no scan/cleanup or authority writes.'
     $readings = Wait-For {
         $all = $storage.FindAll([System.Windows.Automation.TreeScope]::Descendants,
             [System.Windows.Automation.Condition]::TrueCondition)
@@ -82,32 +100,35 @@ try {
             if ($item.Current.Name -like '*GiB*checked*') { return $item.Current.Name }
         }
     } 'native space reading'
-    $interval = Find-Control $storage 'Storage check interval seconds'
+    Invoke-Button $storage 'Monitoring settings…'
+    $preferences = Wait-For { Find-Control $dashboard 'Relight — Monitoring settings' } 'monitoring settings dialog'
+    $interval = Find-Control $preferences 'Storage check interval seconds'
     $value = $interval.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
     $value.SetValue('0')
-    Invoke-Button $storage 'Save storage settings'
+    Invoke-Button $preferences 'Save storage settings'
     Wait-For {
-        $all = $storage.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+        $all = $preferences.FindAll([System.Windows.Automation.TreeScope]::Descendants,
             [System.Windows.Automation.Condition]::TrueCondition)
         foreach ($item in $all) { if ($item.Current.Name -like 'Settings were not saved:*') { return $true } }
     } 'invalid interval rejection' | Out-Null
     $value.SetValue('10')
-    $notifications = Find-Control $storage 'Notify when a drive enters warning or critical space'
+    $notifications = Find-Control $preferences 'Notify when a drive enters warning or critical space'
     $notifications.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle()
-    Invoke-Button $storage 'Save storage settings'
+    Invoke-Button $preferences 'Save storage settings'
     Wait-For {
         $config = Read-Json (Join-Path $root 'configuration.json')
         $config.configuration.settings.storage.checkIntervalSeconds -eq 10 -and
             $config.configuration.settings.storage.notificationsEnabled -eq $false
     } 'saved storage preferences' | Out-Null
     if ($ExerciseStorageNotifications) {
-        $reminder = (Find-Control $storage 'Storage reminder interval minutes').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        $reminder = (Find-Control $preferences 'Storage reminder interval minutes').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
         $reminder.SetValue('14')
-        Invoke-Button $storage 'Save storage settings'
-        Wait-For { Find-Control $storage 'Settings were not saved: Reminder interval must be 0 (off), or 15–10080 minutes.' } 'invalid reminder rejection' | Out-Null
+        Invoke-Button $preferences 'Save storage settings'
+        Wait-For { Find-Control $preferences 'Settings were not saved: Reminder interval must be 0 (off), or 15–10080 minutes.' } 'invalid reminder rejection' | Out-Null
         $reminder.SetValue('120')
-        Invoke-Button $storage 'Save storage settings'
+        Invoke-Button $preferences 'Save storage settings'
         Wait-For { (Read-Json (Join-Path $root 'configuration.json')).configuration.settings.storage.reminderIntervalMinutes -eq 120 } 'persisted reminder interval' | Out-Null
+        $preferences.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
         $snooze = (Find-Control $storage 'Storage notification snooze minutes').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
         $snooze.SetValue('4')
         Invoke-Button $storage 'Snooze disk-space notifications'
@@ -118,8 +139,11 @@ try {
             $all = $storage.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
             foreach ($item in $all) { if ($item.Current.Name -like 'Disk-space notifications snoozed for*') {return $true} }
         } 'active snooze status' | Out-Null
+    } else {
+        $preferences.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
     }
     if ($ExerciseScan) {
+        Select-StorageSection 'Space usage'
         $fixture = Join-Path $root 'scan-fixture'
         [IO.Directory]::CreateDirectory($fixture) | Out-Null
         $large = Join-Path $fixture 'large.bin'
@@ -159,8 +183,8 @@ try {
         $oldLog = Join-Path $cleanupFixture 'disposable.log'
         [IO.File]::WriteAllText($oldLog, 'disposable UI test')
         [IO.File]::SetLastWriteTimeUtc($oldLog, [DateTime]::UtcNow.AddDays(-30))
-        Invoke-Button $storage 'Reviewed cleanup…'
-        $cleanup = Wait-For { Find-Control $storage 'Relight — Reviewed cleanup' } 'reviewed cleanup window'
+        Select-StorageSection 'Cleanup rules'
+        $cleanup = $storage
         foreach ($field in @(@('Cleanup rule name', 'Disposable reviewed UI rule'), @('Cleanup folder', $cleanupFixture), @('Cleanup retain newest', '0'))) {
             $edit = Wait-For { $control = Find-Control $cleanup $field[0]; if ($control.Current.IsEnabled) { $control } } 'cleanup editor ready'
             $edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($field[1])
@@ -186,11 +210,11 @@ try {
                 (Find-Control $cleanup $field[0]).GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($field[1])
             }
             Invoke-Button $cleanup 'Approve automatic cleanup…'
-            $approval = Wait-For { Find-Control $cleanup 'Approve automatic permanent cleanup?' } 'automatic approval confirmation'
+            $approval = Wait-For { Find-Control $dashboard 'Approve automatic permanent cleanup?' } 'automatic approval confirmation'
             Choose-Native $approval 'Cancel'
             if ((Read-Json $rulesPath).AutomaticEnabled) { throw 'Cancel enabled automatic cleanup.' }
             Invoke-Button $cleanup 'Approve automatic cleanup…'
-            $approval = Wait-For { Find-Control $cleanup 'Approve automatic permanent cleanup?' } 'second automatic approval confirmation'
+            $approval = Wait-For { Find-Control $dashboard 'Approve automatic permanent cleanup?' } 'second automatic approval confirmation'
             Choose-Native $approval 'OK'
             Wait-For { $book = Read-Json $rulesPath; $book.AutomaticEnabled -and $book.AutomaticApprovals.Count -eq 1 } 'saved explicit approval' | Out-Null
             if (-not (Test-Path -LiteralPath $oldLog)) { throw 'Approving caused an immediate deletion.' }
@@ -199,7 +223,7 @@ try {
             Wait-For { $book = Read-Json $rulesPath; $null -ne $book -and -not $book.AutomaticEnabled } 'persisted disable' | Out-Null
             Write-Output 'PASS: Cancel preserves off; explicit approval persists; no immediate deletion; disable-all persists.'
         }
-        $cleanup.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
+        Select-StorageSection 'Overview'
         Write-Output 'PASS: reviewed rule save and preview preserve disposable files; preview selections default off.'
     }
     if ($ExerciseCleanupHistory) {
@@ -225,33 +249,39 @@ try {
         [IO.File]::WriteAllText((Join-Path $storageData 'cleanup-last-run.json'), ($pending | ConvertTo-Json -Depth 10))
         [IO.File]::WriteAllText((Join-Path $storageData 'cleanup-history.json'), (ConvertTo-Json -InputObject $summaries -Depth 10))
         [IO.File]::WriteAllText((Join-Path $storageData 'cleanup-run-details.json'), (@{SchemaVersion=1;Runs=@($reviewed)} | ConvertTo-Json -Depth 10))
-        Invoke-Button $storage 'Cleanup history…'
-        $historyWindow = Wait-For { Find-Control $storage 'Relight — Cleanup history' } 'cleanup history window'
+        Select-StorageSection 'Cleanup history'
+        $historyWindow = $storage
         $details = Wait-For { Find-Control $historyWindow 'Cleanup selected run details' } 'history detail text'
         function Read-Details { $details.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value }
         Wait-For { (Read-Details) -like '*in progress or interrupted*' } 'pending outcome explanation' | Out-Null
         $grid = Find-Control $historyWindow 'Cleanup history runs'
         $rowCondition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty,
             [System.Windows.Automation.ControlType]::DataItem)
-        $rows = $grid.FindAll([System.Windows.Automation.TreeScope]::Children, $rowCondition)
-        if ($rows.Count -ne 3) { throw "Expected 3 synthetic history rows, got $($rows.Count)" }
-        $rows[1].GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+        $gridPattern = $grid.GetCurrentPattern([System.Windows.Automation.GridPattern]::Pattern)
+        if ($gridPattern.Current.RowCount -ne 3) { throw "Expected 3 synthetic history rows, got $($gridPattern.Current.RowCount)" }
+        function Select-HistoryRow([int]$Index) {
+            $item = $gridPattern.GetItem($Index, 0)
+            while ($item.Current.ControlType -ne [System.Windows.Automation.ControlType]::DataItem) {
+                $item = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($item)
+            }
+            $item.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+        }
+        Select-HistoryRow 1
         Wait-For { (Read-Details) -like '*Observed change: -20 bytes*' } 'older reviewed run details' | Out-Null
         $outcomes = Find-Control $historyWindow 'Cleanup selected file outcomes'
         Wait-For { Find-Control $outcomes 'File changed after preview' } 'per-file skip reason' | Out-Null
-        $rows[2].GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+        Select-HistoryRow 2
         Wait-For { (Read-Details) -like '*file details were not retained*' } 'legacy detail limitation' | Out-Null
         $problems = Find-Control $historyWindow 'Problems, skips or unfinished only'
         $problems.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle()
-        Wait-For { $grid.FindAll([System.Windows.Automation.TreeScope]::Children, $rowCondition).Count -eq 2 } 'problem history filter' | Out-Null
+        Wait-For { $gridPattern.Current.RowCount -eq 2 } 'problem history filter' | Out-Null
         $problems.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle()
         Invoke-Button $historyWindow 'Refresh history'
         Wait-For { (Find-Control $historyWindow 'Refresh history').Current.IsEnabled } 'history refresh complete' | Out-Null
-        $historyWindow.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
+        Select-StorageSection 'Overview'
         if (-not $ExerciseCleanup -and (Test-Path (Join-Path $storageData 'cleanup-rules.json'))) { throw 'Read-only history created cleanup authority.' }
         Write-Output 'PASS: native cleanup history, older run selection, pending/legacy explanations, skip details and refresh; no cleanup dispatched.'
     }
-    $storage.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
     $dashboard.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
     $primary.Refresh()
     if ($primary.HasExited) { throw 'Closing dashboard stopped monitoring.' }
@@ -259,23 +289,27 @@ try {
     try {
         if (-not $secondary.WaitForExit(10000) -or $secondary.ExitCode -ne 0) { throw 'Reopen failed.' }
     } finally { $secondary.Dispose() }
-    Invoke-Button $dashboard 'Disk space monitoring…'
-    $storage = Wait-For { Find-Control $dashboard 'Relight — Storage' } 'reopened storage window'
-    $interval = Find-Control $storage 'Storage check interval seconds'
+    $navigation.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+    Select-StorageSection 'Overview'
+    Invoke-Button $storage 'Monitoring settings…'
+    $preferences = Wait-For { Find-Control $dashboard 'Relight — Monitoring settings' } 'reopened monitoring settings'
+    $interval = Find-Control $preferences 'Storage check interval seconds'
     if ($interval.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value -ne '10') {
         throw 'Saved interval was not restored.'
     }
     if ($ExerciseStorageNotifications) {
-        $reminder = (Find-Control $storage 'Storage reminder interval minutes').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        $reminder = (Find-Control $preferences 'Storage reminder interval minutes').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
         if ($reminder.Current.Value -ne '120') { throw 'Reminder interval was not restored.' }
         $resume = Find-Control $storage 'Resume disk-space notifications'
         Wait-For { $resume.Current.IsEnabled } 'snooze survives storage/dashboard closure' | Out-Null
         Invoke-Button $storage 'Resume disk-space notifications'
         Wait-For { -not $resume.Current.IsEnabled } 'notification resume' | Out-Null
-        if (Test-Path (Join-Path $root 'Storage/cleanup-rules.json')) {throw 'Notification settings created cleanup authority.'}
+        if (-not $ExerciseCleanup -and (Test-Path (Join-Path $root 'Storage/cleanup-rules.json'))) {throw 'Notification settings created cleanup authority.'}
         Write-Output 'PASS: reminder validation/persistence; snooze validation, survives window closure, and resume; no cleanup authority.'
     }
+    $preferences.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
     if ($ExerciseScan) {
+        Select-StorageSection 'Space usage'
         Wait-For {
             $input = Find-Control $storage 'Folder to analyze'
             $input.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value -eq $fixture

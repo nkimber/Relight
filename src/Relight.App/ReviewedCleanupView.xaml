@@ -1,12 +1,10 @@
-<Window x:Class="Relight.ReviewedCleanupWindow"
+<UserControl x:Class="Relight.ReviewedCleanupView"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Relight — Reviewed cleanup" Width="980" Height="780" MinWidth="780" MinHeight="600"
         Background="{DynamicResource CanvasBrush}" Foreground="{DynamicResource TextBrush}">
     <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="24">
             <TextBlock Text="Reviewed cleanup" FontSize="24" FontWeight="SemiBold" />
-            <Button Content="Cleanup history…" Click="CleanupHistoryClick" HorizontalAlignment="Left" Margin="0,8,0,0" />
             <TextBlock Text="{Binding AutomaticStatus}"
                        TextWrapping="Wrap" Margin="0,8,0,16" />
             <WrapPanel IsEnabled="{Binding IsIdle}">
@@ -46,6 +44,7 @@
             <WrapPanel>
                 <Button Content="Save reviewed rule" Click="SaveClick" IsEnabled="{Binding IsIdle}" Margin="0,0,8,0" />
                 <Button Content="Preview cleanup" Click="PreviewClick" IsEnabled="{Binding IsIdle}" Margin="0,0,8,0" />
+                <Button Content="Cancel current work" Click="CancelClick" IsEnabled="{Binding CanCancel}" Margin="0,0,8,0" />
                 <Button Content="Open Windows Storage settings" Click="WindowsStorageClick" />
             </WrapPanel>
             <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Margin="0,12,0,12" />
@@ -70,6 +69,8 @@
                 </DataGrid.Columns>
             </DataGrid>
             <Button Content="Permanently delete selected…" Click="DeleteClick" IsEnabled="{Binding CanDelete}" HorizontalAlignment="Left" Margin="0,12,0,12" />
+            <TextBlock Text="Confirmed work continues across navigation and hiding the dashboard. Cancel current work or exit Relight to stop between operations; already dispatched deletion cannot be undone."
+                       TextWrapping="Wrap" Margin="0,0,0,12" />
             <TextBlock Text="Exclusions and coverage issues (first 100)" FontSize="18" />
             <DataGrid ItemsSource="{Binding Issues}" AutoGenerateColumns="True" IsReadOnly="True" CanUserAddRows="False" Height="130" Margin="0,8,0,16" />
             <TextBlock Text="Latest run outcomes" FontSize="18" />
@@ -80,4 +81,4 @@
                        TextWrapping="Wrap" Margin="0,12,0,0" />
         </StackPanel>
     </ScrollViewer>
-</Window>
+</UserControl>

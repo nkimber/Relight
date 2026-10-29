@@ -4,16 +4,16 @@ using Relight.ViewModels;
 
 namespace Relight;
 
-public partial class CleanupHistoryWindow : Window
+public partial class CleanupHistoryView : UserControl
 {
     private readonly CleanupHistoryViewModel _model;
-    public CleanupHistoryWindow(string dataDirectory)
+    public CleanupHistoryView(string dataDirectory)
     {
         InitializeComponent();
         _model = new(dataDirectory); DataContext = _model;
         Loaded += async (_, _) => await _model.RefreshAsync();
-        Closed += (_, _) => _model.Close();
     }
+    public void Close() => _model.Close();
     private async void RefreshClick(object sender, RoutedEventArgs e) => await _model.RefreshAsync();
     private async void RunSelected(object sender, SelectionChangedEventArgs e)
     {

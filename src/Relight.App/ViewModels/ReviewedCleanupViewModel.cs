@@ -18,7 +18,7 @@ internal sealed class ReviewedCleanupViewModel : INotifyPropertyChanged
     private readonly SemaphoreSlim _gate;
     private readonly Action _stopAutomatic;
     private readonly Action _allowAutomatic;
-    private readonly CancellationTokenSource _cancel = new();
+    private CancellationTokenSource _cancel = new();
     private CleanupRuleBook _book = new(1, 0, []);
     private CleanupPreview? _preview;
     private bool _closed;
@@ -26,6 +26,7 @@ internal sealed class ReviewedCleanupViewModel : INotifyPropertyChanged
     public IReadOnlyList<CleanupRule> Rules => _book.Rules;
     public CleanupRule? SelectedRule { get; set; }
     public bool IsIdle { get; private set; }
+    public bool CanCancel => !IsIdle && !_closed;
     public bool CanDelete => IsIdle && _preview is { Complete: true } && Candidates.Count > 0;
     public bool CanApproveAutomatic => IsIdle && _preview is { Complete: true };
     public string AutomaticIntervalHours { get; set; } = "24";
@@ -67,7 +68,7 @@ internal sealed class ReviewedCleanupViewModel : INotifyPropertyChanged
                   $"{last.Problem}";
         }
         catch (Exception error) { Status = $"Cleanup data unavailable: {error.Message}. Original files were preserved."; }
-        finally { IsIdle = true; if (_closed) _cancel.Dispose(); else Changed(); }
+        finally { FinishWork(); }
     }
 
     public void NewRule()
@@ -193,7 +194,15 @@ internal sealed class ReviewedCleanupViewModel : INotifyPropertyChanged
             try { Outcomes = (await Task.Run(() => _store.LoadLastRun()))?.Items ?? Outcomes; }
             catch (Exception evidence) { Status += $" Run evidence unavailable: {evidence.Message}"; }
         }
-        finally { IsIdle = true; if (_closed) _cancel.Dispose(); else Changed(); }
+        finally { FinishWork(); }
+    }
+    public void Cancel() { if (!_closed && !IsIdle) _cancel.Cancel(); }
+    private void FinishWork()
+    {
+        IsIdle = true;
+        if (_closed) { _cancel.Dispose(); return; }
+        if (_cancel.IsCancellationRequested) { _cancel.Dispose(); _cancel = new(); }
+        Changed();
     }
     public void Close()
     {

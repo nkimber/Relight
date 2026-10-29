@@ -21,7 +21,7 @@ public partial class App : Application
     private readonly SemaphoreSlim _storageScanGate = new(1, 1);
     private readonly DiskSpaceMonitor _diskSpaceMonitor = new();
     private DispatcherTimer? _storageTimer;
-    private StorageWindow? _storageWindow;
+    private StorageView? _storageView;
     private bool _checkingStorage;
     private long _nextStorageCheck;
     private string _storageStatus = "Waiting for the first storage check.";
@@ -53,7 +53,7 @@ public partial class App : Application
             _automaticCleanupProblem = null;
             if (pulse.Run is { } run)
             {
-                try { _tray?.ShowRecoveryNotification("Relight automatic cleanup", pulse.Status, run.Problem is not null); }
+                try { _tray?.ShowRecoveryNotification("Relight automatic cleanup", pulse.Status, run.Problem is not null, ShowStorageOverview); }
                 catch (Exception error) { _viewModel?.UpdateAutomaticCleanupStatus($"{pulse.Status} Notification unavailable: {error.Message}"); }
             }
         }
@@ -64,7 +64,7 @@ public partial class App : Application
             _viewModel?.UpdateAutomaticCleanupStatus(problem);
             if (_automaticCleanupProblem != problem && !_exiting)
             {
-                try { _tray?.ShowRecoveryNotification("Automatic cleanup needs attention", problem, true); }
+                try { _tray?.ShowRecoveryNotification("Automatic cleanup needs attention", problem, true, ShowStorageOverview); }
                 catch (Exception notice) { _viewModel?.UpdateAutomaticCleanupStatus($"{problem} Notification unavailable: {notice.Message}"); }
             }
             _automaticCleanupProblem = problem;
@@ -72,28 +72,33 @@ public partial class App : Application
         finally { _checkingAutomaticCleanup = false; }
     }
 
-    public void ShowStorageWindow()
+    public void ShowStorageOverview()
     {
-        if (_storageWindow is not null) { _storageWindow.Activate(); return; }
+        ShowDashboard(ShellPage.Storage);
+        EnsureStorageView();
+        _storageView?.ShowOverview();
+    }
+
+    public void EnsureStorageView()
+    {
+        if (_storageView is not null || _dashboard is null || _exiting) return;
         var host = Volatile.Read(ref _host);
-        if (host?.Configuration is not { } config)
-        {
-            MessageBox.Show(_dashboard!, "Wait for configuration to load before opening storage settings.", "Storage unavailable");
-            return;
-        }
+        if (host?.Configuration is null) return; // The next resident tick retries after configuration loads.
         _automaticCleanup ??= new(_viewModel?.DataDirectory ?? RecoveryApplicationHost.DefaultDataDirectory);
-        _storageWindow = new StorageWindow(config.Configuration.Settings.Storage, async settings =>
-        {
-            await host.SetDiskSpaceSettingsAsync(settings);
-            _nextStorageCheck = 0;
-        }, _viewModel?.DataDirectory ?? RecoveryApplicationHost.DefaultDataDirectory,
-            _storageScanGate, _automaticCleanup.Stop, _automaticCleanup.AllowApprovedRules,
+        _storageView = new StorageView(_viewModel?.DataDirectory ?? RecoveryApplicationHost.DefaultDataDirectory,
+            _storageScanGate, () => Volatile.Read(ref _host)?.Configuration?.Configuration.Settings.Storage
+                ?? throw new InvalidOperationException("Storage configuration is not available yet."),
+            async settings =>
+            {
+                var current = Volatile.Read(ref _host) ?? throw new InvalidOperationException("Monitoring host is unavailable.");
+                await current.SetDiskSpaceSettingsAsync(settings); _nextStorageCheck = 0;
+            },
+            _automaticCleanup.Stop, _automaticCleanup.AllowApprovedRules,
             duration => { _diskSpaceMonitor.SnoozeNotifications(duration); _nextStorageCheck = 0; PublishStorageStatus(); },
             () => { _diskSpaceMonitor.ResumeNotifications(); _nextStorageCheck = 0; PublishStorageStatus(); },
-            () => _diskSpaceMonitor.SnoozeRemaining) { Owner = _dashboard };
-        _storageWindow.Closed += (_, _) => _storageWindow = null;
+            () => _diskSpaceMonitor.SnoozeRemaining);
+        _dashboard.SetStorageContent(_storageView);
         PublishStorageStatus();
-        _storageWindow.Show();
     }
 
     private async void OnStorageTick(object? sender, EventArgs e)
@@ -116,7 +121,7 @@ public partial class App : Application
                 if (_diskSpaceMonitor.SnoozeRemaining > TimeSpan.Zero ||
                     Volatile.Read(ref _host)?.Configuration?.Configuration.Settings.Storage is not { Enabled: true, NotificationsEnabled: true }) continue;
                 try { _tray?.ShowRecoveryNotification($"Disk space {(reading.IsReminder ? "reminder · " : "")}{reading.Level}: {reading.Drive}",
-                    reading.FreeSpace + ". Open Settings / Disk space monitoring to review.", true); }
+                    reading.FreeSpace + ". Open Storage to review.", true, ShowStorageOverview); }
                 catch (Exception error) { _storageStatus += $"\nStorage notification failed: {error.Message}"; }
             }
         }
@@ -141,7 +146,8 @@ public partial class App : Application
         string status = _storageStatus + (remaining > TimeSpan.Zero
             ? $"\nDisk-space notifications snoozed for {Math.Ceiling(remaining.TotalMinutes):N0} more minute(s) in this instance. Monitoring preference is unchanged." : "");
         _viewModel?.UpdateStorageStatus(status);
-        _storageWindow?.UpdateStatus(status);
+        if (_viewModel?.IsStorage == true && _storageView is null) EnsureStorageView();
+        _storageView?.UpdateStatus(_storageStatus, _viewModel?.AutomaticCleanupStatus ?? "Waiting for cleanup status.");
     }
 
     private SingleInstanceService? _instance;
@@ -235,7 +241,7 @@ public partial class App : Application
                 () => ChangeAllPauseFromTray(paused: true),
                 () => ChangeAllPauseFromTray(paused: false),
                 ToggleStartupFromTray,
-                RequestExit);
+                RequestExit, ShowStorageOverview);
             _instance.Listen(() => Dispatcher.BeginInvoke(() => ShowDashboard()));
 
             if (Array.IndexOf(e.Args, "--shell-test") >= 0)
@@ -799,7 +805,7 @@ public partial class App : Application
     {
         int exitCode = 0;
         _storageTimer?.Stop();
-        _storageWindow?.Close();
+        _storageView?.Close();
         _statusTimer?.Stop();
         try
         {
@@ -895,7 +901,7 @@ public partial class App : Application
         _exiting = true;
         _automaticCleanup?.Dispose();
         _storageTimer?.Stop();
-        _storageWindow?.Close();
+        _storageView?.Close();
         _statusTimer?.Stop();
         _monitoringCancellation?.Cancel();
         CancellationTokenSource? cancellation = _monitoringCancellation;

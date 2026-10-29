@@ -9,7 +9,7 @@ using Relight.Windows;
 
 namespace Relight.ViewModels;
 
-internal enum ShellPage { Monitoring, Applications, History, Settings }
+internal enum ShellPage { Monitoring, Applications, History, Settings, Storage }
 internal enum ApplicationStatusCategory { Attention, Recovering, Protected, PausedOrDisabled }
 internal enum ApplicationSortMode { Name, Status, Attempts }
 internal sealed record ApplicationFilterOption(string Label, ApplicationStatusCategory? Category)
@@ -171,6 +171,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         ApplicationsCommand = new RelayCommand(() => Navigate(ShellPage.Applications));
         HistoryCommand = new RelayCommand(() => Navigate(ShellPage.History));
         SettingsCommand = new RelayCommand(() => Navigate(ShellPage.Settings));
+        StorageCommand = new RelayCommand(() => Navigate(ShellPage.Storage));
         HideCommand = new RelayCommand(hide);
         ExitCommand = new RelayCommand(exit);
         AddCommand = new RelayCommand(add);
@@ -188,6 +189,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
     public ICommand ApplicationsCommand { get; }
     public ICommand HistoryCommand { get; }
     public ICommand SettingsCommand { get; }
+    public ICommand StorageCommand { get; }
     public ICommand HideCommand { get; }
     public ICommand ExitCommand { get; }
     public ICommand AddCommand { get; }
@@ -294,7 +296,12 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         get => _page == ShellPage.Monitoring;
         set { if (value) Navigate(ShellPage.Monitoring); }
     }
-    public bool IsDetailPage => !IsMonitoring;
+    public bool IsDetailPage => !IsMonitoring && !IsStorage;
+    public bool IsStorage
+    {
+        get => _page == ShellPage.Storage;
+        set { if (value) Navigate(ShellPage.Storage); }
+    }
     public bool IsApplications
     {
         get => _page == ShellPage.Applications;
@@ -315,6 +322,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         ShellPage.Monitoring => "Monitoring",
         ShellPage.History => "History",
         ShellPage.Settings => "Settings",
+        ShellPage.Storage => "Storage",
         _ => "Applications"
     };
     public string Subtitle => _page switch
@@ -322,6 +330,7 @@ internal sealed class ShellViewModel : INotifyPropertyChanged
         ShellPage.Monitoring => "Your protected applications at a glance.",
         ShellPage.History => "A clear account of what happened while you were away.",
         ShellPage.Settings => "A quiet presence, on your terms.",
+        ShellPage.Storage => "Understand disk usage, manage alerts and review cleanup.",
         _ => "A home for the apps you want to keep running."
     };
     public string DataDirectory => _dataDirectory;

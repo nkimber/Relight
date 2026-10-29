@@ -1,5 +1,6 @@
 param(
-    [string]$Executable = (Join-Path $PSScriptRoot '..\src\Relight.App\bin\Release\net10.0-windows\Relight.exe')
+    [string]$Executable = (Join-Path $PSScriptRoot '..\src\Relight.App\bin\Release\net10.0-windows\Relight.exe'),
+    [switch]$Isolated
 )
 
 # Integration smoke check; only terminates processes started by this script.
@@ -7,12 +8,18 @@ param(
 $ErrorActionPreference = 'Stop'
 $executablePath = (Resolve-Path -LiteralPath $Executable).Path
 $existing = Get-Process -Name Relight -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -eq $executablePath }
-if ($existing) { throw 'Exit the existing Relight preview before running the smoke check.' }
+    Where-Object { $_.SessionId -eq (Get-Process -Id $PID).SessionId }
+if ($existing -and -not $Isolated) { throw 'Exit the existing Relight instance (including Debug builds), or use -Isolated for disposable preview data.' }
+$launchArguments = @('--tray', '--shell-test')
+if ($Isolated) {
+    $isolatedDirectory = Join-Path ([IO.Path]::GetTempPath()) ('relight-shell-' + [guid]::NewGuid().ToString('N'))
+    $launchArguments = @('--tray', '--shared-session-preview', ('"{0}"' -f $isolatedDirectory))
+    Write-Output "Isolated shell evidence: $isolatedDirectory (empty-profile host; normal data untouched)."
+}
 $started = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 
 function Start-Preview {
-    $process = Start-Process -FilePath $executablePath -ArgumentList '--tray', '--shell-test' -WindowStyle Hidden -PassThru
+    $process = Start-Process -FilePath $executablePath -ArgumentList $launchArguments -WindowStyle Hidden -PassThru
     $started.Add($process)
     return $process
 }

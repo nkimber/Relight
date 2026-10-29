@@ -9,6 +9,7 @@
         <KeyBinding Key="D1" Modifiers="Control" Command="{Binding ApplicationsCommand}" />
         <KeyBinding Key="D2" Modifiers="Control" Command="{Binding HistoryCommand}" />
         <KeyBinding Key="D3" Modifiers="Control" Command="{Binding SettingsCommand}" />
+        <KeyBinding Key="D5" Modifiers="Control" Command="{Binding StorageCommand}" />
         <KeyBinding Key="W" Modifiers="Control" Command="{Binding HideCommand}" />
         <KeyBinding Key="Q" Modifiers="Control" Command="{Binding ExitCommand}" />
     </Window.InputBindings>
@@ -45,6 +46,8 @@
                                  IsChecked="{Binding IsHistory, Mode=TwoWay}" ToolTip="History (Ctrl+2)" />
                     <RadioButton Content="_Settings" GroupName="Page" Style="{StaticResource Navigation}"
                                  IsChecked="{Binding IsSettings, Mode=TwoWay}" ToolTip="Settings (Ctrl+3)" />
+                    <RadioButton Content="St_orage" GroupName="Page" Style="{StaticResource Navigation}"
+                                 IsChecked="{Binding IsStorage, Mode=TwoWay}" ToolTip="Storage (Ctrl+5)" />
                 </StackPanel>
             </DockPanel>
         </Border>
@@ -317,9 +320,6 @@
                     <StackPanel Visibility="{Binding IsSettings, Converter={StaticResource VisibleWhenTrue}}">
                         <Border Style="{StaticResource Card}" Margin="0,0,0,16">
                             <StackPanel>
-                                <Button Content="Disk space monitoring…" Click="StorageClick" HorizontalAlignment="Left" Margin="0,0,0,8" />
-                                <TextBlock Text="{Binding StorageStatus}" TextWrapping="Wrap" Margin="0,0,0,16" />
-                                <TextBlock Text="{Binding AutomaticCleanupStatus}" TextWrapping="Wrap" Margin="0,0,0,16" />
                                 <TextBlock Text="Application behavior" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,16" />
                                 <TextBlock Text="Close to tray" FontWeight="SemiBold" />
                                 <TextBlock Text="The close button hides the dashboard. Use Exit Relight to quit." Style="{StaticResource Muted}" Margin="0,4,0,18" />
@@ -356,6 +356,10 @@
                     </StackPanel>
                 </Grid>
             </ScrollViewer>
+            <ContentControl x:Name="StorageContent" Grid.Row="2" IsVisibleChanged="StorageVisibleChanged"
+                            Visibility="{Binding IsStorage, Converter={StaticResource VisibleWhenTrue}}">
+                <TextBlock Text="Waiting for storage configuration…" TextWrapping="Wrap" />
+            </ContentControl>
             <TextBlock Grid.Row="3" Text="{Binding FooterStatus}" Style="{StaticResource Muted}"
                        FontSize="12" Margin="0,24,0,0" />
         </Grid>

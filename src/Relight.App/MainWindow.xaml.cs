@@ -30,8 +30,11 @@ public partial class MainWindow : Window
     private readonly Func<Guid, Guid, string, Task<TargetStopResult>> _forceClosePaused;
     private readonly Func<Guid, Task<StopCommandResult>> _stopForRestart;
     private readonly Func<Guid, Guid, string?, Task<CoordinatorResult>> _completeRestart;
-    private void StorageClick(object sender, RoutedEventArgs e) =>
-        ((App)Application.Current).ShowStorageWindow();
+    private void StorageVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (e.NewValue is true) ((App)Application.Current).EnsureStorageView();
+    }
+    public void SetStorageContent(UIElement content) => StorageContent.Content = content;
 
     private bool _changingStartAtSignIn;
 

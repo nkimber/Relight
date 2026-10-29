@@ -1,7 +1,6 @@
-<Window x:Class="Relight.CleanupHistoryWindow"
+<UserControl x:Class="Relight.CleanupHistoryView"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Relight — Cleanup history" Width="1050" Height="760" MinWidth="780" MinHeight="560"
         Background="{DynamicResource CanvasBrush}" Foreground="{DynamicResource TextBrush}">
     <Grid Margin="24">
         <Grid.RowDefinitions>
@@ -46,4 +45,4 @@
             </DataGrid.Columns>
         </DataGrid>
     </Grid>
-</Window>
+</UserControl>

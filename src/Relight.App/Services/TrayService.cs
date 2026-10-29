@@ -17,9 +17,10 @@ internal sealed class TrayService : IDisposable
     private readonly Forms.ToolStripMenuItem _resumeAllItem;
     private readonly Dictionary<TrayIconState, Icon> _images;
     private TrayIconState _iconState = TrayIconState.Healthy;
+    private Action? _notificationClick;
 
     public TrayService(Action open, Action add, Action history, Action pauseAll,
-        Action resumeAll, Action toggleStartup, Action exit)
+        Action resumeAll, Action toggleStartup, Action exit, Action? storage = null)
     {
         _images = new()
         {
@@ -39,6 +40,7 @@ internal sealed class TrayService : IDisposable
         _menu.Items.Add(_pauseAllItem);
         _menu.Items.Add(_resumeAllItem);
         _menu.Items.Add("View history", null, (_, _) => history());
+        if (storage is not null) _menu.Items.Add("Storage", null, (_, _) => storage());
         _startupItem = new Forms.ToolStripMenuItem("Start at sign-in", null,
             (_, _) => toggleStartup()) { Enabled = false };
         _menu.Items.Add(_startupItem);
@@ -54,6 +56,7 @@ internal sealed class TrayService : IDisposable
             Visible = true
         };
         _icon.DoubleClick += (_, _) => open();
+        _icon.BalloonTipClicked += (_, _) => _notificationClick?.Invoke();
     }
 
     private static Icon LoadIcon(string name)
@@ -88,8 +91,9 @@ internal sealed class TrayService : IDisposable
         _resumeAllItem.Enabled = canResume;
     }
 
-    public void ShowRecoveryNotification(string title, string message, bool warning)
+    public void ShowRecoveryNotification(string title, string message, bool warning, Action? onClick = null)
     {
+        _notificationClick = onClick;
         _icon.BalloonTipTitle = title;
         _icon.BalloonTipText = message;
         _icon.BalloonTipIcon = warning ? Forms.ToolTipIcon.Warning :
