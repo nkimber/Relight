@@ -12,6 +12,8 @@
             <TextBox x:Name="IntervalInput" Width="120" HorizontalAlignment="Left" AutomationProperties.Name="Storage check interval seconds" />
             <Label Target="{Binding ElementName=ReminderInput}" Content="Low-space reminder interval in minutes (0 = off; 15–10080)" />
             <TextBox x:Name="ReminderInput" Width="120" HorizontalAlignment="Left" AutomationProperties.Name="Storage reminder interval minutes" />
+            <Label Target="{Binding ElementName=ScanLimitInput}" Content="Maximum scan entries (files + folders; 1–10000000)" />
+            <TextBox x:Name="ScanLimitInput" Width="130" HorizontalAlignment="Left" AutomationProperties.Name="Maximum scan entries" />
             <TextBlock Text="Thresholds use percent OR GiB free. Critical values must be lower than warning values. Enter a drive root such as C:\. Empty drive list uses the system drive with default thresholds."
                        TextWrapping="Wrap" Margin="0,16,0,8" />
             <DataGrid x:Name="DrivesInput" AutoGenerateColumns="False" CanUserAddRows="True"

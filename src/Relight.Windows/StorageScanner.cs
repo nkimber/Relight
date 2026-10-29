@@ -18,9 +18,9 @@ public sealed class StorageScanner(IStorageScanFileSystem? fileSystem = null)
     private readonly IStorageScanFileSystem _files = fileSystem ?? new WindowsStorageScanFileSystem();
 
     public StorageScanSnapshot Scan(string root, CancellationToken cancellationToken = default,
-        IProgress<int>? progress = null, int maximumEntries = 100_000)
+        IProgress<int>? progress = null, int maximumEntries = StorageScanSnapshot.DefaultEntryLimit)
     {
-        if (maximumEntries is < 1 or > 100_000) throw new ArgumentOutOfRangeException(nameof(maximumEntries));
+        if (maximumEntries is < 1 or > StorageScanSnapshot.MaximumEntryLimit) throw new ArgumentOutOfRangeException(nameof(maximumEntries));
         if (string.IsNullOrWhiteSpace(root) || !Path.IsPathFullyQualified(root))
             throw new ArgumentException("Enter an absolute local folder or drive path.");
         root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
@@ -130,7 +130,7 @@ public sealed class StorageScanner(IStorageScanFileSystem? fileSystem = null)
             folders.UnorderedItems.Select(i => i.Element).Concat(largestFiles.UnorderedItems.Select(i => i.Element))
                 .OrderByDescending(e => e.AllocatedBytes).ThenByDescending(e => e.LogicalBytes)
                 .ThenBy(e => e.Path, StringComparer.OrdinalIgnoreCase).ToArray(),
-            issues.ToArray());
+            issues.ToArray()) { EntryLimit = maximumEntries };
     }
 
     private static bool IsReadFailure(Exception error) => error is IOException or UnauthorizedAccessException

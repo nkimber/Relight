@@ -4,7 +4,8 @@ param(
     [switch]$ExerciseCleanup,
     [switch]$ExerciseAutomaticApproval,
     [switch]$ExerciseCleanupHistory,
-    [switch]$ExerciseStorageNotifications
+    [switch]$ExerciseStorageNotifications,
+    [switch]$ExerciseScanLimit
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
@@ -17,6 +18,7 @@ public static class CleanupUiChoice {
 }
 '@
 if ($ExerciseAutomaticApproval) { $ExerciseCleanup = $true }
+if ($ExerciseScanLimit) { $ExerciseScan = $true }
 function Wait-For([scriptblock]$Condition, [string]$Description) {
     $until = [DateTime]::UtcNow.AddSeconds(20)
     while ([DateTime]::UtcNow -lt $until) {
@@ -176,6 +178,30 @@ try {
             foreach ($item in $all) { if ($item.Current.Name -like '+1*MiB') { return $true } }
         } 'rendered growth comparison' | Out-Null
         Write-Output 'PASS: folder scan measures controlled files, persists baseline and renders growth on rescan.'
+        if ($ExerciseScanLimit) {
+            $limitInput = (Find-Control $storage 'Scan entry limit').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+            $limitInput.SetValue('0'); Invoke-Button $storage 'Save scan limit'
+            Wait-For { Find-Control $storage 'Scan limit was not saved: Scan entry limit must be 1–10000000 files and folders.' } 'invalid scan budget rejection' | Out-Null
+            $limitInput.SetValue('2'); Invoke-Button $storage 'Save scan limit'
+            Wait-For { (Read-Json (Join-Path $root 'configuration.json')).configuration.settings.storage.scanEntryLimit -eq 2 } 'persisted small scan budget' | Out-Null
+            Invoke-Button $storage 'Scan folder'
+            $notice = Wait-For { Find-Control $dashboard 'Scan stopped — entry limit reached' } 'unmissable scan-stop warning'
+            Choose-Native $notice 'OK'
+            Wait-For { Find-Control $storage 'SCAN STOPPED — ENTRY LIMIT REACHED' } 'persistent limit warning' | Out-Null
+            if ((Find-Control $storage 'SCAN STOPPED — ENTRY LIMIT REACHED').Current.IsOffscreen) {throw 'Stop warning is offscreen.'}
+            if (-not (Find-Control $storage 'Largest files found in PARTIAL scan (allocated space)')) {throw 'Partial rankings not labeled.'}
+            $snapshot = Read-Json $baselinePath
+            if (-not $snapshot.EntryLimitReached -or $snapshot.EntryLimit -ne 2) {throw 'Actual scan budget not recorded.'}
+            $limitInput.SetValue('1000000'); Invoke-Button $storage 'Save scan limit'
+            Wait-For { (Read-Json (Join-Path $root 'configuration.json')).configuration.settings.storage.scanEntryLimit -eq 1000000 } 'raised scan budget' | Out-Null
+            if (-not (Find-Control $storage 'SCAN STOPPED — ENTRY LIMIT REACHED')) {throw 'Changing preferences hid prior partial coverage.'}
+            Select-StorageSection 'Overview'; Select-StorageSection 'Space usage'
+            if (-not (Find-Control $storage 'SCAN STOPPED — ENTRY LIMIT REACHED')) {throw 'Navigation hid partial coverage.'}
+            Invoke-Button $storage 'Scan folder'
+            Wait-For { $next=Read-Json $baselinePath; -not $next.EntryLimitReached -and $next.EntryLimit -eq 1000000 } 'complete rescan using raised budget' | Out-Null
+            Wait-For { -not (Find-Control $storage 'SCAN STOPPED — ENTRY LIMIT REACHED') } 'limit warning cleared only by rescan' | Out-Null
+            Write-Output 'PASS: saved scan budgets, pinned stop banner, acknowledgement, partial headings and warning retained until rescan.'
+        }
     }
     if ($ExerciseCleanup) {
         $cleanupFixture = Join-Path ([IO.Path]::GetTempPath()) ('relight-reviewed-ui-' + [guid]::NewGuid().ToString('N'))
@@ -296,6 +322,12 @@ try {
     $interval = Find-Control $preferences 'Storage check interval seconds'
     if ($interval.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value -ne '10') {
         throw 'Saved interval was not restored.'
+    }
+    if ($ExerciseScanLimit) {
+        $savedBudget = (Find-Control $preferences 'Maximum scan entries').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
+        if ($savedBudget -ne '1000000') {throw 'Saved scan budget was not restored in monitoring settings.'}
+        Invoke-Button $preferences 'Save storage settings'
+        Wait-For { (Read-Json (Join-Path $root 'configuration.json')).configuration.settings.storage.scanEntryLimit -eq 1000000 } 'monitoring save preserves scan budget' | Out-Null
     }
     if ($ExerciseStorageNotifications) {
         $reminder = (Find-Control $preferences 'Storage reminder interval minutes').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)

@@ -26,9 +26,26 @@
                 </StackPanel></ScrollViewer>
             </TabItem>
             <TabItem Header="Space usage" x:Name="UsageTab">
+                <DockPanel x:Name="UsagePanel">
+                <Border DockPanel.Dock="Top" Background="{DynamicResource AccentSoftBrush}" BorderBrush="{DynamicResource AccentBrush}" BorderThickness="3"
+                        Padding="16" Margin="0,0,0,16" Visibility="{Binding HasCoverageWarning, Converter={StaticResource VisibleWhenTrue}}"
+                        AutomationProperties.AutomationId="ScanCoverageWarning">
+                    <StackPanel>
+                        <TextBlock Text="{Binding CoverageWarningTitle}" FontSize="20" FontWeight="Bold" TextWrapping="Wrap" AutomationProperties.LiveSetting="Assertive" />
+                        <TextBlock Text="{Binding CoverageWarning}" FontSize="15" TextWrapping="Wrap" Margin="0,8,0,0" />
+                    </StackPanel>
+                </Border>
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel x:Name="ScanPanel" Margin="0,28,0,0">
                 <TextBlock Text="Where is the space going?" FontSize="22" FontWeight="SemiBold" />
+                <Label Content="Maximum entries per scan (files + folders; 1–10000000)" Target="{Binding ElementName=ScanLimitInput}" />
+                <WrapPanel IsEnabled="{Binding IsIdle}" Margin="0,0,0,8">
+                    <TextBox x:Name="ScanLimitInput" Width="130" AutomationProperties.Name="Scan entry limit" />
+                    <Button Content="Save scan limit" Click="SaveScanLimitClick" Margin="8,0,0,0" />
+                </WrapPanel>
+                <TextBlock x:Name="ScanLimitStatus" TextWrapping="Wrap" />
+                <TextBlock Text="Larger limits take longer and use more memory. Saving a limit does not start or resume a scan; start a new scan to apply it."
+                           TextWrapping="Wrap" Margin="0,8,0,8" />
                 <TextBlock Text="Analyze a local folder or drive. Sizes identify consumers, not safe cleanup candidates. Reparse points and cloud/offline entries are skipped."
                            TextWrapping="Wrap" Margin="0,8,0,8" />
                 <Label Target="{Binding ElementName=ScanRootInput}" Content="Folder or drive to analyze" />
@@ -43,7 +60,7 @@
                 <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Margin="0,0,0,12" />
                 <TextBlock Text="Logical size counts file paths. Allocated space counts each file identity once, charged to its first encountered path; folder totals overlap. These are measured file-stream bytes, not guaranteed reclaimable space. Directory overhead, alternate streams and excluded entries are not measured."
                            TextWrapping="Wrap" Margin="0,0,0,12" />
-                <TextBlock Text="Largest files by allocated space" FontSize="18" />
+                <TextBlock Text="{Binding FilesHeading}" FontSize="18" />
                 <DataGrid ItemsSource="{Binding Files}" AutoGenerateColumns="False" IsReadOnly="True"
                           CanUserAddRows="False" Height="190" Margin="0,8,0,16" AutomationProperties.Name="Largest files">
                     <DataGrid.Columns>
@@ -52,7 +69,7 @@
                         <DataGridTextColumn Header="Allocated" Binding="{Binding AllocatedMiB, StringFormat='{}{0:N2} MiB'}" Width="110" />
                     </DataGrid.Columns>
                 </DataGrid>
-                <TextBlock Text="Largest folders by allocated space (includes descendants)" FontSize="18" />
+                <TextBlock Text="{Binding FoldersHeading}" FontSize="18" />
                 <DataGrid ItemsSource="{Binding Folders}" AutoGenerateColumns="False" IsReadOnly="True"
                           CanUserAddRows="False" Height="190" Margin="0,8,0,16" AutomationProperties.Name="Largest folders">
                     <DataGrid.Columns>
@@ -80,11 +97,12 @@
                         <DataGridTextColumn Header="Reason" Binding="{Binding Reason}" Width="*" />
                     </DataGrid.Columns>
                 </DataGrid>
-                <TextBlock Text="Scans continue across navigation and hiding the dashboard. Cancel or exit Relight to stop the scan. One latest scan is saved locally for comparison; scanning a different root replaces that baseline. Results are limited to 100,000 inspected entries and depth 128."
+                <TextBlock Text="Scans continue across navigation and hiding the dashboard. Cancel or exit Relight to stop the scan. One latest scan is saved locally for comparison; scanning a different root replaces that baseline. Traversal uses your saved entry limit and depth 128; retained rankings stay bounded."
                            TextWrapping="Wrap" Margin="0,12,0,0" />
             </StackPanel>
 
                 </ScrollViewer>
+                </DockPanel>
             </TabItem>
             <TabItem Header="Cleanup rules"><ContentControl x:Name="RulesContent" /></TabItem>
             <TabItem Header="Cleanup history"><ContentControl x:Name="HistoryContent" /></TabItem>

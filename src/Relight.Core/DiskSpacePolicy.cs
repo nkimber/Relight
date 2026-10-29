@@ -25,6 +25,7 @@ public sealed record DiskSpaceSettings
     public int CheckIntervalSeconds { get; init; } = 60;
     // Zero retains once-per-severity alerts without repeated reminders.
     public int ReminderIntervalMinutes { get; init; }
+    public int ScanEntryLimit { get; init; } = StorageScanSnapshot.DefaultEntryLimit;
     // Empty means the Windows system drive. Explicit entries replace that default.
     public DiskSpaceDrivePolicy[] Drives { get; init; } = [];
 
@@ -34,6 +35,8 @@ public sealed record DiskSpaceSettings
             throw new ArgumentException("Storage interval must be 10–3600 seconds, with at most 26 drives.");
         if (ReminderIntervalMinutes != 0 && (ReminderIntervalMinutes is < 15 or > 10080))
             throw new ArgumentException("Reminder interval must be 0 (off), or 15–10080 minutes.");
+        if (ScanEntryLimit is < 1 or > StorageScanSnapshot.MaximumEntryLimit)
+            throw new ArgumentException("Scan entry limit must be 1–10000000 files and folders.");
         var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var drive in Drives)
         {

@@ -10,7 +10,8 @@ using Relight.Windows;
 
 namespace Relight.ViewModels;
 
-internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim scanGate) : INotifyPropertyChanged
+internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim scanGate,
+    Func<int>? getEntryLimit = null) : INotifyPropertyChanged
 {
     private readonly StorageScanStore _store = new(dataDirectory);
     private CancellationTokenSource? _cancellation;
@@ -20,10 +21,17 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
     public bool IsIdle { get; private set; } = true;
     public bool IsScanning => !IsIdle;
     public bool CanCancel { get; private set; }
+    public bool HasCoverageWarning { get; private set; }
+    public bool EntryLimitReached { get; private set; }
+    public int ScanVersion { get; private set; }
+    public string CoverageWarningTitle { get; private set; } = "";
+    public string CoverageWarning { get; private set; } = "";
+    public string FilesHeading => HasCoverageWarning ? "Largest files found in PARTIAL scan (allocated space)" : "Largest files by allocated space";
+    public string FoldersHeading => HasCoverageWarning ? "Largest folders found in PARTIAL scan (includes descendants)" : "Largest folders by allocated space (includes descendants)";
     public string Status { get; private set; } = "Choose a local folder or drive and select Scan folder. No files will be deleted.";
     public string BaselineStatus { get; private set; } = "No growth comparison yet.";
     public string ScanAge => _lastFinishedUtc is { } time
-        ? $"Latest completed scan: {time.ToLocalTime():G} · age {Math.Max(0, (DateTimeOffset.UtcNow - time).TotalMinutes):N0} minutes"
+        ? $"Latest scan result: {time.ToLocalTime():G} · age {Math.Max(0, (DateTimeOffset.UtcNow - time).TotalMinutes):N0} minutes"
         : "No completed scan loaded.";
     public IReadOnlyList<StorageScanRow> Files { get; private set; } = [];
     public IReadOnlyList<StorageScanRow> Folders { get; private set; } = [];
@@ -51,6 +59,7 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
     {
         if (!IsIdle || _closed) return;
         string root = Root;
+        int limit = StorageScanSnapshot.DefaultEntryLimit;
         IsIdle = false;
         CanCancel = true;
         _cancellation = new CancellationTokenSource();
@@ -66,12 +75,13 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
         bool acquired = false;
         try
         {
+            limit = getEntryLimit?.Invoke() ?? StorageScanSnapshot.DefaultEntryLimit;
             await scanGate.WaitAsync(token);
             acquired = true;
-            var snapshot = await Task.Run(() => new StorageScanner().Scan(root, token, progress), token);
+            var snapshot = await Task.Run(() => new StorageScanner().Scan(root, token, progress, limit), token);
             token.ThrowIfCancellationRequested();
             CanCancel = false;
-            Status = "Saving completed scan…";
+            Status = "Saving scan results…";
             Changed();
             // Once committing a completed scan, let the bounded atomic write finish.
             string? persistenceProblem = null;
@@ -80,6 +90,7 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
             catch (Exception error) { persistenceProblem = error.Message; }
             if (_closed) return;
             Present(snapshot);
+            ScanVersion++;
             Growth = StorageScanComparison.Compare(snapshot, previous)
                 .Select(e => new StorageGrowthRow(e.Path, e.Kind.ToString(), $"+{e.LogicalGrowthBytes / 1_048_576d:N2} MiB")).ToArray();
             BaselineStatus = persistenceProblem is not null
@@ -114,6 +125,14 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
     private void Present(StorageScanSnapshot snapshot)
     {
         _lastFinishedUtc = snapshot.FinishedUtc;
+        HasCoverageWarning = !snapshot.CoverageComplete;
+        EntryLimitReached = snapshot.EntryLimitReached;
+        CoverageWarningTitle = snapshot.EntryLimitReached ? "SCAN STOPPED — ENTRY LIMIT REACHED" : "PARTIAL SCAN — COVERAGE INCOMPLETE";
+        CoverageWarning = !HasCoverageWarning ? "" : snapshot.EntryLimitReached
+            ? $"Stopped after {snapshot.EntriesVisited:N0} entries (limit {snapshot.EntryLimit:N0}) in {snapshot.Root}. " +
+              "These are only the largest files FOUND, not the largest files on the whole drive or selected folder. Larger files may be missing. " +
+              "Increase the scan entry limit below or select a smaller folder, then start a new scan."
+            : $"Some files or folders in {snapshot.Root} could not be measured. These rankings are incomplete; larger files may be missing. Review coverage issues below.";
         Files = snapshot.Entries.Where(e => e.Kind == StorageScanEntryKind.File).Take(100).Select(Row).ToArray();
         Folders = snapshot.Entries.Where(e => e.Kind == StorageScanEntryKind.Folder).Take(100).Select(Row).ToArray();
         Issues = snapshot.Issues;
@@ -121,7 +140,7 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
             $"As of {snapshot.FinishedUtc.ToLocalTime():G} · {snapshot.EntriesVisited:N0} entries inspected, " +
             $"{snapshot.FilesMeasured:N0} file paths measured, {snapshot.SkippedEntries:N0} skipped/failed, " +
             $"{snapshot.HardLinkAliases:N0} hard-link aliases. " +
-            (snapshot.EntryLimitReached ? "100,000-entry limit reached. Select a smaller folder for fuller coverage. " : "") +
+            (snapshot.EntryLimitReached ? $"{snapshot.EntryLimit:N0}-entry limit reached. Increase the limit or select a smaller folder. " : "") +
             $"Largest 100 files and folders by allocated space shown; first {snapshot.Issues.Length} coverage issues listed. " +
             "Live-tree observations may change during scanning; this is not a point-in-time snapshot.";
     }

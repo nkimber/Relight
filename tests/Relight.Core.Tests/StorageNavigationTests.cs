@@ -4,6 +4,10 @@ namespace Relight.Core.Tests;
 
 public sealed class StorageNavigationTests
 {
+    [Theory]
+    [InlineData(0)] [InlineData(-1)] [InlineData(10000001)]
+    public void ScanBudgetSettingsRejectOutOfRangeValues(int value) =>
+        Assert.Throws<ArgumentException>(() => new Relight.Core.DiskSpaceSettings { ScanEntryLimit = value }.Validate());
     [Fact]
     public void StorageIsIndependentTopLevelPageAndSettingsRemainsSeparate()
     {

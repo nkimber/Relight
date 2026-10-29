@@ -74,6 +74,68 @@ public sealed class StorageScannerTests
     }
 
     [Fact]
+    public void RaisedBudgetReachesLargeFileBeyondOldCapAndRoundTripsActualLimit()
+    {
+        var files = new FakeFiles { GeneratedFiles = 100001 };
+        string large = @"C:\scan\generated-100000";
+        files.Metadata[large] = new(false, false, "docker-like-disk", 500L * 1073741824, 400L * 1073741824);
+        var scanner = new StorageScanner(files);
+        var partial = scanner.Scan(@"C:\scan");
+        Assert.True(partial.EntryLimitReached);
+        Assert.DoesNotContain(partial.Entries, e => e.Path == large);
+        var complete = scanner.Scan(@"C:\scan", maximumEntries: 100002);
+        Assert.False(complete.EntryLimitReached); Assert.True(complete.CoverageComplete);
+        Assert.Equal(100002, complete.EntriesVisited);
+        Assert.Equal(large, complete.Entries.First(e => e.Kind == StorageScanEntryKind.File).Path);
+        using var data = new TestDirectory(); var store = new StorageScanStore(data.Path);
+        store.Save(complete); Assert.Equal(100002, store.Load()!.EntryLimit);
+    }
+
+    [Fact]
+    public async Task LimitWarningSurvivesReloadAndChangingBudgetUntilCompleteRescan()
+    {
+        using var data = new TestDirectory();
+        string files = Path.Combine(data.Path, "files"); Directory.CreateDirectory(files);
+        File.WriteAllText(Path.Combine(files, "a.bin"), "disposable");
+        File.WriteAllText(Path.Combine(files, "b.bin"), "disposable");
+        using var gate = new SemaphoreSlim(1); int limit = 2;
+        var model = new StorageScanViewModel(Path.Combine(data.Path, "data"), gate, () => limit) { Root = files };
+        await model.ScanAsync();
+        Assert.True(model.EntryLimitReached); Assert.True(model.HasCoverageWarning);
+        Assert.Contains("ENTRY LIMIT REACHED", model.CoverageWarningTitle);
+        Assert.Contains("Larger files may be missing", model.CoverageWarning);
+        Assert.Contains("PARTIAL", model.FilesHeading); Assert.Contains("PARTIAL", model.FoldersHeading);
+        var loaded = new StorageScanViewModel(Path.Combine(data.Path, "data"), gate); await loaded.LoadAsync();
+        Assert.True(loaded.HasCoverageWarning); Assert.True(loaded.EntryLimitReached); loaded.Close();
+        limit = 10; Assert.True(model.HasCoverageWarning);
+        await model.ScanAsync(); Assert.False(model.HasCoverageWarning); Assert.False(model.EntryLimitReached);
+        Assert.Equal(2, model.ScanVersion); Assert.DoesNotContain("PARTIAL", model.FilesHeading); model.Close();
+    }
+
+    [Fact]
+    public void LegacySnapshotDefaultsToOldBudgetAndInvalidLargerCounterIsRejected()
+    {
+        using var data = new TestDirectory(); var store = new StorageScanStore(data.Path);
+        var snapshot = new StorageScanner(new FakeFiles()).Scan(@"C:\scan"); store.Save(snapshot);
+        string path = Path.Combine(data.Path, "Storage", "latest-scan.json");
+        var json = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path))!;
+        json.AsObject().Remove("EntryLimit"); File.WriteAllText(path, json.ToJsonString());
+        Assert.Equal(100000, store.Load()!.EntryLimit);
+        json["EntriesVisited"] = 100001; File.WriteAllText(path, json.ToJsonString());
+        Assert.Throws<InvalidDataException>(() => store.Load());
+    }
+
+    [Fact]
+    public async Task SkippedCoverageGetsPersistentWarningWithoutLimitStopClaim()
+    {
+        using var data = new TestDirectory(); var fake = new FakeFiles(); fake.Failures.Add(@"C:\scan");
+        new StorageScanStore(data.Path).Save(new StorageScanner(fake).Scan(@"C:\scan"));
+        using var gate = new SemaphoreSlim(1); var model = new StorageScanViewModel(data.Path, gate);
+        await model.LoadAsync(); Assert.True(model.HasCoverageWarning); Assert.False(model.EntryLimitReached);
+        Assert.Contains("COVERAGE INCOMPLETE", model.CoverageWarningTitle); model.Close();
+    }
+
+    [Fact]
     public void CancellationStopsTraversalWithoutReturningASnapshot()
     {
         using var cancellation = new CancellationTokenSource();

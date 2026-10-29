@@ -13,6 +13,9 @@ public sealed record StorageScanSnapshot(int SchemaVersion, string Root,
     int EntriesVisited, int FilesMeasured, int SkippedEntries, int HardLinkAliases,
     bool EntryLimitReached, StorageScanEntry[] Entries, StorageScanIssue[] Issues)
 {
+    public const int DefaultEntryLimit = 100_000;
+    public const int MaximumEntryLimit = 10_000_000;
+    public int EntryLimit { get; init; } = DefaultEntryLimit;
     public const int MaximumRetainedEntries = 2100;
     public const int MaximumIssues = 100;
     public bool CoverageComplete => TraversalComplete && SkippedEntries == 0 && !EntryLimitReached;

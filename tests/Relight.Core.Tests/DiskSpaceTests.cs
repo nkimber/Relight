@@ -86,12 +86,13 @@ public sealed class DiskSpaceTests
             var store = new ConfigurationStore(directory);
             var initial = store.Initialize(RelightConfiguration.Empty);
             Assert.True(initial.Configuration.Settings.Storage.Enabled);
-            var storage = new DiskSpaceSettings { CheckIntervalSeconds = 25, ReminderIntervalMinutes = 120, Drives = [new("D:\\")] };
+            var storage = new DiskSpaceSettings { CheckIntervalSeconds = 25, ReminderIntervalMinutes = 120, ScanEntryLimit = 1000000, Drives = [new("D:\\")] };
             var next = initial.Configuration with { Settings = initial.Configuration.Settings with { Storage = storage } };
             store.Save(initial, next);
             var loaded = store.Load().Configuration.Settings.Storage;
             Assert.Equal(25, loaded.CheckIntervalSeconds);
             Assert.Equal(120, loaded.ReminderIntervalMinutes);
+            Assert.Equal(1000000, loaded.ScanEntryLimit);
             Assert.Equal("D:\\", Assert.Single(loaded.Drives).Root);
             Assert.Throws<StaleConfigurationException>(() => store.Save(initial, initial.Configuration));
         }
@@ -123,6 +124,7 @@ public sealed class DiskSpaceTests
             var legacy = store.Load();
             Assert.Equal(60, legacy.Configuration.Settings.Storage.CheckIntervalSeconds);
             Assert.Equal(0, legacy.Configuration.Settings.Storage.ReminderIntervalMinutes);
+            Assert.Equal(100000, legacy.Configuration.Settings.Storage.ScanEntryLimit);
             store.Save(legacy, legacy.Configuration);
             json = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path))!;
             json["configuration"]!["settings"]!["storage"]!["checkIntervalSeconds"] = 0;

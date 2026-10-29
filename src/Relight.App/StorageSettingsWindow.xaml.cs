@@ -17,6 +17,7 @@ public partial class StorageSettingsWindow : Window
         NotificationsInput.IsChecked = settings.NotificationsEnabled;
         IntervalInput.Text = settings.CheckIntervalSeconds.ToString();
         ReminderInput.Text = settings.ReminderIntervalMinutes.ToString();
+        ScanLimitInput.Text = settings.ScanEntryLimit.ToString();
         DrivesInput.ItemsSource = new ObservableCollection<DriveEditor>(
             DiskSpaceMonitor.EffectiveDrives(settings).Select(d => new DriveEditor {
                 Root=d.Root, WarningPercent=d.WarningPercent, CriticalPercent=d.CriticalPercent,
@@ -34,12 +35,15 @@ public partial class StorageSettingsWindow : Window
                 throw new ArgumentException("Enter a whole number of seconds.");
             if (!int.TryParse(ReminderInput.Text, out int reminderMinutes))
                 throw new ArgumentException("Enter a whole number of minutes for reminders.");
+            if (!int.TryParse(ScanLimitInput.Text, out int scanLimit))
+                throw new ArgumentException("Enter a whole number of scan entries.");
             var settings = new DiskSpaceSettings
             {
                 Enabled = EnabledInput.IsChecked == true,
                 NotificationsEnabled = NotificationsInput.IsChecked == true,
                 CheckIntervalSeconds = seconds,
                 ReminderIntervalMinutes = reminderMinutes,
+                ScanEntryLimit = scanLimit,
                 Drives = DrivesInput.ItemsSource.Cast<DriveEditor>().Select(d => new DiskSpaceDrivePolicy(
                     d.Root.Trim().ToUpperInvariant(), d.WarningPercent, d.CriticalPercent,
                     d.WarningGigabytes, d.CriticalGigabytes)).ToArray()

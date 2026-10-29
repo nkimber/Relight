@@ -52,7 +52,8 @@ public sealed class StorageScanStore(string dataDirectory)
     {
         if (snapshot.SchemaVersion != 1 || string.IsNullOrWhiteSpace(snapshot.Root) ||
             !Path.IsPathFullyQualified(snapshot.Root) || snapshot.FinishedUtc < snapshot.StartedUtc ||
-            snapshot.EntriesVisited is < 0 or > 100_000 || snapshot.FilesMeasured < 0 ||
+            snapshot.EntryLimit is < 1 or > StorageScanSnapshot.MaximumEntryLimit ||
+            snapshot.EntriesVisited < 0 || snapshot.EntriesVisited > snapshot.EntryLimit || snapshot.FilesMeasured < 0 ||
             snapshot.SkippedEntries < 0 || snapshot.HardLinkAliases < 0 || snapshot.Entries is null ||
             snapshot.Entries.Length > StorageScanSnapshot.MaximumRetainedEntries || snapshot.Issues is null ||
             snapshot.Issues.Length > StorageScanSnapshot.MaximumIssues)

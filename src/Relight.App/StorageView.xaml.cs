@@ -33,12 +33,12 @@ public partial class StorageView : UserControl
         _dataDirectory = dataDirectory; _gate = gate; _settings = settings; _save = save;
         _stopAutomatic = stopAutomatic; _allowAutomatic = allowAutomatic;
         _snooze = snooze; _resume = resume; _remaining = remaining;
-        _scan = new(dataDirectory, gate); ScanPanel.DataContext = _scan;
+        _scan = new(dataDirectory, gate, () => _settings().ScanEntryLimit); UsagePanel.DataContext = _scan;
         _ageTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
         _ageTimer.Tick += (_, _) => _scan.RefreshAge();
         Loaded += Load;
         Unloaded += (_, _) => _ageTimer.Stop();
-        _ready = true; RefreshSnooze();
+        _ready = true; RefreshSnooze(); RefreshScanLimit();
     }
 
     private async void Load(object sender, RoutedEventArgs e)
@@ -65,7 +65,7 @@ public partial class StorageView : UserControl
         try
         {
             _settingsWindow = new StorageSettingsWindow(_settings(), _save) { Owner = Window.GetWindow(this) };
-            _settingsWindow.Closed += (_, _) => _settingsWindow = null;
+            _settingsWindow.Closed += (_, _) => { _settingsWindow = null; RefreshScanLimit(); };
             _settingsWindow.Show();
         }
         catch (Exception error) { MessageBox.Show(Window.GetWindow(this), error.Message, "Storage settings unavailable"); }
@@ -96,7 +96,33 @@ public partial class StorageView : UserControl
         _resume(); RefreshSnooze();
         SaveStatus.Text = "Snooze ended. The next check evaluates current space using your saved notification preference.";
     }
-    private async void ScanClick(object sender, RoutedEventArgs e) => await _scan.ScanAsync();
+    private async void ScanClick(object sender, RoutedEventArgs e)
+    {
+        int version = _scan.ScanVersion;
+        await _scan.ScanAsync();
+        if (!_closed && IsVisible && _scan.ScanVersion != version && _scan.EntryLimitReached)
+            MessageBox.Show(Window.GetWindow(this), _scan.CoverageWarning, "Scan stopped — entry limit reached",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+    }
+    private void RefreshScanLimit()
+    {
+        try
+        {
+            int limit = _settings().ScanEntryLimit;
+            ScanLimitInput.Text = limit.ToString(); ScanLimitStatus.Text = $"Saved scan limit: {limit:N0} entries.";
+        }
+        catch (Exception error) { ScanLimitStatus.Text = $"Scan settings unavailable: {error.Message}"; }
+    }
+    private async void SaveScanLimitClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (!int.TryParse(ScanLimitInput.Text, out int limit)) throw new ArgumentException("Enter a whole number of entries.");
+            var settings = _settings() with { ScanEntryLimit = limit }; settings.Validate();
+            await _save(settings); RefreshScanLimit();
+        }
+        catch (Exception error) { ScanLimitStatus.Text = $"Scan limit was not saved: {error.Message}"; }
+    }
     private void CancelScanClick(object sender, RoutedEventArgs e) => _scan.Cancel();
     private void BrowseScanClick(object sender, RoutedEventArgs e)
     {
