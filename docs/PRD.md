@@ -535,6 +535,12 @@ Navigating or opening the dashboard never starts a folder scan or cleanup, creat
 
 If traversal stops at its budget, pin a high-visibility **SCAN STOPPED — ENTRY LIMIT REACHED** banner above the Space usage scroll area. Include inspected count, actual scan budget, root, incomplete ranking explanation and increase-limit/select-smaller-folder guidance. Label file/folder rankings as partial. Show one acknowledgement dialog for a newly completed limit-hit scan while Storage is visible; do not steal focus from a hidden dashboard. Keep the banner on saved/reloaded results and across navigation, cancellation, failed scans and preference changes until replacement results establish different coverage. Other incomplete coverage gets its own persistent warning without falsely claiming the entry limit was reached. Saving a higher limit alone must not present an older partial scan as complete.
 
+### S9 — Active scan presentation
+
+**Authorized implementation — 29 October 2026:** While a requested scan is waiting for the shared worker, traversing or saving results, make that operation the prominent Space usage content: selected root, current stage, inspected-entry count, captured budget, indeterminate activity indicator and Cancel (disabled once bounded result saving begins). Do not imply a percentage of the drive has been scanned from the entry budget. Loading saved results alone is not an active scan.
+
+Temporarily hide prior result tables, comparisons, timestamps, coverage warnings and setup controls during active work. Retain the previous snapshot in memory/on disk, rather than clearing or relabeling it. A successful replacement shows its own coverage; traversal cancellation/failure restores the prior warnings/results with their original root and timestamp and a retained-results status. Completed traversal with a save failure still displays current measurements and the unsaved-baseline problem, as in S2. S9 qualifies S8's persistent warning: it remains attached to the prior result, temporarily hidden while the new operation is prominent. Navigation/hiding must not start or duplicate work, and traversal/accounting/cleanup authority remain unchanged.
+
 ### Storage acceptance
 
 These IDs extend, rather than replace, AT-01–AT-30.
@@ -563,5 +569,6 @@ These IDs extend, rather than replace, AT-01–AT-30.
 | DSAT-20 | Reminder settings and resident snooze controls | Cadence validates and persists with legacy defaults; invalid changes preserve saved preferences; snooze survives window close/reopen, shows remaining time, resumes explicitly, and never alters recovery or cleanup authority. |
 | DSAT-21 | Top-level Storage navigation and embedded workflows | Four sections and monitoring-preference dialog are reachable; general Settings has no storage section; navigation starts no scan/cleanup and creates no authority; existing scan/growth, confirmation, history and snooze workflows remain functional across navigation/hiding. |
 | DSAT-22 | Configurable traversal budget and prominent stops | Saved budgets validate/round-trip and control traversal beyond the former cap; actual budget persists with legacy defaults; pinned warning, acknowledgement and partial headings appear at a stop; saved partial coverage remains visible until replaced by a rescan. |
+| DSAT-23 | Active scan replaces old presentation | Waiting/traversing/saving show current progress and cancellation instead of old results/warnings; completion shows new results, cancellation/failure restore labeled prior evidence, and loading saved results is not presented as an active scan. |
 
 See [storage checkpoint](storage-checkpoint.md) for actual evidence and remaining acceptance.

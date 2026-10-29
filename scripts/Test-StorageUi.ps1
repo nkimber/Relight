@@ -5,7 +5,8 @@ param(
     [switch]$ExerciseAutomaticApproval,
     [switch]$ExerciseCleanupHistory,
     [switch]$ExerciseStorageNotifications,
-    [switch]$ExerciseScanLimit
+    [switch]$ExerciseScanLimit,
+    [switch]$ExerciseScanProgress
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
@@ -18,6 +19,7 @@ public static class CleanupUiChoice {
 }
 '@
 if ($ExerciseAutomaticApproval) { $ExerciseCleanup = $true }
+if ($ExerciseScanProgress) { $ExerciseScanLimit = $true }
 if ($ExerciseScanLimit) { $ExerciseScan = $true }
 function Wait-For([scriptblock]$Condition, [string]$Description) {
     $until = [DateTime]::UtcNow.AddSeconds(20)
@@ -54,6 +56,7 @@ function Choose-Native($Parent, [string]$Name) {
 $executablePath = (Resolve-Path -LiteralPath $Executable).Path
 $root = Join-Path ([IO.Path]::GetTempPath()) ('relight-storage-ui-' + [guid]::NewGuid().ToString('N'))
 $primary = $null
+$progressFixture = $null
 try {
     $arguments = @('--shared-session-preview', $root, '--tray')
     $primary = Start-Process -FilePath $executablePath -ArgumentList $arguments -WindowStyle Hidden -PassThru
@@ -197,6 +200,24 @@ try {
             if (-not (Find-Control $storage 'SCAN STOPPED — ENTRY LIMIT REACHED')) {throw 'Changing preferences hid prior partial coverage.'}
             Select-StorageSection 'Overview'; Select-StorageSection 'Space usage'
             if (-not (Find-Control $storage 'SCAN STOPPED — ENTRY LIMIT REACHED')) {throw 'Navigation hid partial coverage.'}
+            if ($ExerciseScanProgress) {
+                $progressFixture = Join-Path $root 'progress-fixture'
+                [IO.Directory]::CreateDirectory($progressFixture) | Out-Null
+                for ($i=0; $i -lt 10000; $i++) { [IO.File]::WriteAllBytes((Join-Path $progressFixture "$i.tmp"), [byte[]]::new(0)) }
+                $scanInput.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($progressFixture)
+                Invoke-Button $storage 'Scan folder'
+                Wait-For { $active=Find-Control $storage 'Scan in progress'; $active -and -not $active.Current.IsOffscreen } 'prominent active scan view' | Out-Null
+                foreach ($old in @('SCAN STOPPED — ENTRY LIMIT REACHED','Largest files','Storage growth')) {
+                    $control = Find-Control $storage $old
+                    if ($control -and -not $control.Current.IsOffscreen) {throw "Prior scan content visible during scan: $old"}
+                }
+                if (-not (Find-Control $storage 'Cancel scan').Current.IsEnabled) {throw 'Active scan cancellation unavailable.'}
+                Wait-For { $next=Read-Json $baselinePath; $next.Root -eq $progressFixture -and $next.CoverageComplete } 'active scan completion' | Out-Null
+                Wait-For { $control=Find-Control $storage 'Scan folder'; $control -and $control.Current.IsEnabled } 'idle scan controls restored' | Out-Null
+                $scanInput = Find-Control $storage 'Folder to analyze'
+                $scanInput.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($fixture)
+                Write-Output 'PASS: active root/progress/cancel view replaces prior warning and result tables; completion restores scan content.'
+            }
             Invoke-Button $storage 'Scan folder'
             Wait-For { $next=Read-Json $baselinePath; -not $next.EntryLimitReached -and $next.EntryLimit -eq 1000000 } 'complete rescan using raised budget' | Out-Null
             Wait-For { -not (Find-Control $storage 'SCAN STOPPED — ENTRY LIMIT REACHED') } 'limit warning cleared only by rescan' | Out-Null
@@ -361,5 +382,12 @@ try {
     if ($null -ne $primary) {
         if (-not $primary.HasExited) { Stop-Process -Id $primary.Id -Force }
         $primary.Dispose()
+    }
+    if ($progressFixture -and (Test-Path -LiteralPath $progressFixture)) {
+        $ownedProgress = [IO.Path]::GetFullPath($progressFixture)
+        $ownedParent = [IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
+        if (-not $ownedProgress.StartsWith($ownedParent, [StringComparison]::OrdinalIgnoreCase) -or
+            [IO.Path]::GetFileName($ownedProgress) -ne 'progress-fixture') { throw 'Disposable progress cleanup escaped its fixture root.' }
+        Remove-Item -LiteralPath $ownedProgress -Recurse -Force
     }
 }

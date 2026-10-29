@@ -19,7 +19,14 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
     private DateTimeOffset? _lastFinishedUtc;
     public string Root { get; set; } = DiskSpaceMonitor.SystemDrive;
     public bool IsIdle { get; private set; } = true;
-    public bool IsScanning => !IsIdle;
+    public bool IsScanning { get; private set; }
+    public bool ShowScanContent => !IsScanning;
+    public bool ShowCoverageWarning => HasCoverageWarning && !IsScanning;
+    public string ActiveRoot { get; private set; } = "";
+    public int ActiveEntryLimit { get; private set; }
+    public int EntriesInspected { get; private set; }
+    public string ProgressSummary => $"{EntriesInspected:N0} entries inspected · scan limit {ActiveEntryLimit:N0}";
+    public string ResultsLabel { get; private set; } = "No scan results yet.";
     public bool CanCancel { get; private set; }
     public bool HasCoverageWarning { get; private set; }
     public bool EntryLimitReached { get; private set; }
@@ -61,6 +68,10 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
         string root = Root;
         int limit = StorageScanSnapshot.DefaultEntryLimit;
         IsIdle = false;
+        IsScanning = true;
+        ActiveRoot = root;
+        ActiveEntryLimit = limit;
+        EntriesInspected = 0;
         CanCancel = true;
         _cancellation = new CancellationTokenSource();
         CancellationToken token = _cancellation.Token;
@@ -69,6 +80,7 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
         var progress = new Progress<int>(count =>
         {
             if (_closed || !CanCancel || _cancellation?.Token != token || token.IsCancellationRequested) return;
+            EntriesInspected = Math.Max(EntriesInspected, count);
             Status = $"Scanning {root} · {count:N0} entries inspected…";
             Changed();
         });
@@ -76,6 +88,7 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
         try
         {
             limit = getEntryLimit?.Invoke() ?? StorageScanSnapshot.DefaultEntryLimit;
+            ActiveEntryLimit = limit; Changed();
             await scanGate.WaitAsync(token);
             acquired = true;
             var snapshot = await Task.Run(() => new StorageScanner().Scan(root, token, progress, limit), token);
@@ -90,6 +103,7 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
             catch (Exception error) { persistenceProblem = error.Message; }
             if (_closed) return;
             Present(snapshot);
+            EntriesInspected = snapshot.EntriesVisited;
             ScanVersion++;
             Growth = StorageScanComparison.Compare(snapshot, previous)
                 .Select(e => new StorageGrowthRow(e.Path, e.Kind.ToString(), $"+{e.LogicalGrowthBytes / 1_048_576d:N2} MiB")).ToArray();
@@ -110,6 +124,7 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
             _cancellation.Dispose();
             _cancellation = null;
             IsIdle = true;
+            IsScanning = false;
             CanCancel = false;
             if (!_closed) Changed();
         }
@@ -125,6 +140,7 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
     private void Present(StorageScanSnapshot snapshot)
     {
         _lastFinishedUtc = snapshot.FinishedUtc;
+        ResultsLabel = $"Results from {snapshot.Root}";
         HasCoverageWarning = !snapshot.CoverageComplete;
         EntryLimitReached = snapshot.EntryLimitReached;
         CoverageWarningTitle = snapshot.EntryLimitReached ? "SCAN STOPPED — ENTRY LIMIT REACHED" : "PARTIAL SCAN — COVERAGE INCOMPLETE";

@@ -226,6 +226,44 @@ public sealed class StorageScannerTests
     }
 
     [Fact]
+    public async Task ActiveScanHidesPriorLimitedResultsAndRestoresThemOnCancelOrFailure()
+    {
+        using var directory = new TestDirectory(); using var gate = new SemaphoreSlim(0, 1);
+        var baseline = new StorageScanSnapshot(1, @"C:\previous", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            false, 2, 1, 0, 0, true, [new(@"C:\previous\old.log", StorageScanEntryKind.File, 20, 4096, true)], []) { EntryLimit = 2 };
+        new StorageScanStore(directory.Path).Save(baseline);
+        var model = new StorageScanViewModel(directory.Path, gate, () => 500000);
+        await model.LoadAsync(); Assert.False(model.IsScanning); Assert.True(model.ShowCoverageWarning);
+        model.Root = @"C:\new-scan";
+        var active = model.ScanAsync();
+        Assert.True(model.IsScanning); Assert.False(model.ShowCoverageWarning); Assert.False(model.ShowScanContent);
+        Assert.True(model.HasCoverageWarning); Assert.Single(model.Files);
+        Assert.Equal(@"C:\new-scan", model.ActiveRoot); Assert.Equal(500000, model.ActiveEntryLimit);
+        Assert.Equal(0, model.EntriesInspected); Assert.True(model.CanCancel);
+        model.Cancel(); await active;
+        Assert.False(model.IsScanning); Assert.True(model.ShowCoverageWarning); Assert.True(model.ShowScanContent);
+        Assert.Contains(@"C:\previous", model.ResultsLabel); Assert.Contains("retained", model.Status);
+        Assert.Equal(baseline.FinishedUtc, new StorageScanStore(directory.Path).Load()!.FinishedUtc);
+        gate.Release(); model.Root = "relative-invalid-root"; await model.ScanAsync();
+        Assert.Contains("failed", model.Status); Assert.True(model.ShowCoverageWarning); Assert.True(model.ShowScanContent);
+        Assert.False(model.IsScanning); Assert.Equal(0, model.ScanVersion); model.Close();
+    }
+
+    [Fact]
+    public async Task CompletedScanReplacesActivePaneWithCurrentResults()
+    {
+        using var directory = new TestDirectory(); using var gate = new SemaphoreSlim(0, 1);
+        string files = Path.Combine(directory.Path, "files"); Directory.CreateDirectory(files);
+        File.WriteAllText(Path.Combine(files, "disposable.log"), "test");
+        var model = new StorageScanViewModel(Path.Combine(directory.Path, "data"), gate, () => 20) { Root = files };
+        var scan = model.ScanAsync(); Assert.True(model.IsScanning); Assert.False(model.ShowScanContent);
+        gate.Release(); await scan;
+        Assert.False(model.IsScanning); Assert.True(model.ShowScanContent); Assert.False(model.ShowCoverageWarning);
+        Assert.Equal(2, model.EntriesInspected); Assert.Equal(20, model.ActiveEntryLimit);
+        Assert.Single(model.Files); Assert.Contains(files, model.ResultsLabel); Assert.False(model.CanCancel); model.Close();
+    }
+
+    [Fact]
     public void NativeScanMeasuresHardLinksAndSkipsJunction()
     {
         using var directory = new TestDirectory();
