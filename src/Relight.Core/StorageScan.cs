@@ -5,8 +5,6 @@ public enum StorageScanEntryKind { File, Folder }
 public sealed record StorageScanEntry(string Path, StorageScanEntryKind Kind,
     long LogicalBytes, long AllocatedBytes, bool CoverageComplete);
 
-public sealed record StorageScanIssue(string Path, string Reason);
-
 /// <summary>Bounded observations, not a filesystem snapshot or cleanup authorization.</summary>
 public sealed record StorageScanSnapshot(int SchemaVersion, string Root,
     DateTimeOffset StartedUtc, DateTimeOffset FinishedUtc, bool TraversalComplete,
@@ -16,6 +14,13 @@ public sealed record StorageScanSnapshot(int SchemaVersion, string Root,
     public const int DefaultEntryLimit = 100_000;
     public const int MaximumEntryLimit = 10_000_000;
     public int EntryLimit { get; init; } = DefaultEntryLimit;
+    // Null means a legacy result: the split cannot be reconstructed from bounded samples.
+    public StorageScanIssueCount[]? IssueCounts { get; init; }
+    public int? ExcludedEntries => Count(StorageScanIssueKind.Excluded);
+    public int? FailedEntries => Count(StorageScanIssueKind.Failed);
+    public int? LimitedEntries => Count(StorageScanIssueKind.Limited);
+    private int? Count(StorageScanIssueKind kind) => IssueCounts is null ? null :
+        IssueCounts.Where(c => StorageScanIssue.KindOf(c.Category) == kind).Sum(c => c.Count);
     public const int MaximumRetainedEntries = 2100;
     public const int MaximumIssues = 100;
     public bool CoverageComplete => TraversalComplete && SkippedEntries == 0 && !EntryLimitReached;

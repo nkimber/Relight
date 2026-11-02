@@ -61,6 +61,12 @@ public sealed class StorageScanStore(string dataDirectory)
         if (snapshot.FilesMeasured > snapshot.EntriesVisited || snapshot.HardLinkAliases > snapshot.FilesMeasured ||
             snapshot.Issues.Length > snapshot.SkippedEntries)
             throw new InvalidDataException("Storage baseline counters are inconsistent.");
+        if (snapshot.IssueCounts is { } counts &&
+            (counts.Length >= Enum.GetValues<StorageScanIssueCategory>().Length ||
+             counts.Any(c => c is null || !Enum.IsDefined(c.Category) || c.Category == StorageScanIssueCategory.Unknown || c.Count <= 0) ||
+             counts.Select(c => c.Category).Distinct().Count() != counts.Length ||
+             counts.Sum(c => (long)c.Count) != snapshot.SkippedEntries))
+            throw new InvalidDataException("Storage baseline issue counts are invalid.");
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         string prefix = snapshot.Root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         foreach (var entry in snapshot.Entries)
@@ -72,7 +78,13 @@ public sealed class StorageScanStore(string dataDirectory)
                 throw new InvalidDataException("Storage baseline entries are invalid.");
         }
         foreach (var issue in snapshot.Issues)
-            if (issue is null || string.IsNullOrWhiteSpace(issue.Path) || string.IsNullOrWhiteSpace(issue.Reason))
+            if (issue is null || string.IsNullOrWhiteSpace(issue.Path) || string.IsNullOrWhiteSpace(issue.Reason) ||
+                !Enum.IsDefined(issue.Category) || issue.Operation is { } operation && !Enum.IsDefined(operation) ||
+                snapshot.IssueCounts is not null && (issue.Category == StorageScanIssueCategory.Unknown ||
+                    issue.Operation is null || !snapshot.IssueCounts.Any(c => c.Category == issue.Category)))
                 throw new InvalidDataException("Storage baseline coverage is invalid.");
+        if (snapshot.IssueCounts is not null && snapshot.Issues.GroupBy(i => i.Category)
+            .Any(g => g.Count() > snapshot.IssueCounts.Single(c => c.Category == g.Key).Count))
+            throw new InvalidDataException("Storage baseline samples exceed their issue counts.");
     }
 }

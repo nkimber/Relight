@@ -49,7 +49,11 @@ public sealed class ApplicationDiagnostics : IAsyncDisposable
         { _delayed = delayed; Log.TryRecord(new(delayed ? DiagnosticKind.DispatcherDelayed : DiagnosticKind.DispatcherRecovered, Dispatcher: ui)); }
         try { Log.TryRecord(new(DiagnosticKind.Heartbeat, Resources: _resources(), Dispatcher: ui)); }
         catch (Exception error) { RecordException(error, DiagnosticKind.MetricFailure); }
-        foreach (var scan in _scans.Values) Log.TryRecord(new(DiagnosticKind.ScanHeartbeat, Scan: scan.Snapshot()));
+        foreach (var scan in _scans.Values)
+        {
+            scan.FlushFailures();
+            Log.TryRecord(new(DiagnosticKind.ScanHeartbeat, Scan: scan.Snapshot()));
+        }
         if (Interlocked.CompareExchange(ref _probePending, 1, 0) == 0)
         {
             Interlocked.Exchange(ref _probeStarted, now);
@@ -84,11 +88,27 @@ public sealed class ApplicationDiagnostics : IAsyncDisposable
     }
     public void RecordException(Exception error, DiagnosticKind kind = DiagnosticKind.UnhandledException, bool terminal = false)
     {
-        try { Log.TryRecord(new(kind, Failure: DiagnosticFailure.Capture(error))); if (terminal) Log.FlushTerminal(TimeSpan.FromMilliseconds(250)); }
+        try
+        {
+            Log.TryRecord(new(kind, Failure: DiagnosticFailure.Capture(error)));
+            if (terminal)
+            {
+                foreach (var scan in _scans.Values) scan.FlushFailures();
+                Log.FlushTerminal(TimeSpan.FromMilliseconds(250));
+            }
+        }
         catch (Exception) { Log.CaptureFailed(); }
     }
-    public void RequestStop() => Log.RequestStop();
-    public ValueTask DisposeAsync() => Log.DisposeAsync();
+    public void RequestStop()
+    {
+        foreach (var scan in _scans.Values) scan.FlushFailures();
+        Log.RequestStop();
+    }
+    public ValueTask DisposeAsync()
+    {
+        RequestStop();
+        return Log.DisposeAsync();
+    }
 
     private static DiagnosticResources ReadResources()
     {
@@ -105,6 +125,11 @@ public sealed class ApplicationDiagnostics : IAsyncDisposable
         if (path.Length > 32768) path = path[..32768];
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(path.TrimEnd('\\').ToUpperInvariant())))[..16];
     }
+    internal static string Suffix(string path)
+    {
+        string extension = Path.GetExtension(path).ToLowerInvariant();
+        return new[] { ".vhdx", ".vhd", ".dll", ".exe", ".json", ".log", ".tmp", ".js", ".cs" }.Contains(extension) ? extension : "other";
+    }
 }
 
 public sealed class ScanDiagnosticSession : IStorageScanDiagnostics
@@ -117,8 +142,13 @@ public sealed class ScanDiagnosticSession : IStorageScanDiagnostics
     private readonly long _started;
     private long _operationStarted, _operationEnded, _progress, _stageStarted;
     private string? _path, _lastFailureType;
-    private int? _lastFailureCode;
-    private int _visited, _measured, _skipped, _aliases, _identities, _depth, _issues;
+    private int? _lastFailureCode, _lastNativeCode;
+    private int _visited, _measured, _skipped, _aliases, _identities, _depth, _excluded, _failed, _limitedEntries, _reportedFailures;
+    internal const int DetailedFailureGroupLimit = 24;
+    private readonly Dictionary<FailureKey, DiagnosticScanFailureGroup> _failureGroups = new();
+    private int _detailedGroups;
+    private bool _groupingLimited;
+    private sealed record FailureKey(StorageScanIssueCategory Category, ScanIoOperation? Operation, int? NativeCode, int? HResult, bool OtherCodes);
     private bool _ioPending, _cancel, _ended;
     private bool? _complete, _limited;
     private ScanIoOperation? _operation;
@@ -135,6 +165,7 @@ public sealed class ScanDiagnosticSession : IStorageScanDiagnostics
     public void Stage(DiagnosticScanStage stage)
     {
         lock (_sync) { if (_stage != stage) _stageStarted = _clock.GetTimestamp(); _stage = stage; }
+        FlushFailures();
         try { _owner.Log.TryRecord(new(DiagnosticKind.ScanStage, Scan: Snapshot())); }
         catch (Exception) { _owner.Log.CaptureFailed(); }
         _owner.Log.RequestSample();
@@ -150,12 +181,69 @@ public sealed class ScanDiagnosticSession : IStorageScanDiagnostics
         }
     }
     public void OperationEnded() { lock (_sync) { _ioPending = false; _operationEnded = _clock.GetTimestamp(); } }
+    public void Issue(StorageScanIssue issue, Exception? error = null)
+    {
+        bool first = false;
+        lock (_sync)
+        {
+            if (_ended) return;
+            _skipped++;
+            if (issue.Kind == StorageScanIssueKind.Excluded) { _excluded++; return; }
+            if (issue.Kind == StorageScanIssueKind.Limited) { _limitedEntries++; return; }
+            if (issue.Kind != StorageScanIssueKind.Failed) return;
+            _failed++;
+            _lastFailureType = error?.GetType().FullName;
+            _lastFailureCode = issue.HResult; _lastNativeCode = issue.NativeErrorCode;
+            var key = new FailureKey(issue.Category, issue.Operation, issue.NativeErrorCode, issue.HResult, false);
+            if (!_failureGroups.ContainsKey(key) && _detailedGroups >= DetailedFailureGroupLimit)
+            {
+                _groupingLimited = true;
+                key = new(issue.Category, null, null, null, true);
+            }
+            var sample = new DiagnosticScanFailureSample(_clock.GetUtcNow(), ApplicationDiagnostics.Tag(issue.Path), ApplicationDiagnostics.Suffix(issue.Path));
+            if (_failureGroups.TryGetValue(key, out var group))
+                _failureGroups[key] = group with { Count = group.Count + 1, Latest = sample };
+            else
+            {
+                if (!key.OtherCodes) _detailedGroups++;
+                string type = key.OtherCodes ? "Multiple" : error?.GetType().FullName ?? "Unavailable";
+                _failureGroups[key] = new(issue.Category, key.Operation, key.NativeCode, key.HResult,
+                    type.Length > 256 ? type[..256] : type, key.OtherCodes, 1, sample, sample);
+                first = true;
+            }
+        }
+        if (first)
+        {
+            try { _owner.Log.TryRecord(new(DiagnosticKind.ScanReadIssue, Scan: Snapshot() with
+                { Operation = issue.Operation, PathTag = ApplicationDiagnostics.Tag(issue.Path), Suffix = ApplicationDiagnostics.Suffix(issue.Path) },
+                Failure: error is null ? null : DiagnosticFailure.Capture(error))); }
+            catch (Exception) { _owner.Log.CaptureFailed(); }
+            _owner.Log.RequestSample();
+        }
+    }
+    // Kept for direct diagnostic probes; the scanner supplies explicit issue/path/operation metadata.
     public void ReadFailure(Exception error)
     {
-        bool record;
-        lock (_sync) { _lastFailureType = error.GetType().FullName; _lastFailureCode = error.HResult; record = ++_issues <= 5; }
-        if (record) try { _owner.Log.TryRecord(new(DiagnosticKind.ScanReadIssue, Scan: Snapshot(), Failure: DiagnosticFailure.Capture(error))); }
-            catch (Exception) { _owner.Log.CaptureFailed(); }
+        StorageScanIssue issue;
+        lock (_sync) issue = StorageScanIssue.Failure(_path ?? "unknown", _operation ?? ScanIoOperation.RootValidation, error);
+        Issue(issue, error);
+    }
+    public void PersistenceFailure(Exception error)
+    {
+        try { _owner.Log.TryRecord(new(DiagnosticKind.ScanFailed,
+            Scan: Snapshot() with { Operation = null, PathTag = null, Suffix = null }, Failure: DiagnosticFailure.Capture(error))); }
+        catch (Exception) { _owner.Log.CaptureFailed(); }
+    }
+    internal void FlushFailures()
+    {
+        lock (_sync)
+        {
+            if (_failed <= _reportedFailures) return;
+            var failures = new DiagnosticScanFailures(_failed, _groupingLimited,
+                _failureGroups.Values.OrderBy(g => g.Category).ThenBy(g => g.NativeCode).ThenBy(g => g.Operation).ToArray());
+            if (_owner.Log.TryRecord(new(DiagnosticKind.ScanFailureSummary, Scan: Snapshot(), ScanFailures: failures)))
+                _reportedFailures = _failed;
+        }
     }
     public void CancelRequested()
     {
@@ -171,6 +259,7 @@ public sealed class ScanDiagnosticSession : IStorageScanDiagnostics
             if (result is not null) { _visited = result.EntriesVisited; _measured = result.FilesMeasured; _skipped = result.SkippedEntries;
                 _aliases = result.HardLinkAliases; _complete = result.CoverageComplete; _limited = result.EntryLimitReached; }
         }
+        FlushFailures();
         _owner.Finish(this, stage == DiagnosticScanStage.Completed ? DiagnosticKind.ScanFinished :
             stage == DiagnosticScanStage.Canceled ? DiagnosticKind.ScanCanceled : DiagnosticKind.ScanFailed, error);
     }
@@ -187,18 +276,15 @@ public sealed class ScanDiagnosticSession : IStorageScanDiagnostics
     {
         lock (_sync)
         {
-            long now = _clock.GetTimestamp(); string? suffix = null;
-            if (_path is not null)
-            {
-                string extension = Path.GetExtension(_path).ToLowerInvariant();
-                suffix = new[] { ".vhdx", ".vhd", ".dll", ".exe", ".json", ".log", ".tmp", ".js", ".cs" }.Contains(extension) ? extension : "other";
-            }
+            long now = _clock.GetTimestamp();
+            string? suffix = _path is null ? null : ApplicationDiagnostics.Suffix(_path);
             return new(Id, _stage, _rootDrive, _rootTag, _limit, _visited, _measured, _skipped, _aliases, _identities, _depth,
                 _operation, _path is null ? null : ApplicationDiagnostics.Tag(_path), suffix, _ioPending,
                 _clock.GetElapsedTime(_operationStarted, _ioPending ? now : _operationEnded).TotalSeconds,
                 _clock.GetElapsedTime(_progress, now).TotalSeconds, _clock.GetElapsedTime(_started, now).TotalSeconds,
                 _cancel, _complete, _limited, _lastFailureType, _lastFailureCode)
-                { StageSeconds = _clock.GetElapsedTime(_stageStarted, now).TotalSeconds };
+                { StageSeconds = _clock.GetElapsedTime(_stageStarted, now).TotalSeconds,
+                    LastFailureNativeCode = _lastNativeCode, Excluded = _excluded, Failed = _failed, Limited = _limitedEntries };
         }
     }
 }

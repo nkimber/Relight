@@ -83,6 +83,8 @@
                 <TextBlock Text="{Binding ScanAge}" TextWrapping="Wrap" Margin="0,0,0,8" />
                 <TextBlock Text="{Binding ResultsLabel}" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,8" />
                 <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Margin="0,0,0,12" />
+                <TextBlock Text="{Binding CoverageTotals}" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,12"
+                           AutomationProperties.AutomationId="ScanCoverageTotals" />
                 <TextBlock Text="Logical size counts file paths. Allocated space counts each file identity once, charged to its first encountered path; folder totals overlap. These are measured file-stream bytes, not guaranteed reclaimable space. Directory overhead, alternate streams and excluded entries are not measured."
                            TextWrapping="Wrap" Margin="0,0,0,12" />
                 <TextBlock Text="{Binding FilesHeading}" FontSize="18" />
@@ -114,14 +116,53 @@
                         <DataGridTextColumn Header="Logical growth" Binding="{Binding Growth}" Width="120" />
                     </DataGrid.Columns>
                 </DataGrid>
-                <TextBlock Text="Coverage issues (up to 100)" FontSize="18" Margin="0,16,0,8" />
-                <DataGrid ItemsSource="{Binding Issues}" AutoGenerateColumns="False" IsReadOnly="True"
-                          CanUserAddRows="False" Height="160" AutomationProperties.Name="Scan coverage issues">
+                <TextBlock Text="Coverage counts by reason" FontSize="18" Margin="0,16,0,8" />
+                <DataGrid ItemsSource="{Binding IssueCounts}" AutoGenerateColumns="False" IsReadOnly="True"
+                          CanUserAddRows="False" MaxHeight="180" AutomationProperties.Name="Scan issue counts">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Reason" Binding="{Binding Reason}" Width="*" />
+                        <DataGridTextColumn Header="Type" Binding="{Binding Kind}" Width="100" />
+                        <DataGridTextColumn Header="Count" Binding="{Binding Count, StringFormat=N0}" Width="100" />
+                    </DataGrid.Columns>
+                </DataGrid>
+                <TextBlock Text="Read failures — first and recent samples by reason" FontSize="18" Margin="0,16,0,8" />
+                <TextBlock Text="Full counts appear above. Redacted failure samples and Windows error codes are in scan-failures logs; Open diagnostic logs opens their folder. Expected exclusions are listed separately below."
+                           TextWrapping="Wrap" Margin="0,0,0,8" />
+                <DataGrid ItemsSource="{Binding Failures}" AutoGenerateColumns="False" IsReadOnly="True"
+                          CanUserAddRows="False" Height="160" AutomationProperties.Name="Scan read failures">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="Location" Binding="{Binding Path}" Width="*" />
                         <DataGridTextColumn Header="Reason" Binding="{Binding Reason}" Width="*" />
+                        <DataGridTextColumn Header="Windows code" Binding="{Binding NativeErrorCode}" Width="100" />
                     </DataGrid.Columns>
                 </DataGrid>
+                <Expander Header="Expected exclusions — samples" Margin="0,12,0,0">
+                    <DataGrid ItemsSource="{Binding Exclusions}" AutoGenerateColumns="False" IsReadOnly="True"
+                              CanUserAddRows="False" Height="160" AutomationProperties.Name="Scan expected exclusions">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Location" Binding="{Binding Path}" Width="*" />
+                            <DataGridTextColumn Header="Reason" Binding="{Binding Reason}" Width="*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Expander>
+                <Expander Header="Depth limits — samples" Margin="0,12,0,0" Visibility="{Binding HasLimits, Converter={StaticResource VisibleWhenTrue}}">
+                    <DataGrid ItemsSource="{Binding Limits}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" Height="120">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Location" Binding="{Binding Path}" Width="*" />
+                            <DataGridTextColumn Header="Reason" Binding="{Binding Reason}" Width="*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Expander>
+                <Expander Header="Older scan — unclassified coverage samples" Margin="0,12,0,0"
+                          Visibility="{Binding HasUnclassifiedIssues, Converter={StaticResource VisibleWhenTrue}}">
+                    <DataGrid ItemsSource="{Binding UnclassifiedIssues}" AutoGenerateColumns="False" IsReadOnly="True"
+                              CanUserAddRows="False" Height="160" AutomationProperties.Name="Scan coverage issues">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Location" Binding="{Binding Path}" Width="*" />
+                            <DataGridTextColumn Header="Reason" Binding="{Binding Reason}" Width="*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Expander>
                 <TextBlock Text="Scans continue across navigation and hiding the dashboard. Cancel or exit Relight to stop the scan. One latest scan is saved locally for comparison; scanning a different root replaces that baseline. Traversal uses your saved entry limit and depth 128; retained rankings stay bounded."
                            TextWrapping="Wrap" Margin="0,12,0,0" />
             </StackPanel>

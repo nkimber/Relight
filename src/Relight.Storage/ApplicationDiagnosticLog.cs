@@ -10,7 +10,7 @@ namespace Relight.Storage;
 
 public enum DiagnosticKind { ProcessStarted, ProcessStopped, Heartbeat, ScanStarted, ScanStage, ScanFinished,
     ScanCanceled, ScanFailed, ScanReadIssue, ScanHeartbeat, DispatcherDelayed, DispatcherRecovered, UnhandledException, TaskException,
-    MetricFailure, HandledException }
+    MetricFailure, HandledException, ScanFailureSummary }
 public enum DiagnosticScanStage { WaitingForWorker, Traversing, AwaitingUi, Saving, Comparing, Presenting, Completed, Canceled, Failed }
 public sealed record DiagnosticFailure(string Type, int HResult, int? NativeCode, string[] Frames)
 {
@@ -40,20 +40,36 @@ public sealed record DiagnosticScan(Guid ScanId, DiagnosticScanStage Stage, stri
     ScanIoOperation? Operation, string? PathTag, string? Suffix, bool IoPending, double OperationSeconds,
     double SecondsSinceProgress, double ElapsedSeconds, bool CancelRequested, bool? Complete = null, bool? LimitReached = null,
     string? LastFailureType = null, int? LastFailureHResult = null)
-{ public double StageSeconds { get; init; } }
+{
+    public double StageSeconds { get; init; }
+    public int? LastFailureNativeCode { get; init; }
+    public int? Excluded { get; init; }
+    public int? Failed { get; init; }
+    public int? Limited { get; init; }
+}
+public sealed record DiagnosticScanFailureSample(DateTimeOffset Utc, string PathTag, string Suffix);
+public sealed record DiagnosticScanFailureGroup(StorageScanIssueCategory Category, ScanIoOperation? Operation,
+    int? NativeCode, int? HResult, string ExceptionType, bool OtherCodes, int Count,
+    DiagnosticScanFailureSample First, DiagnosticScanFailureSample Latest);
+public sealed record DiagnosticScanFailures(int FailedEntries, bool GroupingLimited, DiagnosticScanFailureGroup[] Groups);
 public sealed record ApplicationDiagnosticEntry(DiagnosticKind Kind, DiagnosticScan? Scan = null,
     DiagnosticResources? Resources = null, DiagnosticDispatcher? Dispatcher = null,
-    DiagnosticFailure? Failure = null, DiagnosticBuild? Build = null);
+    DiagnosticFailure? Failure = null, DiagnosticBuild? Build = null, DiagnosticScanFailures? ScanFailures = null);
 public sealed record ApplicationDiagnosticLine(int SchemaVersion, Guid SessionId, int ProcessId,
     long Sequence, DateTimeOffset Utc, long LostRecords, ApplicationDiagnosticEntry Entry);
+public enum DiagnosticJournalKind { Application, ScanFailures }
 
 /// <summary>Owned, flushed JSONL files. Only the diagnostic worker calls Append.</summary>
 public sealed class DiagnosticFileJournal : IDisposable
 {
     internal static readonly Regex OwnedName = new(@"^application-[a-f0-9]{32}-[0-9]{6}\.jsonl$", RegexOptions.CultureInvariant);
+    internal static readonly Regex FailureOwnedName = new(@"^scan-failures-[a-f0-9]{32}-[0-9]{6}\.jsonl$", RegexOptions.CultureInvariant);
     internal static readonly JsonSerializerOptions Json = CreateJson();
     private readonly string _directory;
     private readonly string _prefix;
+    private readonly Regex _ownedName;
+    private readonly string _pattern;
+    private readonly DiagnosticJournalKind _kind;
     private readonly long _fileLimit, _totalLimit;
     private FileStream? _stream;
     private int _segment;
@@ -61,15 +77,23 @@ public sealed class DiagnosticFileJournal : IDisposable
     public string DirectoryPath => _directory;
 
     public DiagnosticFileJournal(string dataDirectory, Guid session, long fileLimit = 2 * 1024 * 1024,
-        long totalLimit = 32 * 1024 * 1024)
+        long totalLimit = 32 * 1024 * 1024, DiagnosticJournalKind kind = DiagnosticJournalKind.Application)
     {
         if (fileLimit < 1024 || totalLimit < fileLimit) throw new ArgumentOutOfRangeException(nameof(fileLimit));
         _directory = Path.Combine(Path.GetFullPath(dataDirectory), "Logs", "Diagnostics");
-        _prefix = $"application-{session:N}-"; _fileLimit = fileLimit; _totalLimit = totalLimit;
+        if (!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
+        string name = kind == DiagnosticJournalKind.ScanFailures ? "scan-failures" : "application";
+        _kind = kind;
+        _prefix = $"{name}-{session:N}-"; _pattern = $"{name}-*.jsonl";
+        _ownedName = kind == DiagnosticJournalKind.ScanFailures ? FailureOwnedName : OwnedName;
+        _fileLimit = fileLimit; _totalLimit = totalLimit;
     }
 
     public void Append(ApplicationDiagnosticLine line)
     {
+        if (_kind == DiagnosticJournalKind.ScanFailures && line.Entry.Kind is not
+            (DiagnosticKind.ScanReadIssue or DiagnosticKind.ScanFailureSummary or DiagnosticKind.ScanFailed))
+            throw new InvalidDataException("Only scan failures belong in the failure journal.");
         byte[] bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(line, Json) + "\n");
         if (bytes.Length > 32768 || bytes.Length > _fileLimit) throw new InvalidDataException("Diagnostic record exceeds its bound.");
         if (_stream is not null && _stream.Length + bytes.Length > _fileLimit) { _stream.Dispose(); _stream = null; _segment++; }
@@ -87,8 +111,8 @@ public sealed class DiagnosticFileJournal : IDisposable
     private void Retain()
     {
         RetentionBlocked = 0;
-        var files = new DirectoryInfo(_directory).EnumerateFiles("application-*.jsonl")
-            .Where(f => OwnedName.IsMatch(f.Name) && (f.Attributes & FileAttributes.ReparsePoint) == 0)
+        var files = new DirectoryInfo(_directory).EnumerateFiles(_pattern)
+            .Where(f => _ownedName.IsMatch(f.Name) && (f.Attributes & FileAttributes.ReparsePoint) == 0)
             .OrderByDescending(f => f.LastWriteTimeUtc).ThenByDescending(f => f.Name, StringComparer.Ordinal).ToArray();
         long total = 0; int own = 0;
         foreach (var file in files)
@@ -117,7 +141,9 @@ public sealed class ApplicationDiagnosticLog : IAsyncDisposable
     private readonly Channel<ApplicationDiagnosticEntry> _queue;
     private readonly AutoResetEvent _wake = new(false);
     private readonly DiagnosticFileJournal _journal;
+    private readonly DiagnosticFileJournal _failureJournal;
     private readonly Action<ApplicationDiagnosticLine> _append;
+    private readonly Action<ApplicationDiagnosticLine> _appendFailures;
     private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Guid _session = Guid.NewGuid();
     private readonly TimeProvider _clock;
@@ -130,13 +156,15 @@ public sealed class ApplicationDiagnosticLog : IAsyncDisposable
     public long LostRecords => Interlocked.Read(ref _lost);
     public int QueueDepth => _queue.Reader.Count;
     public DateTimeOffset? LastWriteUtc => Interlocked.Read(ref _lastWrite) is var ticks && ticks > 0 ? new(ticks, TimeSpan.Zero) : null;
-    public bool Degraded => Problem is not null || LostRecords > 0 || _journal.RetentionBlocked > 0;
+    public bool Degraded => Problem is not null || LostRecords > 0 || _journal.RetentionBlocked > 0 || _failureJournal.RetentionBlocked > 0;
 
     public ApplicationDiagnosticLog(string dataDirectory, int capacity = 256, TimeProvider? clock = null,
-        Action<ApplicationDiagnosticLine>? append = null)
+        Action<ApplicationDiagnosticLine>? append = null, Action<ApplicationDiagnosticLine>? appendFailures = null)
     {
         _clock = clock ?? TimeProvider.System; _journal = new(dataDirectory, _session);
+        _failureJournal = new(dataDirectory, _session, totalLimit: 8 * 1024 * 1024, kind: DiagnosticJournalKind.ScanFailures);
         _append = append ?? _journal.Append;
+        _appendFailures = appendFailures ?? _failureJournal.Append;
         _queue = Channel.CreateBounded<ApplicationDiagnosticEntry>(new BoundedChannelOptions(capacity)
             { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
     }
@@ -171,7 +199,7 @@ public sealed class ApplicationDiagnosticLog : IAsyncDisposable
             Write(new(DiagnosticKind.ProcessStopped));
         }
         catch (Exception) { CaptureFailed(); }
-        finally { try { _journal.Dispose(); } catch (Exception) { CaptureFailed(); } _wake.Dispose(); _completion.TrySetResult(); }
+        finally { DisposeJournals(); _wake.Dispose(); _completion.TrySetResult(); }
     }
     internal void Drain()
     {
@@ -182,13 +210,24 @@ public sealed class ApplicationDiagnosticLog : IAsyncDisposable
     {
         try
         {
-            _append(new(1, _session, Environment.ProcessId, Interlocked.Increment(ref _sequence), _clock.GetUtcNow(), LostRecords, entry));
+            var line = new ApplicationDiagnosticLine(1, _session, Environment.ProcessId, Interlocked.Increment(ref _sequence), _clock.GetUtcNow(), LostRecords, entry);
+            if (entry.Kind is DiagnosticKind.ScanReadIssue or DiagnosticKind.ScanFailureSummary) _appendFailures(line);
+            else
+            {
+                _append(line);
+                if (entry.Kind == DiagnosticKind.ScanFailed && entry.Failure is not null) _appendFailures(line);
+            }
             Interlocked.Exchange(ref _lastWrite, _clock.GetUtcNow().UtcTicks); Volatile.Write(ref _problem, null);
         }
         catch (Exception error)
         { Interlocked.Increment(ref _lost); Volatile.Write(ref _problem, $"Diagnostic write failed ({error.GetType().Name}, 0x{error.HResult:X8})."); }
     }
     private void Signal() { try { _wake.Set(); } catch (ObjectDisposedException) { } }
+    private void DisposeJournals()
+    {
+        try { _journal.Dispose(); } catch (Exception) { CaptureFailed(); }
+        try { _failureJournal.Dispose(); } catch (Exception) { CaptureFailed(); }
+    }
     public void RequestStop() { Interlocked.Exchange(ref _stopping, 1); _queue.Writer.TryComplete(); Signal(); }
     public void RequestSample() { Interlocked.Exchange(ref _sampleRequested, 1); Signal(); }
     public void CaptureFailed()
@@ -204,7 +243,7 @@ public sealed class ApplicationDiagnosticLog : IAsyncDisposable
         if (Interlocked.CompareExchange(ref _started, 1, 0) == 0)
         {
             try { Drain(); Write(new(DiagnosticKind.ProcessStopped)); }
-            finally { _journal.Dispose(); _wake.Dispose(); _completion.TrySetResult(); }
+            finally { DisposeJournals(); _wake.Dispose(); _completion.TrySetResult(); }
         }
         await Completion.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
     }

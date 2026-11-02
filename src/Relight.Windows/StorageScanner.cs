@@ -30,7 +30,7 @@ public sealed class StorageScanner(IStorageScanFileSystem? fileSystem = null)
         if (_files is WindowsStorageScanFileSystem && new DriveInfo(Path.GetPathRoot(root)!).DriveType != DriveType.Fixed)
             throw new ArgumentException("Select a folder on a fixed local drive.");
         DateTimeOffset started = DateTimeOffset.UtcNow;
-        var issues = new List<StorageScanIssue>();
+        var issues = new StorageScanIssueCollector();
         var folders = new PriorityQueue<StorageScanEntry, long>();
         var largestFiles = new PriorityQueue<StorageScanEntry, long>();
         var identities = new HashSet<string>(StringComparer.Ordinal);
@@ -39,18 +39,21 @@ public sealed class StorageScanner(IStorageScanFileSystem? fileSystem = null)
 
         void Step(ScanIoOperation operation, string path, int depth) =>
             diagnostics?.Operation(operation, path, depth, visited, measured, skipped, aliases, identities.Count);
-        StorageFileMetadata Read(string path, int depth)
+        StorageFileMetadata Read(string path, int depth, ScanIoOperation operation = ScanIoOperation.ReadMetadata)
         {
-            Step(ScanIoOperation.ReadMetadata, path, depth);
+            Step(operation, path, depth);
             try { return _files.Read(path); }
             finally { diagnostics?.OperationEnded(); }
         }
 
-        void Issue(string path, string reason)
+        void Issue(StorageScanIssue issue, Exception? error = null)
         {
             skipped++;
-            if (issues.Count < StorageScanSnapshot.MaximumIssues) issues.Add(new(path, reason));
+            issues.Add(issue);
+            diagnostics?.Issue(issue, error);
         }
+        void Failure(string path, ScanIoOperation operation, Exception error) =>
+            Issue(StorageScanIssue.Failure(path, operation, error), error);
 
         static void Retain(PriorityQueue<StorageScanEntry, long> queue, StorageScanEntry entry, int count)
         {
@@ -69,7 +72,8 @@ public sealed class StorageScanner(IStorageScanFileSystem? fileSystem = null)
                 StorageFileMetadata metadata = Read(path, depth);
                 if (metadata.Excluded)
                 {
-                    Issue(path, "Reparse point, offline or recall-on-access entry skipped.");
+                    Issue(new(path, "Reparse point, offline or recall-on-access entry skipped.")
+                        { Category = StorageScanIssueCategory.ReparseOrOffline, Operation = ScanIoOperation.ReadMetadata });
                     return (0, 0, false);
                 }
                 if (!metadata.IsDirectory)
@@ -85,9 +89,11 @@ public sealed class StorageScanner(IStorageScanFileSystem? fileSystem = null)
                         metadata.LogicalBytes, allocated, true), 100);
                     return (metadata.LogicalBytes, allocated, true);
                 }
-                if (depth >= 128) { Issue(path, "Maximum directory depth reached (128)."); return (0, 0, false); }
+                if (depth >= 128) { Issue(new(path, "Maximum directory depth reached (128).")
+                    { Category = StorageScanIssueCategory.DepthLimit, Operation = ScanIoOperation.EnumerateDirectory }); return (0, 0, false); }
                 long logical = 0, allocatedTotal = 0;
                 bool complete = true;
+                ScanIoOperation operation = ScanIoOperation.EnumerateDirectory;
                 try
                 {
                     Step(ScanIoOperation.EnumerateDirectory, path, depth);
@@ -98,6 +104,7 @@ public sealed class StorageScanner(IStorageScanFileSystem? fileSystem = null)
                     while (true)
                     {
                         Step(ScanIoOperation.EnumerateDirectory, path, depth);
+                        operation = ScanIoOperation.EnumerateDirectory;
                         bool next;
                         try { next = children.MoveNext(); }
                         finally { diagnostics?.OperationEnded(); }
@@ -105,6 +112,7 @@ public sealed class StorageScanner(IStorageScanFileSystem? fileSystem = null)
                         cancellationToken.ThrowIfCancellationRequested();
                         if (visited >= maximumEntries) { limited = true; complete = false; break; }
                         var part = Visit(children.Current, depth + 1);
+                        operation = ScanIoOperation.Aggregate;
                         logical = checked(logical + part.Logical);
                         allocatedTotal = checked(allocatedTotal + part.Allocated);
                         complete &= part.Complete;
@@ -112,8 +120,7 @@ public sealed class StorageScanner(IStorageScanFileSystem? fileSystem = null)
                 }
                 catch (Exception error) when (IsReadFailure(error))
                 {
-                    diagnostics?.ReadFailure(error);
-                    Issue(path, error.Message);
+                    Failure(path, operation, error);
                     complete = false;
                 }
                 Step(ScanIoOperation.Aggregate, path, depth);
@@ -123,8 +130,7 @@ public sealed class StorageScanner(IStorageScanFileSystem? fileSystem = null)
             }
             catch (Exception error) when (IsReadFailure(error))
             {
-                diagnostics?.ReadFailure(error);
-                Issue(path, error.Message);
+                Failure(path, ScanIoOperation.ReadMetadata, error);
                 return (0, 0, false);
             }
         }
@@ -136,16 +142,17 @@ public sealed class StorageScanner(IStorageScanFileSystem? fileSystem = null)
             for (string? ancestor = root; ancestor is not null; ancestor = Path.GetDirectoryName(ancestor))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (Read(ancestor, 0).Excluded)
+                if (Read(ancestor, 0, ScanIoOperation.RootValidation).Excluded)
                 {
-                    Issue(ancestor, "Selected path has a reparse/offline/recall ancestor; choose a direct local folder.");
+                    Issue(new(ancestor, "Selected path has a reparse/offline/recall ancestor; choose a direct local folder.")
+                        { Category = StorageScanIssueCategory.ReparseOrOffline, Operation = ScanIoOperation.RootValidation });
                     rootAllowed = false;
                     break;
                 }
             }
-            if (rootAllowed && !Read(root, 0).IsDirectory) throw new IOException("Select a folder, not a file.");
+            if (rootAllowed && !Read(root, 0, ScanIoOperation.RootValidation).IsDirectory) throw new IOException("Select a folder, not a file.");
         }
-        catch (Exception error) when (IsReadFailure(error)) { diagnostics?.ReadFailure(error); Issue(root, error.Message); rootAllowed = false; }
+        catch (Exception error) when (IsReadFailure(error)) { Failure(root, ScanIoOperation.RootValidation, error); rootAllowed = false; }
         if (rootAllowed) Visit(root, 0);
         cancellationToken.ThrowIfCancellationRequested();
         progress?.Report(visited);
@@ -154,7 +161,7 @@ public sealed class StorageScanner(IStorageScanFileSystem? fileSystem = null)
             folders.UnorderedItems.Select(i => i.Element).Concat(largestFiles.UnorderedItems.Select(i => i.Element))
                 .OrderByDescending(e => e.AllocatedBytes).ThenByDescending(e => e.LogicalBytes)
                 .ThenBy(e => e.Path, StringComparer.OrdinalIgnoreCase).ToArray(),
-            issues.ToArray()) { EntryLimit = maximumEntries };
+            issues.Samples()) { EntryLimit = maximumEntries, IssueCounts = issues.Counts() };
     }
 
     private static bool IsReadFailure(Exception error) => error is IOException or UnauthorizedAccessException

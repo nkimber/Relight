@@ -153,7 +153,9 @@ public sealed class StorageScannerTests
         foreach (string child in files.Children[@"C:\scan"]) files.Failures.Add(child);
         var result = new StorageScanner(files).Scan(@"C:\scan");
         Assert.Equal(150, result.SkippedEntries);
-        Assert.Equal(100, result.Issues.Length);
+        Assert.Equal(StorageScanIssueCollector.SamplesPerCategory, result.Issues.Length);
+        Assert.Equal(150, result.FailedEntries);
+        Assert.Contains(result.Issues, i => i.Path.EndsWith("denied-149", StringComparison.Ordinal));
         var deep = new FakeFiles();
         string path = @"C:\scan";
         for (int i = 0; i < 140; i++)

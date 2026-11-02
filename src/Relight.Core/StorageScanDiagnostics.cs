@@ -7,5 +7,5 @@ public interface IStorageScanDiagnostics
     void Operation(ScanIoOperation operation, string path, int depth, int visited, int measured,
         int skipped, int aliases, int identities);
     void OperationEnded();
-    void ReadFailure(Exception error);
+    void Issue(StorageScanIssue issue, Exception? error = null);
 }

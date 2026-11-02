@@ -7,13 +7,17 @@ public sealed record ApplicationDiagnosticExport(int Records, int Skipped);
 
 public sealed class ApplicationDiagnosticReader(string dataDirectory)
 {
-    public async Task<ApplicationDiagnosticExport> ExportAsync(Stream output, CancellationToken token = default)
+    public Task<ApplicationDiagnosticExport> ExportAsync(Stream output, CancellationToken token = default) => ExportAsync(output, false, token);
+    public Task<ApplicationDiagnosticExport> ExportFailuresAsync(Stream output, CancellationToken token = default) => ExportAsync(output, true, token);
+
+    private async Task<ApplicationDiagnosticExport> ExportAsync(Stream output, bool failuresOnly, CancellationToken token)
     {
         string directory = Path.Combine(Path.GetFullPath(dataDirectory), "Logs", "Diagnostics");
         if (!Directory.Exists(directory)) return new(0, 0);
         var retained = new Queue<byte[]>(); int bytes = 0, skipped = 0;
-        var files = new DirectoryInfo(directory).EnumerateFiles("application-*.jsonl")
-            .Where(f => DiagnosticFileJournal.OwnedName.IsMatch(f.Name) && (f.Attributes & FileAttributes.ReparsePoint) == 0)
+        var owned = failuresOnly ? DiagnosticFileJournal.FailureOwnedName : DiagnosticFileJournal.OwnedName;
+        var files = new DirectoryInfo(directory).EnumerateFiles(failuresOnly ? "scan-failures-*.jsonl" : "application-*.jsonl")
+            .Where(f => owned.IsMatch(f.Name) && (f.Attributes & FileAttributes.ReparsePoint) == 0)
             .OrderByDescending(f => f.LastWriteTimeUtc).Take(32).OrderBy(f => f.LastWriteTimeUtc).ToArray();
         foreach (var file in files)
         {
@@ -30,6 +34,8 @@ public sealed class ApplicationDiagnosticReader(string dataDirectory)
                     try { record = JsonSerializer.Deserialize<ApplicationDiagnosticLine>(line, DiagnosticFileJournal.Json); }
                     catch (JsonException) { skipped++; continue; }
                     if (record is null || record.SchemaVersion != 1 || record.SessionId == Guid.Empty || record.Entry is null)
+                    { skipped++; continue; }
+                    if (failuresOnly && record.Entry.Kind is not (DiagnosticKind.ScanReadIssue or DiagnosticKind.ScanFailureSummary or DiagnosticKind.ScanFailed))
                     { skipped++; continue; }
                     byte[] clean = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(record, DiagnosticFileJournal.Json) + "\n");
                     retained.Enqueue(clean); bytes += clean.Length;

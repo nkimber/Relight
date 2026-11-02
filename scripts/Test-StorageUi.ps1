@@ -7,7 +7,8 @@ param(
     [switch]$ExerciseStorageNotifications,
     [switch]$ExerciseScanLimit,
     [switch]$ExerciseScanProgress,
-    [switch]$ExerciseLongPaths
+    [switch]$ExerciseLongPaths,
+    [switch]$ExerciseScanFailures
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
@@ -17,12 +18,21 @@ using System.Runtime.InteropServices;
 public static class CleanupUiChoice {
     [DllImport("user32.dll")]
     public static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+    [DllImport("kernel32.dll", EntryPoint="CreateFileW", CharSet=CharSet.Unicode, SetLastError=true)]
+    private static extern Microsoft.Win32.SafeHandles.SafeFileHandle OpenDirectory(string path, uint access,
+        uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+    public static Microsoft.Win32.SafeHandles.SafeFileHandle HoldDirectory(string path) {
+        var handle = OpenDirectory(@"\\?\" + path, 1, 0, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);
+        if (handle.IsInvalid) { int code=Marshal.GetLastWin32Error(); handle.Dispose(); throw new System.ComponentModel.Win32Exception(code); }
+        return handle;
+    }
 }
 '@
 if ($ExerciseAutomaticApproval) { $ExerciseCleanup = $true }
 if ($ExerciseScanProgress) { $ExerciseScanLimit = $true }
 if ($ExerciseScanLimit) { $ExerciseScan = $true }
 if ($ExerciseLongPaths) { $ExerciseScan = $true }
+if ($ExerciseScanFailures) { $ExerciseScan = $true }
 function Wait-For([scriptblock]$Condition, [string]$Description) {
     $until = [DateTime]::UtcNow.AddSeconds(20)
     while ([DateTime]::UtcNow -lt $until) {
@@ -252,6 +262,48 @@ try {
             Wait-For { -not (Find-Control $storage 'SCAN STOPPED — ENTRY LIMIT REACHED') } 'limit warning cleared only by rescan' | Out-Null
             Write-Output 'PASS: saved scan budgets, pinned stop banner, acknowledgement, partial headings and warning retained until rescan.'
         }
+    }
+    if ($ExerciseScanFailures) {
+        Select-StorageSection 'Space usage'
+        $blockedFolder = Join-Path $fixture 'blocked-directory'
+        $junction = Join-Path $fixture 'excluded-junction'
+        $outside = Join-Path $root 'excluded-target'
+        [IO.Directory]::CreateDirectory($blockedFolder) | Out-Null
+        [IO.Directory]::CreateDirectory($outside) | Out-Null
+        & cmd.exe /c mklink /J $junction $outside | Out-Null
+        if ($LASTEXITCODE -ne 0) {throw 'Disposable junction creation failed.'}
+        $heldDirectory = $null
+        try {
+            $heldDirectory = [CleanupUiChoice]::HoldDirectory($blockedFolder)
+            $prior = (Read-Json $baselinePath).FinishedUtc
+            Wait-For { (Find-Control $storage 'Scan folder').Current.IsEnabled } 'scan ready for failure fixture' | Out-Null
+            Invoke-Button $storage 'Scan folder'
+            $partial = Wait-For {
+                $next = Read-Json $baselinePath
+                if ($next.FinishedUtc -ne $prior -and $next.FailedEntries -eq 1 -and $next.ExcludedEntries -eq 1) {return $next}
+            } 'separate saved failure/exclusion counts'
+            if ($partial.CoverageComplete) {throw 'Failure fixture incorrectly has complete coverage.'}
+            Wait-For { Find-Control $storage 'Excluded: 1 · Failed: 1 · Depth-limited: 0' } 'visible separated totals' | Out-Null
+            $failuresGrid = Find-Control $storage 'Scan read failures'
+            if ($failuresGrid.GetCurrentPattern([System.Windows.Automation.GridPattern]::Pattern).Current.RowCount -ne 1) {throw 'Failure grid includes exclusions or omits failure.'}
+            Wait-For {
+                $failureRecords = @(Get-ChildItem -LiteralPath (Join-Path $root 'Logs/Diagnostics') -Filter 'scan-failures-*.jsonl' | ForEach-Object {
+                    Get-Content -LiteralPath $_.FullName | ForEach-Object {try {$_ | ConvertFrom-Json} catch {}}
+                })
+                $summary = $failureRecords | Where-Object {$_.Entry.ScanFailures.FailedEntries -eq 1} | Select-Object -Last 1
+                $summary.Entry.ScanFailures.Groups.NativeCode -contains 32
+            } 'flushed failure-only summary and Windows sharing code' | Out-Null
+            $rawFailures = Get-ChildItem -LiteralPath (Join-Path $root 'Logs/Diagnostics') -Filter 'scan-failures-*.jsonl' | Get-Content
+            if ($rawFailures -match [regex]::Escape($fixture) -or $rawFailures -match 'ReparseOrOffline') {throw 'Failure log exposes a path or contains expected exclusions.'}
+        } finally {
+            if ($null -ne $heldDirectory) {$heldDirectory.Dispose()}
+            [IO.Directory]::Delete($junction)
+            [IO.Directory]::Delete($blockedFolder)
+        }
+        Wait-For { (Find-Control $storage 'Scan folder').Current.IsEnabled } 'rescan after fixture release' | Out-Null
+        Invoke-Button $storage 'Scan folder'
+        Wait-For { $next=Read-Json $baselinePath; $next.CoverageComplete -and $next.FailedEntries -eq 0 -and $next.ExcludedEntries -eq 0 } 'complete replacement after removing fixture gaps' | Out-Null
+        Write-Output 'PASS: separate failure/exclusion totals and failure-only grid; dedicated redacted log includes native code; complete rescan clears gaps.'
     }
     if ($ExerciseCleanup) {
         $cleanupFixture = Join-Path ([IO.Path]::GetTempPath()) ('relight-reviewed-ui-' + [guid]::NewGuid().ToString('N'))

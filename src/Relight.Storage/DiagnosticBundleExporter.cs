@@ -57,6 +57,10 @@ public sealed class DiagnosticBundleExporter(string dataDirectory)
                     await using (Stream entry = archive.CreateEntry("application-diagnostics.jsonl", CompressionLevel.Fastest).Open())
                         applicationDiagnostics = await new ApplicationDiagnosticReader(_dataDirectory)
                             .ExportAsync(entry, cancellationToken).ConfigureAwait(false);
+                    ApplicationDiagnosticExport scanFailures;
+                    await using (Stream entry = archive.CreateEntry("scan-failures.jsonl", CompressionLevel.Fastest).Open())
+                        scanFailures = await new ApplicationDiagnosticReader(_dataDirectory)
+                            .ExportFailuresAsync(entry, cancellationToken).ConfigureAwait(false);
                     object redactedConfiguration = configuration is null
                         ? new { Available = false }
                         : new
@@ -94,6 +98,7 @@ public sealed class DiagnosticBundleExporter(string dataDirectory)
                         },
                         Targets = targets?.ToArray(),
                         ApplicationDiagnostics = applicationDiagnostics,
+                        ScanFailures = scanFailures,
                         Events = new
                         {
                             Exported = history.ExportedEvents,

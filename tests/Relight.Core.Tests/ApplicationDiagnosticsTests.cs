@@ -130,7 +130,13 @@ public sealed class ApplicationDiagnosticsTests
         var records = text.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => JsonDocument.Parse(line)).ToArray();
         try
         {
-            Assert.Equal(5, records.Count(r => r.RootElement.GetProperty("Entry").GetProperty("Kind").GetString() == "ScanReadIssue"));
+            Assert.DoesNotContain(records, r => r.RootElement.GetProperty("Entry").GetProperty("Kind").GetString() == "ScanReadIssue");
+            using var failureBytes = new MemoryStream();
+            await new ApplicationDiagnosticReader(fixture.Path).ExportFailuresAsync(failureBytes);
+            string failureText = Encoding.UTF8.GetString(failureBytes.ToArray());
+            Assert.Contains("\"FailedEntries\":100", failureText);
+            Assert.Contains("\"Count\":100", failureText);
+            Assert.DoesNotContain("secret-message", failureText);
             var finished = records.Single(r => r.RootElement.GetProperty("Entry").GetProperty("Kind").GetString() == "ScanFinished");
             Assert.Equal(scan.Id, finished.RootElement.GetProperty("Entry").GetProperty("Scan").GetProperty("ScanId").GetGuid());
             Assert.Equal(90000, finished.RootElement.GetProperty("Entry").GetProperty("Scan").GetProperty("Measured").GetInt32());

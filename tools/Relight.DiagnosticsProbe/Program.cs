@@ -21,7 +21,14 @@ if (args is ["--child", var directory])
             Process.GetCurrentProcess().SessionId), cadence: TimeSpan.FromSeconds(1), uiDelayThreshold: TimeSpan.FromSeconds(2));
     var scan = diagnostics.BeginScan(@"C:\disposable-secret", 100000)!;
     scan.Stage(DiagnosticScanStage.Traversing);
-    scan.Operation(ScanIoOperation.ReadMetadata, @"C:\disposable-secret\blocked.vhdx", 1, 250, 200, 0, 0, 200);
+    scan.Issue(new(@"C:\disposable-secret\excluded", "expected exclusion")
+        { Category = StorageScanIssueCategory.ReparseOrOffline, Operation = ScanIoOperation.ReadMetadata });
+    for (int i = 0; i < 10; i++)
+    {
+        var error = new System.ComponentModel.Win32Exception(i == 0 ? 5 : 3, "disposable-secret message");
+        scan.Issue(StorageScanIssue.Failure(@"C:\disposable-secret\failed-" + i, ScanIoOperation.ReadMetadata, error), error);
+    }
+    scan.Operation(ScanIoOperation.ReadMetadata, @"C:\disposable-secret\blocked.vhdx", 1, 250, 200, 11, 0, 200);
     Console.WriteLine("READY");
     await Task.Delay(Timeout.Infinite);
     return;
@@ -37,25 +44,37 @@ var elapsed = Stopwatch.StartNew();
 try
 {
     if (await child.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(15)) != "READY") throw new Exception("Child did not initialize.");
-    string text = "";
+    string text = "", failureText = "";
     do
     {
         using var bytes = new MemoryStream();
         await new ApplicationDiagnosticReader(root).ExportAsync(bytes);
         text = System.Text.Encoding.UTF8.GetString(bytes.ToArray());
-        if (text.Contains("DispatcherDelayed") && text.Contains("ScanHeartbeat") && text.Contains("\"IoPending\":true")) break;
+        using var failures = new MemoryStream();
+        await new ApplicationDiagnosticReader(root).ExportFailuresAsync(failures);
+        failureText = System.Text.Encoding.UTF8.GetString(failures.ToArray());
+        if (text.Contains("DispatcherDelayed") && text.Contains("ScanHeartbeat") && text.Contains("\"IoPending\":true") &&
+            failureText.Contains("\"FailedEntries\":10")) break;
         await Task.Delay(200);
     } while (elapsed.Elapsed < TimeSpan.FromSeconds(15));
-    if (!text.Contains("DispatcherDelayed") || !text.Contains("\"IoPending\":true")) throw new Exception("Missing live watchdog evidence.");
+    if (!text.Contains("DispatcherDelayed") || !text.Contains("\"IoPending\":true") || !failureText.Contains("\"FailedEntries\":10"))
+        throw new Exception("Missing live watchdog or failure-stream evidence.");
     child.Kill(); await child.WaitForExitAsync();
     using var durable = new MemoryStream();
     var exported = await new ApplicationDiagnosticReader(root).ExportAsync(durable);
     string retained = System.Text.Encoding.UTF8.GetString(durable.ToArray());
+    using var durableFailures = new MemoryStream();
+    var failureExport = await new ApplicationDiagnosticReader(root).ExportFailuresAsync(durableFailures);
+    string retainedFailures = System.Text.Encoding.UTF8.GetString(durableFailures.ToArray());
     if (!retained.Contains("ProcessStarted") || !retained.Contains("DispatcherDelayed") || !retained.Contains("WorkingSet") ||
         retained.Contains("ProcessStopped") || retained.Contains("disposable-secret")) throw new Exception("Invalid durable/redacted termination evidence.");
+    if (!retainedFailures.Contains("\"FailedEntries\":10") || !retainedFailures.Contains("\"NativeCode\":5") ||
+        !retainedFailures.Contains("\"NativeCode\":3") || retainedFailures.Contains("disposable-secret") ||
+        retainedFailures.Contains("ReparseOrOffline")) throw new Exception("Invalid durable failure-only evidence.");
     var report = new { Passed = true, Seconds = elapsed.Elapsed.TotalSeconds, Machine = Environment.MachineName,
         Session = Process.GetCurrentProcess().SessionId, ChildPid = child.Id, Records = exported.Records,
-        Scope = "Synthetic dispatcher delay and pending metadata marker; child forced termination. No real C scan or original freeze reproduction." };
+        FailureRecords = failureExport.Records, FailedEntries = 10,
+        Scope = "Synthetic dispatcher delay, pending metadata marker and classified failures; child forced termination. No real C scan or original freeze reproduction." };
     await File.WriteAllTextAsync(Path.Combine(root, "report.json"), JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
     Console.WriteLine(JsonSerializer.Serialize(report));
 }

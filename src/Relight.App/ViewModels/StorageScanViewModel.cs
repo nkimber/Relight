@@ -84,6 +84,14 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
     public IReadOnlyList<StorageScanRow> Folders { get; private set; } = [];
     public IReadOnlyList<StorageGrowthRow> Growth { get; private set; } = [];
     public IReadOnlyList<StorageScanIssue> Issues { get; private set; } = [];
+    public IReadOnlyList<StorageScanIssue> Failures => Issues.Where(i => i.Kind == StorageScanIssueKind.Failed).ToArray();
+    public IReadOnlyList<StorageScanIssue> Exclusions => Issues.Where(i => i.Kind == StorageScanIssueKind.Excluded).ToArray();
+    public IReadOnlyList<StorageScanIssue> Limits => Issues.Where(i => i.Kind == StorageScanIssueKind.Limited).ToArray();
+    public IReadOnlyList<StorageScanIssue> UnclassifiedIssues => Issues.Where(i => i.Kind == StorageScanIssueKind.Unknown).ToArray();
+    public bool HasUnclassifiedIssues => UnclassifiedIssues.Count > 0;
+    public bool HasLimits => Limits.Count > 0;
+    public string CoverageTotals { get; private set; } = "Excluded: — · Failed: —";
+    public IReadOnlyList<StorageScanIssueCountRow> IssueCounts { get; private set; } = [];
 
     public async Task LoadAsync()
     {
@@ -153,7 +161,7 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
             string? persistenceProblem = null;
             StorageScanSnapshot? previous = null;
             try { previous = await Task.Run(() => _store.Save(snapshot)); }
-            catch (Exception error) { persistenceProblem = error.Message; _diagnosticScan?.ReadFailure(error); }
+            catch (Exception error) { persistenceProblem = error.Message; _diagnosticScan?.PersistenceFailure(error); }
             if (_closed) return;
             _diagnosticScan?.Stage(DiagnosticScanStage.Presenting);
             Present(snapshot);
@@ -212,14 +220,33 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
         Files = snapshot.Entries.Where(e => e.Kind == StorageScanEntryKind.File).Take(100).Select(Row).ToArray();
         Folders = snapshot.Entries.Where(e => e.Kind == StorageScanEntryKind.Folder).Take(100).Select(Row).ToArray();
         Issues = snapshot.Issues;
+        CoverageTotals = snapshot.IssueCounts is null
+            ? $"Excluded: unknown · Failed: unknown · {snapshot.SkippedEntries:N0} combined gaps in this older scan. Rescan to classify."
+            : $"Excluded: {snapshot.ExcludedEntries:N0} · Failed: {snapshot.FailedEntries:N0} · Depth-limited: {snapshot.LimitedEntries:N0}";
+        IssueCounts = (snapshot.IssueCounts ?? []).Select(c => new StorageScanIssueCountRow(
+            CategoryLabel(c.Category), StorageScanIssue.KindOf(c.Category).ToString(), c.Count)).ToArray();
         Status = $"{(snapshot.CoverageComplete ? "Traversal completed" : "Partial scan")} · {snapshot.Root}\n" +
             $"As of {snapshot.FinishedUtc.ToLocalTime():G} · {snapshot.EntriesVisited:N0} entries inspected, " +
-            $"{snapshot.FilesMeasured:N0} file paths measured, {snapshot.SkippedEntries:N0} skipped/failed, " +
+            $"{snapshot.FilesMeasured:N0} file paths measured, {snapshot.SkippedEntries:N0} total coverage gaps, " +
             $"{snapshot.HardLinkAliases:N0} hard-link aliases. " +
             (snapshot.EntryLimitReached ? $"{snapshot.EntryLimit:N0}-entry limit reached. Increase the limit or select a smaller folder. " : "") +
-            $"Largest 100 files and folders by allocated space shown; first {snapshot.Issues.Length} coverage issues listed. " +
+            $"Largest 100 files and folders by allocated space shown; {snapshot.Issues.Length} representative coverage samples retained. " +
             "Live-tree observations may change during scanning; this is not a point-in-time snapshot.";
     }
+
+    private static string CategoryLabel(StorageScanIssueCategory category) => category switch
+    {
+        StorageScanIssueCategory.ReparseOrOffline => "Reparse, offline or recall entry",
+        StorageScanIssueCategory.DepthLimit => "Directory depth limit",
+        StorageScanIssueCategory.AccessDenied => "Access denied",
+        StorageScanIssueCategory.MissingOrChanged => "Missing or changed path",
+        StorageScanIssueCategory.SharingViolation => "File in use",
+        StorageScanIssueCategory.MetadataUnavailable => "Metadata unavailable",
+        StorageScanIssueCategory.EnumerationFailure => "Directory enumeration failed",
+        StorageScanIssueCategory.NativeIoFailure => "Windows I/O error",
+        StorageScanIssueCategory.SizeOverflow => "Size total overflow",
+        _ => "Unclassified"
+    };
 
     private static StorageScanRow Row(StorageScanEntry e) => new(e.Path,
         e.LogicalBytes / 1_048_576d, e.AllocatedBytes / 1_048_576d,
@@ -230,3 +257,4 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
 
 internal sealed record StorageScanRow(string Path, double LogicalMiB, double AllocatedMiB, string Coverage);
 internal sealed record StorageGrowthRow(string Path, string Kind, string Growth);
+internal sealed record StorageScanIssueCountRow(string Reason, string Kind, int Count);
