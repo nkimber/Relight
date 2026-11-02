@@ -30,8 +30,13 @@ public sealed class PackagedProcessProbe
     private readonly string _processName;
     private readonly int _sessionId;
     private readonly string _userSid;
+    private readonly Func<Process[]> _getProcesses;
 
     public PackagedProcessProbe(string familyName, string executableName)
+        : this(familyName, executableName, null) { }
+
+    internal PackagedProcessProbe(string familyName, string executableName,
+        Func<Process[]>? getProcesses)
     {
         if (string.IsNullOrWhiteSpace(familyName) || familyName.Contains('\\') ||
             familyName.Contains('/') || familyName.Length > 255)
@@ -45,6 +50,7 @@ public sealed class PackagedProcessProbe
                 nameof(executableName));
         _familyName = familyName;
         _processName = Path.GetFileNameWithoutExtension(executableName);
+        _getProcesses = getProcesses ?? (() => Process.GetProcessesByName(_processName));
         using Process current = Process.GetCurrentProcess();
         _sessionId = current.SessionId;
         _userSid = WindowsIdentity.GetCurrent().User?.Value ??
@@ -52,10 +58,15 @@ public sealed class PackagedProcessProbe
     }
 
     public Task<PackagedProcessInspection> InspectAsync(CancellationToken cancellationToken = default)
-        => Task.Run(() => Inspect(cancellationToken), cancellationToken);
+        => Task.Run(() => InspectOnWorker(cancellationToken), cancellationToken);
 
-    private PackagedProcessInspection Inspect(CancellationToken cancellationToken)
+    // Task.Run unwraps this result. Represent cooperative cancellation as a
+    // canceled task so it does not throw out of a synchronous worker delegate
+    // (which Visual Studio reports as user-unhandled before the caller catches it).
+    private Task<PackagedProcessInspection> InspectOnWorker(CancellationToken cancellationToken)
     {
+        if (cancellationToken.IsCancellationRequested)
+            return Task.FromCanceled<PackagedProcessInspection>(cancellationToken);
         var candidates = new List<PackagedProcessCandidate>();
         string? problem = null;
         DetectionFailureKind? failureKind = null;
@@ -63,13 +74,15 @@ public sealed class PackagedProcessProbe
         DetectionDiagnostic? diagnostic = null;
         try
         {
-            foreach (Process process in Process.GetProcessesByName(_processName))
+            Process[] processes = _getProcesses();
+            try
             {
-                using (process)
+                foreach (Process process in processes)
                 {
                     string stage = "Session";
                     DetectionDiagnosticCode code = DetectionDiagnosticCode.CandidateInspectionFailed;
-                    cancellationToken.ThrowIfCancellationRequested();
+                    if (cancellationToken.IsCancellationRequested)
+                        return Task.FromCanceled<PackagedProcessInspection>(cancellationToken);
                     try
                     {
                         if (process.HasExited || process.SessionId != _sessionId) continue;
@@ -124,6 +137,12 @@ public sealed class PackagedProcessProbe
                     }
                 }
             }
+            finally
+            {
+                // Enumeration creates all Process objects up front; cancellation
+                // must also dispose candidates we have not visited yet.
+                foreach (Process process in processes) process.Dispose();
+            }
         }
         catch (Exception error) when (error is Win32Exception or UnauthorizedAccessException)
         {
@@ -137,12 +156,14 @@ public sealed class PackagedProcessProbe
                     ExceptionType: error.GetType().Name, HResult: error.HResult);
             }
         }
-        return new(candidates, problem, failureKind, nativeErrorCode,
+        if (cancellationToken.IsCancellationRequested)
+            return Task.FromCanceled<PackagedProcessInspection>(cancellationToken);
+        return Task.FromResult(new PackagedProcessInspection(candidates, problem, failureKind, nativeErrorCode,
             diagnostic is null ? null : diagnostic with
             {
                 CandidateCount = candidates.Count,
                 MainCount = candidates.Count(candidate => !candidate.HasTypeSwitch)
-            });
+            }));
     }
 
     private static DetectionFailureKind Classify(Exception error) =>
