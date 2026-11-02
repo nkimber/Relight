@@ -77,9 +77,12 @@ internal sealed partial class WindowsStorageScanFileSystem : IStorageScanFileSys
 
     private static SafeFileHandle Open(string path, bool enumerate, uint? access = null, uint share = 7)
     {
+        // Callers select local drive paths. Normalize before using extended syntax, which
+        // bypasses MAX_PATH without requiring machine policy or manifest changes.
+        string fullPath = Path.GetFullPath(path);
         // Only directory-list or zero content access; sharing includes write/delete.
         // OPEN_EXISTING, BACKUP_SEMANTICS | OPEN_REPARSE_POINT | OPEN_NO_RECALL.
-        var handle = CreateFile(path, access ?? (enumerate ? 1u : 0u), share, IntPtr.Zero, 3, 0x02300000, IntPtr.Zero);
+        var handle = CreateFile(@"\\?\" + fullPath, access ?? (enumerate ? 1u : 0u), share, IntPtr.Zero, 3, 0x02300000, IntPtr.Zero);
         if (handle.IsInvalid)
         {
             int error = Marshal.GetLastWin32Error();
@@ -102,7 +105,7 @@ internal sealed partial class WindowsStorageScanFileSystem : IStorageScanFileSys
             string canonical = actual.ToString();
             if (canonical.StartsWith(@"\\?\", StringComparison.Ordinal)) canonical = canonical[4..];
             if (!string.Equals(Path.TrimEndingDirectorySeparator(canonical),
-                    Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)), StringComparison.OrdinalIgnoreCase))
+                    Path.TrimEndingDirectorySeparator(fullPath), StringComparison.OrdinalIgnoreCase))
                 throw new IOException("Path changed or resolves through an alias/reparse ancestor; skipped.");
         }
         catch { handle.Dispose(); throw; }

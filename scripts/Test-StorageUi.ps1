@@ -6,7 +6,8 @@ param(
     [switch]$ExerciseCleanupHistory,
     [switch]$ExerciseStorageNotifications,
     [switch]$ExerciseScanLimit,
-    [switch]$ExerciseScanProgress
+    [switch]$ExerciseScanProgress,
+    [switch]$ExerciseLongPaths
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
@@ -21,6 +22,7 @@ public static class CleanupUiChoice {
 if ($ExerciseAutomaticApproval) { $ExerciseCleanup = $true }
 if ($ExerciseScanProgress) { $ExerciseScanLimit = $true }
 if ($ExerciseScanLimit) { $ExerciseScan = $true }
+if ($ExerciseLongPaths) { $ExerciseScan = $true }
 function Wait-For([scriptblock]$Condition, [string]$Description) {
     $until = [DateTime]::UtcNow.AddSeconds(20)
     while ([DateTime]::UtcNow -lt $until) {
@@ -150,6 +152,9 @@ try {
     if ($ExerciseScan) {
         Select-StorageSection 'Space usage'
         $fixture = Join-Path $root 'scan-fixture'
+        if ($ExerciseLongPaths) {
+            while ($fixture.Length -lt 600) { $fixture = Join-Path $fixture ('é文-' + ('x' * 60)) }
+        }
         [IO.Directory]::CreateDirectory($fixture) | Out-Null
         $large = Join-Path $fixture 'large.bin'
         [IO.File]::WriteAllBytes($large, [byte[]]::new(1048576))
@@ -391,6 +396,7 @@ try {
             $input = Find-Control $storage 'Folder to analyze'
             $input.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value -eq $fixture
         } 'reloaded scan root' | Out-Null
+        if ($ExerciseLongPaths) { Write-Output 'PASS: scan, growth and reload use a Unicode folder path longer than 600 characters.' }
     }
     Write-Output 'PASS: native readings, invalid save, interval/notification persistence, close-to-tray and reopened storage settings.'
     Write-Output "Isolated evidence directory: $root"

@@ -1,5 +1,24 @@
 # Storage monitoring checkpoint
 
+## Long-path coverage correction — 1 November 2026
+
+The completed C-drive scan ran from **15:03:29 to 16:52:13 Eastern** on 1 November: 7,360,302 inspected entries, 5,876,884 measured file paths and 247,124 skipped/failed entries. Traversal finished below its 10,000,000-entry budget. Its diagnostics contain a completed/persisted scan, no lost records, no dispatcher-delay events and no unhandled-exception events. This establishes completion of this run, not a resolution of the earlier reported freeze.
+
+The first 100 retained issues contained 85 path-not-found errors, four access-denied errors and 11 intentional reparse/offline/recall exclusions. All 85 supposedly missing paths still existed (81 files, four directories), with lengths of 260–326 characters. Read-only native opens reproduced error 3 with ordinary paths and succeeded with extended paths on this machine, where `LongPathsEnabled` is zero. Because issue details are bounded to the first 100, the remaining skips cannot be assigned exact causes from this result.
+
+The shared Windows scan/cleanup adapter now normalizes each local path before passing extended-length syntax to `CreateFileW`, as described in [Microsoft's path-length guidance](https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation). This covers metadata, directory enumeration and verified cleanup handles without machine-policy changes. Canonical identity comparisons, ancestor guards, no-recall/reparse flags, exclusive deletion and metadata revalidation remain in place. Saved/UI paths retain ordinary drive syntax. Protected, changed and cloud/reparse entries remain explicit coverage gaps; an ordinary whole-drive scan can still finish with incomplete coverage. Existing results require a new explicitly requested scan to replace them.
+
+Validation on **AKKR-ATL-LP-137, Windows 11 x64 / NTFS, .NET SDK 10.0.403 / runtime 10.0.14**:
+
+- **Passed:** all six new native regression cases failed before the correction and passed afterward. They cover Unicode paths beyond 260 and 600 characters from short/long selected roots, canonical-buffer growth, lexical normalization, junction-ancestor rejection, selected-only cleanup with changed/unselected files preserved, and junction replacement unable to redirect deletion. Deletion tests use only generated disposable fixtures.
+- **Passed:** 73 focused scan, estimate, navigation, reviewed/automatic cleanup, history, diagnostic and export tests. `dotnet build Relight.slnx -c Release` completed with zero warnings/errors.
+- **Passed:** `pwsh -File scripts/Test-StorageUi.ps1 -ExerciseLongPaths -ExerciseScanLimit -ExerciseCleanup` exercised native WPF scan/rescan, rendered growth, budget warnings/rescan clearing, preview-only cleanup, close/reopen and persisted root reload using a Unicode scan root longer than 600 characters. Isolated local evidence: `%TEMP%\relight-storage-ui-85e98035d4604e9ab71a5dcd911038f6`.
+- **Passed:** the corrected adapter read all 85 previously failing saved paths; the saved baseline's SHA-256 remained unchanged. No new whole-drive scan or real cleanup was dispatched.
+- **Passed:** `pwsh -File scripts/Test-Shell.ps1 -Isolated` verified resident startup, second-instance activation and restart after interrupting only its owned preview. Evidence: `%TEMP%\relight-shell-70b8d90e4c394d3eae4a9912daec88c0`.
+- **Not run:** a new full-C-drive scan, full recovery suite, endurance, actual cloud hydration/ACL changes and comprehensive accessibility. The user's existing Debug preview is attached to Visual Studio; UI automation could not reliably access its controls to complete a normal restart. The fixed Release build is available, but the existing Debug session must be rebuilt/restarted to load the correction. No user process was force-closed.
+
+This extends DSAT-07, DSAT-08, DSAT-11 and DSAT-13 at the native fixture/UI levels described above. It does not close the broader storage or recovery acceptance gates.
+
 ## S11 — application and scan diagnostics checkpoint (29 October 2026)
 
 Default application diagnostics now correlate process/build identity, scan phases/counters, pending enumeration/metadata operations, memory/GC/CPU/handle/thread pressure, cancellation and delayed dispatcher probes. An independent bounded background writer flushes JSONL during execution so a forced kill can leave useful evidence. Storage and Settings expose **Open diagnostic logs**; diagnostic bundles include a bounded recent excerpt. Failures/loss produce visible degraded status. See the [diagnostic guide](application-diagnostics.md) for location, bounds, redaction, investigation procedure and limitations. No cleanup consent or recovery policy changes are made.

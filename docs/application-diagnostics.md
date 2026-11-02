@@ -4,6 +4,12 @@ Application diagnostics are enabled by default from primary-process startup. Ope
 
 After a recurrence, retain that folder promptly or use **Export diagnostic bundle** after restarting. The local ZIP includes `application-diagnostics.jsonl` (latest 500 valid records, at most 2 MiB) alongside the existing recovery events and redacted settings. Nothing is uploaded. Keep the original JSONL files when investigating a long scan because the export is a bounded recent excerpt.
 
+## Completed scans with partial coverage
+
+`ScanFinished` with stage `Completed` means the operation finished; its coverage can still be incomplete. Check the saved result's `TraversalComplete`, `EntryLimitReached` and `SkippedEntries` together. A finished traversal below its budget with skipped entries legitimately displays **PARTIAL SCAN — COVERAGE INCOMPLETE**. Protected/changed paths and intentional reparse/offline/recall exclusions remain gaps. Only the first 100 detailed issues are retained; they are a sample, not a breakdown of every skip.
+
+The [1 November long-path investigation and correction](storage-checkpoint.md#long-path-coverage-correction--1-november-2026) confirmed that existing paths beyond the legacy Windows length limit could incorrectly report path-not-found. The corrected adapter uses normalized extended paths for native opens. Restart with the rebuilt application and explicitly rescan to replace older results; changing the entry budget cannot repair that historical coverage.
+
 ## Evidence
 
 Each JSONL record has UTC time, a process-lifetime session GUID, PID, sequence and cumulative lost-record count. Startup identifies application version, build configuration, module MVID, runtime, OS, architecture, processor count and Windows session. Ten-second samples capture working set/peak, private and managed memory, GC heap/fragmentation/load/pause/allocation/collection counts, cumulative CPU, handles, process threads and thread-pool availability/backlog.
