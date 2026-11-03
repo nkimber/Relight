@@ -125,8 +125,8 @@
                         <DataGridTextColumn Header="Count" Binding="{Binding Count, StringFormat=N0}" Width="100" />
                     </DataGrid.Columns>
                 </DataGrid>
-                <TextBlock Text="Read failures — first and recent samples by reason" FontSize="18" Margin="0,16,0,8" />
-                <TextBlock Text="Full counts appear above. Redacted failure samples and Windows error codes are in scan-failures logs; Open diagnostic logs opens their folder. Expected exclusions are listed separately below."
+                <TextBlock Text="{Binding FailuresHeading}" FontSize="18" Margin="0,16,0,8" />
+                <TextBlock Text="Full counts appear above. Protected-system access failures are grouped separately below and still count as failed, incomplete coverage. All failures remain in scan-failures logs, available through Open diagnostic logs."
                            TextWrapping="Wrap" Margin="0,0,0,8" />
                 <DataGrid ItemsSource="{Binding Failures}" AutoGenerateColumns="False" IsReadOnly="True"
                           CanUserAddRows="False" Height="160" AutomationProperties.Name="Scan read failures">
@@ -136,6 +136,21 @@
                         <DataGridTextColumn Header="Windows code" Binding="{Binding NativeErrorCode}" Width="100" />
                     </DataGrid.Columns>
                 </DataGrid>
+                <Expander Header="Protected-system access failures — samples" Margin="0,12,0,0"
+                          Visibility="{Binding HasProtectedFailures, Converter={StaticResource VisibleWhenTrue}}">
+                    <StackPanel>
+                        <TextBlock Text="Access-denied or sharing errors in recognized system locations. These remain coverage gaps; the label does not change permissions or skip scanning."
+                                   TextWrapping="Wrap" Margin="0,8,0,8" />
+                        <DataGrid ItemsSource="{Binding ProtectedFailures}" AutoGenerateColumns="False" IsReadOnly="True"
+                                  CanUserAddRows="False" Height="160" AutomationProperties.Name="Scan protected-system failures">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Location" Binding="{Binding Path}" Width="*" />
+                                <DataGridTextColumn Header="Reason" Binding="{Binding Reason}" Width="*" />
+                                <DataGridTextColumn Header="Windows code" Binding="{Binding NativeErrorCode}" Width="100" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </StackPanel>
+                </Expander>
                 <Expander Header="Expected exclusions — samples" Margin="0,12,0,0">
                     <DataGrid ItemsSource="{Binding Exclusions}" AutoGenerateColumns="False" IsReadOnly="True"
                               CanUserAddRows="False" Height="160" AutomationProperties.Name="Scan expected exclusions">

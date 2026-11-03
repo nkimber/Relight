@@ -1,5 +1,19 @@
 # Storage monitoring checkpoint
 
+## S13 — Protected-system access failures
+
+**2 November 2026:** The latest user scan's 35,301 failures were 35,286 access-denied metadata reads, 11 access-denied enumerations and four sharing violations on Windows root system files. The principal burst was correlated to the shared Windows cryptographic-key store using 45 logged sample tags; that folder contained 34,359 files at investigation time. This is not a claim that every file in that current inventory accounts for one historical failure. No key contents or permissions were inspected/changed.
+
+New scans give recognized protected-system access/sharing failures a separate failed category. The Failed total and partial warning remain intact; the UI adds Protected system / Other failures subtotals, keeps other failures in the main table and collapses protected samples separately. Native codes and full counts remain in the failure journal. See the [classification guide](application-diagnostics.md#protected-system-access-failures) for the narrow allowlist and limits. This labels existing attempts; it does not skip key-store traversal, improve coverage or change cleanup/elevation behavior.
+
+Baselines now carry failure-classification version 1. Earlier S12 totals stay valid, but their protected/other split is unknown; a new scan is required to establish it. Loading old data performs no reclassification/rewrite. Enum values were appended to preserve existing numeric categories, and unsupported versions are rejected while preserving evidence. The ten samples per category now reach the existing 100-sample overall ceiling.
+
+Validation on **AKKR-ATL-LP-137, Windows 11 x64 / NTFS, session 1, SDK 10.0.403 / runtime 10.0.14**: Release solution build passed with zero warnings/errors. **126 focused tests passed**, including 34 new cases covering recognized/relocated roots, case/separator boundaries, lookalikes, user paths, access versus other native errors, unchanged read attempts/Failed totals, mixed and entirely protected incomplete coverage, store/reload, legacy unknown splits, unsupported-version preservation and redacted failure-log subtotals.
+
+Native saved-result UI passed both new and legacy scenarios, including preserved baseline hashes/no new failure events on load: `%TEMP%\relight-storage-ui-fd9588d2433441bb805a8273ea75a813` and `%TEMP%\relight-storage-ui-0f6e767fc8a04851a0aa4098d65a1fc8`. Synthetic categorized fixtures establish presentation, not Windows ACL behavior; classifier tests use fake adapters and explicit relocated roots. The ordinary native scan/failure/limit/cleanup-preview workflow passed using `%TEMP%\relight-storage-ui-6e73e7c9d3604e1da1177b54ef75b298`, verifying unrecognized fixture failures stay prominent. Isolated shell resident startup/activation/restart passed using `%TEMP%\relight-shell-bce307e0391a4d7a854214f53830d7d6`.
+
+DSAT-27 passes at these unit/store/log and native presentation levels. A new full-drive scan, real protected-folder ACL changes, end-to-end classification of every protected Windows object, endurance, full recovery suite and full accessibility/scaling remain not run. The user's saved normal-data result is preserved; no real cleanup, permission change, key read or target termination was performed.
+
 ## S12 — Failure-only scan logs and classified coverage
 
 **2 November 2026:** The user's latest C-drive result completed in 58.02 minutes with 7,436,859 inspected entries, 5,994,773 measured file paths and 192,098 combined skips/failures. Its first 100 issues (96 intentional reparse exclusions, four protected Recycle Bin folders) and five early exception records could not explain later failures. This increment provides evidence for the next explicitly requested scan; it does not reclassify or replace that saved result.

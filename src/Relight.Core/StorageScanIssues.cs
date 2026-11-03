@@ -6,7 +6,7 @@ public enum StorageScanIssueKind { Unknown, Excluded, Failed, Limited }
 public enum StorageScanIssueCategory
 {
     Unknown, ReparseOrOffline, DepthLimit, AccessDenied, MissingOrChanged, SharingViolation,
-    MetadataUnavailable, EnumerationFailure, NativeIoFailure, SizeOverflow
+    MetadataUnavailable, EnumerationFailure, NativeIoFailure, SizeOverflow, ProtectedSystemAccess
 }
 
 public sealed record StorageScanIssue(string Path, string Reason)

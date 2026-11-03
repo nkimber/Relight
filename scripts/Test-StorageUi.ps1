@@ -8,7 +8,9 @@ param(
     [switch]$ExerciseScanLimit,
     [switch]$ExerciseScanProgress,
     [switch]$ExerciseLongPaths,
-    [switch]$ExerciseScanFailures
+    [switch]$ExerciseScanFailures,
+    [switch]$ExerciseProtectedFailures,
+    [switch]$LegacyProtectedResult
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
@@ -33,6 +35,7 @@ if ($ExerciseScanProgress) { $ExerciseScanLimit = $true }
 if ($ExerciseScanLimit) { $ExerciseScan = $true }
 if ($ExerciseLongPaths) { $ExerciseScan = $true }
 if ($ExerciseScanFailures) { $ExerciseScan = $true }
+if ($LegacyProtectedResult) { $ExerciseProtectedFailures = $true }
 function Wait-For([scriptblock]$Condition, [string]$Description) {
     $until = [DateTime]::UtcNow.AddSeconds(20)
     while ([DateTime]::UtcNow -lt $until) {
@@ -70,6 +73,24 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ('relight-storage-ui-' + [guid]::Ne
 $primary = $null
 $progressFixture = $null
 try {
+    # Saved display fixtures only. Classification is tested against fake adapters in unit tests.
+    $seededBaseline = $null
+    if ($ExerciseProtectedFailures) {
+        $protectedFixture = Join-Path $root 'protected-fixture'
+        [IO.Directory]::CreateDirectory($protectedFixture) | Out-Null
+        [IO.Directory]::CreateDirectory((Join-Path $root 'Storage')) | Out-Null
+        $seededBaseline = Join-Path $root 'Storage/latest-scan.json'
+        $now = [DateTimeOffset]::UtcNow.ToString('o')
+        $seed = @{SchemaVersion=1; Root=$protectedFixture; StartedUtc=$now; FinishedUtc=$now; TraversalComplete=$true;
+            EntriesVisited=4; FilesMeasured=0; SkippedEntries=3; HardLinkAliases=0; EntryLimitReached=$false; EntryLimit=100000; Entries=@();
+            IssueCounts=@(@{Category=1;Count=1},@{Category=3;Count=$(if($LegacyProtectedResult){2}else{1})});
+            Issues=@(@{Path=(Join-Path $protectedFixture 'protected-example');Reason='Access is denied.';Category=$(if($LegacyProtectedResult){3}else{10});Operation=1;NativeErrorCode=5;HResult=-2147467259},
+                @{Path=(Join-Path $protectedFixture 'other-example');Reason='Access is denied.';Category=3;Operation=1;NativeErrorCode=5;HResult=-2147467259},
+                @{Path=(Join-Path $protectedFixture 'excluded-example');Reason='Expected exclusion';Category=1;Operation=1})}
+        if (-not $LegacyProtectedResult) {$seed.FailureClassificationVersion=1; $seed.IssueCounts+=@{Category=10;Count=1}}
+        $seed | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $seededBaseline -Encoding utf8
+        $seedHash = (Get-FileHash -LiteralPath $seededBaseline -Algorithm SHA256).Hash
+    }
     $arguments = @('--shared-session-preview', $root, '--tray')
     $primary = Start-Process -FilePath $executablePath -ArgumentList $arguments -WindowStyle Hidden -PassThru
     Wait-For { Test-Path -LiteralPath (Join-Path $root 'configuration.json') } 'preview configuration' | Out-Null
@@ -102,6 +123,7 @@ try {
     }
     foreach ($section in @('Space usage','Cleanup rules','Cleanup history','Overview')) { Select-StorageSection $section }
     foreach ($name in @('latest-scan.json','cleanup-rules.json','cleanup-last-run.json','cleanup-run-details.json')) {
+        if ($seededBaseline -and $name -eq 'latest-scan.json') {continue}
         if (Test-Path (Join-Path $root "Storage/$name")) {throw "Navigation created operational data: $name"}
     }
     $settingsNavigation = Find-Control $dashboard 'Settings'
@@ -110,6 +132,33 @@ try {
     if (Find-Control $dashboard 'Disk space monitoring…') {throw 'Old storage entry remains under general Settings.'}
     $navigation.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
     Write-Output 'PASS: top-level Storage and four embedded sections; navigation performs no scan/cleanup or authority writes.'
+    if ($ExerciseProtectedFailures) {
+        Select-StorageSection 'Space usage'
+        Wait-For { Find-Control $storage 'PARTIAL SCAN — COVERAGE INCOMPLETE' } 'saved partial-coverage warning' | Out-Null
+        $totals = Wait-For {
+            $condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'ScanCoverageTotals')
+            $candidate = $storage.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
+            if ($candidate -and $candidate.Current.Name.Contains('Failed: 2')) {return $candidate.Current.Name}
+        } 'saved failure totals'
+        $otherCount = (Find-Control $storage 'Scan read failures').GetCurrentPattern([System.Windows.Automation.GridPattern]::Pattern).Current.RowCount
+        if ($LegacyProtectedResult) {
+            if (-not $totals.Contains('split: unknown') -or $otherCount -ne 2) {throw 'Legacy protected split was invented or failures hidden.'}
+            if (Find-Control $storage 'Protected-system access failures — samples') {throw 'Legacy result unexpectedly shows a protected classification.'}
+            Write-Output 'PASS: legacy saved failure total preserved; protected split unknown; both failures remain visible with partial coverage.'
+        } else {
+            if (-not $totals.Contains('Protected system: 1') -or -not $totals.Contains('Other failures: 1') -or $otherCount -ne 1) {throw 'Protected/other totals or failure separation incorrect.'}
+            $expander = Find-Control $storage 'Protected-system access failures — samples'
+            $pattern = $expander.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+            if ($pattern.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Collapsed) {throw 'Protected samples are not initially collapsed.'}
+            $pattern.Expand()
+            $grid = Wait-For {Find-Control $storage 'Scan protected-system failures'} 'expanded protected samples'
+            if ($grid.GetCurrentPattern([System.Windows.Automation.GridPattern]::Pattern).Current.RowCount -ne 1) {throw 'Protected sample missing or other failures mixed in.'}
+            Write-Output 'PASS: total failures include protected subset; other failures remain prominent; protected samples expand separately; partial coverage retained.'
+        }
+        if ((Get-FileHash -LiteralPath $seededBaseline -Algorithm SHA256).Hash -ne $seedHash) {throw 'Loading reclassified or rewrote saved evidence.'}
+        if (@(Get-ChildItem -LiteralPath (Join-Path $root 'Logs/Diagnostics') -Filter 'scan-failures-*.jsonl' -ErrorAction SilentlyContinue).Count) {throw 'Loading saved evidence generated new failure events.'}
+        Select-StorageSection 'Overview'
+    }
     $readings = Wait-For {
         $all = $storage.FindAll([System.Windows.Automation.TreeScope]::Descendants,
             [System.Windows.Automation.Condition]::TrueCondition)
@@ -283,7 +332,11 @@ try {
                 if ($next.FinishedUtc -ne $prior -and $next.FailedEntries -eq 1 -and $next.ExcludedEntries -eq 1) {return $next}
             } 'separate saved failure/exclusion counts'
             if ($partial.CoverageComplete) {throw 'Failure fixture incorrectly has complete coverage.'}
-            Wait-For { Find-Control $storage 'Excluded: 1 · Failed: 1 · Depth-limited: 0' } 'visible separated totals' | Out-Null
+            Wait-For {
+                $condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'ScanCoverageTotals')
+                $text = $storage.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition).Current.Name
+                $text.Contains('Excluded: 1 · Failed: 1 · Depth-limited: 0') -and $text.Contains('Protected system: 0 · Other failures: 1')
+            } 'visible separated totals' | Out-Null
             $failuresGrid = Find-Control $storage 'Scan read failures'
             if ($failuresGrid.GetCurrentPattern([System.Windows.Automation.GridPattern]::Pattern).Current.RowCount -ne 1) {throw 'Failure grid includes exclusions or omits failure.'}
             Wait-For {

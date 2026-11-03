@@ -16,9 +16,14 @@ public sealed record StorageScanSnapshot(int SchemaVersion, string Root,
     public int EntryLimit { get; init; } = DefaultEntryLimit;
     // Null means a legacy result: the split cannot be reconstructed from bounded samples.
     public StorageScanIssueCount[]? IssueCounts { get; init; }
+    public const int CurrentFailureClassificationVersion = 1;
+    public int? FailureClassificationVersion { get; init; }
     public int? ExcludedEntries => Count(StorageScanIssueKind.Excluded);
     public int? FailedEntries => Count(StorageScanIssueKind.Failed);
     public int? LimitedEntries => Count(StorageScanIssueKind.Limited);
+    public int? ProtectedSystemFailedEntries => FailureClassificationVersion == CurrentFailureClassificationVersion && IssueCounts is not null
+        ? IssueCounts.Where(c => c.Category == StorageScanIssueCategory.ProtectedSystemAccess).Sum(c => c.Count) : null;
+    public int? OtherFailedEntries => FailedEntries - ProtectedSystemFailedEntries;
     private int? Count(StorageScanIssueKind kind) => IssueCounts is null ? null :
         IssueCounts.Where(c => StorageScanIssue.KindOf(c.Category) == kind).Sum(c => c.Count);
     public const int MaximumRetainedEntries = 2100;

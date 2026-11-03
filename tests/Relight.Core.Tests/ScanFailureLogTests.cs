@@ -84,7 +84,7 @@ public sealed class ScanFailureLogTests
         var summary = records.Last(r => r.Entry.ScanFailures is not null).Entry.ScanFailures!;
         Assert.Equal(501, summary.FailedEntries); Assert.True(summary.GroupingLimited);
         Assert.Equal(501, summary.Groups.Sum(g => g.Count));
-        Assert.InRange(summary.Groups.Length, 1, ScanDiagnosticSession.DetailedFailureGroupLimit + 7);
+        Assert.InRange(summary.Groups.Length, 1, ScanDiagnosticSession.DetailedFailureGroupLimit + 8);
         Assert.Contains(summary.Groups, g => g.OtherCodes && g.Category == StorageScanIssueCategory.AccessDenied && g.Count == 1);
         Assert.Contains(summary.Groups, g => g.OtherCodes && g.Category == StorageScanIssueCategory.NativeIoFailure && g.Count == 476);
         Assert.All(Directory.GetFiles(diagnostics.DirectoryPath, "scan-failures-*.jsonl"), file =>

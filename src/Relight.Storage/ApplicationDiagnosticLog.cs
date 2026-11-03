@@ -46,6 +46,8 @@ public sealed record DiagnosticScan(Guid ScanId, DiagnosticScanStage Stage, stri
     public int? Excluded { get; init; }
     public int? Failed { get; init; }
     public int? Limited { get; init; }
+    public int? ProtectedSystemFailed { get; init; }
+    public int? OtherFailed { get; init; }
 }
 public sealed record DiagnosticScanFailureSample(DateTimeOffset Utc, string PathTag, string Suffix);
 public sealed record DiagnosticScanFailureGroup(StorageScanIssueCategory Category, ScanIoOperation? Operation,

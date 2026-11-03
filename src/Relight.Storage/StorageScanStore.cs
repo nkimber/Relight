@@ -58,6 +58,12 @@ public sealed class StorageScanStore(string dataDirectory)
             snapshot.Entries.Length > StorageScanSnapshot.MaximumRetainedEntries || snapshot.Issues is null ||
             snapshot.Issues.Length > StorageScanSnapshot.MaximumIssues)
             throw new InvalidDataException("Storage baseline is invalid or unsupported.");
+        if (snapshot.FailureClassificationVersion is not null &&
+            (snapshot.FailureClassificationVersion != StorageScanSnapshot.CurrentFailureClassificationVersion || snapshot.IssueCounts is null) ||
+            snapshot.FailureClassificationVersion is null &&
+            (snapshot.IssueCounts?.Any(c => c?.Category == StorageScanIssueCategory.ProtectedSystemAccess) == true ||
+             snapshot.Issues.Any(i => i?.Category == StorageScanIssueCategory.ProtectedSystemAccess)))
+            throw new InvalidDataException("Storage failure classification is invalid or unsupported.");
         if (snapshot.FilesMeasured > snapshot.EntriesVisited || snapshot.HardLinkAliases > snapshot.FilesMeasured ||
             snapshot.Issues.Length > snapshot.SkippedEntries)
             throw new InvalidDataException("Storage baseline counters are inconsistent.");

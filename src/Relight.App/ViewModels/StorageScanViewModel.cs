@@ -84,7 +84,13 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
     public IReadOnlyList<StorageScanRow> Folders { get; private set; } = [];
     public IReadOnlyList<StorageGrowthRow> Growth { get; private set; } = [];
     public IReadOnlyList<StorageScanIssue> Issues { get; private set; } = [];
-    public IReadOnlyList<StorageScanIssue> Failures => Issues.Where(i => i.Kind == StorageScanIssueKind.Failed).ToArray();
+    public IReadOnlyList<StorageScanIssue> Failures => Issues.Where(i => i.Kind == StorageScanIssueKind.Failed &&
+        i.Category != StorageScanIssueCategory.ProtectedSystemAccess).ToArray();
+    public IReadOnlyList<StorageScanIssue> ProtectedFailures => Issues.Where(i => i.Category == StorageScanIssueCategory.ProtectedSystemAccess).ToArray();
+    public bool HasProtectedFailures => ProtectedFailures.Count > 0;
+    public string FailuresHeading => _lastSnapshot?.FailureClassificationVersion == StorageScanSnapshot.CurrentFailureClassificationVersion
+        ? "Other read failures — first and recent samples by reason"
+        : "Read failures — protected-system split unavailable for this scan";
     public IReadOnlyList<StorageScanIssue> Exclusions => Issues.Where(i => i.Kind == StorageScanIssueKind.Excluded).ToArray();
     public IReadOnlyList<StorageScanIssue> Limits => Issues.Where(i => i.Kind == StorageScanIssueKind.Limited).ToArray();
     public IReadOnlyList<StorageScanIssue> UnclassifiedIssues => Issues.Where(i => i.Kind == StorageScanIssueKind.Unknown).ToArray();
@@ -222,7 +228,10 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
         Issues = snapshot.Issues;
         CoverageTotals = snapshot.IssueCounts is null
             ? $"Excluded: unknown · Failed: unknown · {snapshot.SkippedEntries:N0} combined gaps in this older scan. Rescan to classify."
-            : $"Excluded: {snapshot.ExcludedEntries:N0} · Failed: {snapshot.FailedEntries:N0} · Depth-limited: {snapshot.LimitedEntries:N0}";
+            : $"Excluded: {snapshot.ExcludedEntries:N0} · Failed: {snapshot.FailedEntries:N0} · Depth-limited: {snapshot.LimitedEntries:N0}\n" +
+                (snapshot.ProtectedSystemFailedEntries is { } protectedCount
+                    ? $"Of failed: Protected system: {protectedCount:N0} · Other failures: {snapshot.OtherFailedEntries:N0}"
+                    : "Protected-system / other-failure split: unknown for this older scan. Rescan to classify.");
         IssueCounts = (snapshot.IssueCounts ?? []).Select(c => new StorageScanIssueCountRow(
             CategoryLabel(c.Category), StorageScanIssue.KindOf(c.Category).ToString(), c.Count)).ToArray();
         Status = $"{(snapshot.CoverageComplete ? "Traversal completed" : "Partial scan")} · {snapshot.Root}\n" +
@@ -245,6 +254,7 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
         StorageScanIssueCategory.EnumerationFailure => "Directory enumeration failed",
         StorageScanIssueCategory.NativeIoFailure => "Windows I/O error",
         StorageScanIssueCategory.SizeOverflow => "Size total overflow",
+        StorageScanIssueCategory.ProtectedSystemAccess => "Protected-system access",
         _ => "Unclassified"
     };
 

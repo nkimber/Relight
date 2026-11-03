@@ -16,6 +16,7 @@ public interface IStorageScanFileSystem
 public sealed class StorageScanner(IStorageScanFileSystem? fileSystem = null)
 {
     private readonly IStorageScanFileSystem _files = fileSystem ?? new WindowsStorageScanFileSystem();
+    private readonly ProtectedSystemScanLocations _protectedLocations = ProtectedSystemScanLocations.CreateDefault();
 
     public StorageScanSnapshot Scan(string root, CancellationToken cancellationToken = default,
         IProgress<int>? progress = null, int maximumEntries = StorageScanSnapshot.DefaultEntryLimit,
@@ -53,7 +54,7 @@ public sealed class StorageScanner(IStorageScanFileSystem? fileSystem = null)
             diagnostics?.Issue(issue, error);
         }
         void Failure(string path, ScanIoOperation operation, Exception error) =>
-            Issue(StorageScanIssue.Failure(path, operation, error), error);
+            Issue(_protectedLocations.Classify(StorageScanIssue.Failure(path, operation, error)), error);
 
         static void Retain(PriorityQueue<StorageScanEntry, long> queue, StorageScanEntry entry, int count)
         {
@@ -161,7 +162,8 @@ public sealed class StorageScanner(IStorageScanFileSystem? fileSystem = null)
             folders.UnorderedItems.Select(i => i.Element).Concat(largestFiles.UnorderedItems.Select(i => i.Element))
                 .OrderByDescending(e => e.AllocatedBytes).ThenByDescending(e => e.LogicalBytes)
                 .ThenBy(e => e.Path, StringComparer.OrdinalIgnoreCase).ToArray(),
-            issues.Samples()) { EntryLimit = maximumEntries, IssueCounts = issues.Counts() };
+            issues.Samples()) { EntryLimit = maximumEntries, IssueCounts = issues.Counts(),
+                FailureClassificationVersion = StorageScanSnapshot.CurrentFailureClassificationVersion };
     }
 
     private static bool IsReadFailure(Exception error) => error is IOException or UnauthorizedAccessException
