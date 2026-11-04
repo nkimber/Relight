@@ -11,7 +11,8 @@ param(
     [switch]$ExerciseScanFailures,
     [switch]$ExerciseProtectedFailures,
     [switch]$LegacyProtectedResult,
-    [switch]$ExerciseAccessRestrictions
+    [switch]$ExerciseAccessRestrictions,
+    [ValidateSet('Depth','Unfinished','Unknown')][string]$CoverageWarningCase
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
@@ -38,7 +39,9 @@ if ($ExerciseLongPaths) { $ExerciseScan = $true }
 if ($ExerciseScanFailures) { $ExerciseScan = $true }
 if ($LegacyProtectedResult) { $ExerciseProtectedFailures = $true }
 if ($ExerciseAccessRestrictions) { $ExerciseProtectedFailures = $true }
+if ($CoverageWarningCase) { $ExerciseProtectedFailures = $true }
 if ($ExerciseAccessRestrictions -and $LegacyProtectedResult) { throw 'Choose new access groups or the legacy fixture, not both.' }
+if ($CoverageWarningCase -and ($ExerciseAccessRestrictions -or $LegacyProtectedResult)) { throw 'Choose one saved-result fixture.' }
 function Wait-For([scriptblock]$Condition, [string]$Description) {
     $until = [DateTime]::UtcNow.AddSeconds(20)
     while ([DateTime]::UtcNow -lt $until) {
@@ -50,7 +53,14 @@ function Wait-For([scriptblock]$Condition, [string]$Description) {
 }
 function Read-Json([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return $null }
-    try { Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json }
+    try {
+        # Poll an old or new complete file without preventing the app's atomic replacement.
+        $stream=[IO.FileStream]::new($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,
+            ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        $reader=[IO.StreamReader]::new($stream)
+        try {$json=$reader.ReadToEnd()} finally {$reader.Dispose()}
+        $json | ConvertFrom-Json
+    }
     catch [IO.IOException] { return $null }
     catch [UnauthorizedAccessException] { return $null }
     catch [System.Management.Automation.ItemNotFoundException] { return $null }
@@ -104,6 +114,16 @@ try {
                 @{Path=(Join-Path $protectedFixture 'io-error');Reason='I/O error';Category=8;Operation=1;NativeErrorCode=1117},
                 @{Path=(Join-Path $protectedFixture 'excluded');Reason='Expected exclusion';Category=1;Operation=1})
         }
+        if ($CoverageWarningCase -eq 'Depth') {
+            $seed.EntriesVisited=5; $seed.SkippedEntries=4
+            $seed.IssueCounts+=@{Category=2;Count=1}
+            $seed.Issues+=@{Path=(Join-Path $protectedFixture 'deep');Reason='Maximum depth reached';Category=2;Operation=2}
+        } elseif ($CoverageWarningCase -eq 'Unfinished') {
+            $seed.TraversalComplete=$false
+        } elseif ($CoverageWarningCase -eq 'Unknown') {
+            $seed.Remove('IssueCounts'); $seed.Remove('FailureClassificationVersion')
+            $seed.Issues=@(@{Path=(Join-Path $protectedFixture 'old-sample');Reason='Unclassified older gap'})
+        }
         $seed | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $seededBaseline -Encoding utf8
         $seedHash = (Get-FileHash -LiteralPath $seededBaseline -Algorithm SHA256).Hash
     }
@@ -150,7 +170,25 @@ try {
     Write-Output 'PASS: top-level Storage and four embedded sections; navigation performs no scan/cleanup or authority writes.'
     if ($ExerciseProtectedFailures) {
         Select-StorageSection 'Space usage'
-        Wait-For { Find-Control $storage 'PARTIAL SCAN — COVERAGE INCOMPLETE' } 'saved partial-coverage warning' | Out-Null
+        $expectedWarning=if($CoverageWarningCase -eq 'Depth'){'SCAN LIMITED — DIRECTORY DEPTH REACHED'}
+            elseif($CoverageWarningCase -eq 'Unfinished'){'SCAN UNFINISHED — COVERAGE INCOMPLETE'}
+            elseif($CoverageWarningCase -eq 'Unknown' -or $LegacyProtectedResult){'SCAN COVERAGE UNKNOWN'}
+            elseif($ExerciseAccessRestrictions){'SCAN COMPLETED WITH ERRORS'}else{$null}
+        if($expectedWarning) {
+            Wait-For {Find-Control $storage $expectedWarning} 'prominent coverage warning' | Out-Null
+            if((Find-Control $storage $expectedWarning).Current.IsOffscreen){throw 'Coverage warning is offscreen.'}
+        } else {
+            $statusCondition=[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'ScanResultStatus')
+            Wait-For {$storage.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$statusCondition).Current.Name.Contains('Scan completed with exclusions and access restrictions.')} 'neutral completed status' | Out-Null
+            $warningCondition=[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'ScanCoverageWarning')
+            $warningPanel=$storage.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$warningCondition)
+            if($warningPanel -and -not $warningPanel.Current.IsOffscreen){throw 'Expected restrictions still show a prominent coverage warning.'}
+            $noteCondition=[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'ScanCoverageNote')
+            if(-not $storage.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$noteCondition).Current.Name.Contains('not measured')){throw 'Neutral result hides unmeasured coverage.'}
+        }
+        if($CoverageWarningCase) {
+            Write-Output "PASS: $CoverageWarningCase retains a prominent warning and preserved saved evidence."
+        } else {
         $totals = Wait-For {
             $condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'ScanCoverageTotals')
             $candidate = $storage.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
@@ -172,6 +210,18 @@ try {
                 if ($names -notcontains $expected) {throw "Folder row $row does not display count $expected (names: $names)."}
             }
             Write-Output 'PASS: 935 restrictions grouped separately with exact 900/30/remainder 5 counts; protected and other errors stay separate; partial coverage retained.'
+            $errorGrid=Find-Control $storage 'Scan read failures'
+            $rows=$errorGrid.FindAll([System.Windows.Automation.TreeScope]::Children,
+                [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::DataItem))
+            $rows.Item(1).GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+            $details=Wait-For {Find-Control $storage 'Selected scan error details'} 'selected error details'
+            $detailText=$details.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
+            foreach($expected in @('io-error','1117','Read metadata','Suggested next steps:','check storage health')) {
+                if(-not $detailText.Contains($expected)){throw "Selected error lacks $expected."}
+            }
+            if(-not (Find-Control $storage 'Copy selected error details').Current.IsEnabled){throw 'Local copy action unavailable.'}
+            if((Find-Control $storage 'Scan other-error counts and next steps').GetCurrentPattern([System.Windows.Automation.GridPattern]::Pattern).Current.RowCount -ne 2){throw 'Exact other-error counts or guidance missing.'}
+            Write-Output 'PASS: native selected error shows path, operation, Windows code/message and specific device-error next steps; local copy action available.'
         } elseif ($LegacyProtectedResult) {
             if (-not $totals.Contains('Access restricted: 2') -or -not $totals.Contains('split: unknown') -or $otherCount -ne 0) {throw 'Legacy protected split was invented or access restrictions mixed into other errors.'}
             if ($folderPattern.Current.RowCount -ne 1 -or -not $folderSummary.Contains('retained samples only (2 shown)')) {throw 'Legacy folder sample counts were presented as exact full-scan counts.'}
@@ -193,6 +243,7 @@ try {
         $accessSamples=Wait-For {Find-Control $storage 'Scan access-restricted samples'} 'expanded access-restricted samples'
         $expectedSamples=if($ExerciseAccessRestrictions -or $LegacyProtectedResult){2}else{1}
         if($accessSamples.GetCurrentPattern([System.Windows.Automation.GridPattern]::Pattern).Current.RowCount -ne $expectedSamples){throw 'Access-restricted samples missing or mixed with other errors.'}
+        }
         if ((Get-FileHash -LiteralPath $seededBaseline -Algorithm SHA256).Hash -ne $seedHash) {throw 'Loading reclassified or rewrote saved evidence.'}
         if (@(Get-ChildItem -LiteralPath (Join-Path $root 'Logs/Diagnostics') -Filter 'scan-failures-*.jsonl' -ErrorAction SilentlyContinue).Count) {throw 'Loading saved evidence generated new failure events.'}
         Select-StorageSection 'Overview'
@@ -377,6 +428,10 @@ try {
             } 'visible separated totals' | Out-Null
             $failuresGrid = Find-Control $storage 'Scan read failures'
             if ($failuresGrid.GetCurrentPattern([System.Windows.Automation.GridPattern]::Pattern).Current.RowCount -ne 1) {throw 'Failure grid includes exclusions or omits failure.'}
+            Wait-For {Find-Control $storage 'SCAN COMPLETED WITH ERRORS'} 'other-error warning for actual locked folder' | Out-Null
+            $details=Find-Control $storage 'Selected scan error details'
+            $detailText=$details.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
+            if(-not $detailText.Contains('Windows code: 32') -or -not $detailText.Contains('Let the owning operation finish')){throw 'Sharing-error details or safe suggested action missing.'}
             Wait-For {
                 $failureRecords = @(Get-ChildItem -LiteralPath (Join-Path $root 'Logs/Diagnostics') -Filter 'scan-failures-*.jsonl' | ForEach-Object {
                     Get-Content -LiteralPath $_.FullName | ForEach-Object {try {$_ | ConvertFrom-Json} catch {}}

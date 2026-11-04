@@ -126,6 +126,16 @@ public partial class StorageView : UserControl
         catch (Exception error) { ScanLimitStatus.Text = $"Scan limit was not saved: {error.Message}"; }
     }
     private void CancelScanClick(object sender, RoutedEventArgs e) => _scan.Cancel();
+    private void CopyScanErrorClick(object sender, RoutedEventArgs e)
+    {
+        if (!_scan.HasSelectedError) return;
+        try { Clipboard.SetText(_scan.SelectedErrorReport); ErrorCopyStatus.Text = "Copied selected error details."; }
+        catch (Exception error) { ErrorCopyStatus.Text = $"Could not copy error details: {error.Message}"; }
+    }
+    private void ScanErrorSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (ErrorCopyStatus is not null) ErrorCopyStatus.Text = "";
+    }
     private void BrowseScanClick(object sender, RoutedEventArgs e)
     {
         var dialog = new Microsoft.Win32.OpenFolderDialog { Title = "Choose a folder to analyze" };

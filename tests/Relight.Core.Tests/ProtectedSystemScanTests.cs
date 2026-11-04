@@ -95,7 +95,7 @@ public sealed class ProtectedSystemScanTests
     }
 
     [Fact]
-    public async Task AnEntirelyProtectedFailureSetStillShowsIncompleteCoverage()
+    public async Task AnEntirelyProtectedFailureSetShowsNeutralStatusWithUnmeasuredCoverage()
     {
         using var fixture = new Fixture();
         string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), @"Microsoft\Crypto\Keys");
@@ -105,7 +105,8 @@ public sealed class ProtectedSystemScanTests
         new StorageScanStore(fixture.Path).Save(result);
         using var gate = new SemaphoreSlim(1, 1);
         var vm = new StorageScanViewModel(fixture.Path, gate); await vm.LoadAsync();
-        Assert.True(vm.ShowCoverageWarning); Assert.Empty(vm.Failures); Assert.Single(vm.ProtectedFailures); vm.Close();
+        Assert.False(vm.ShowCoverageWarning); Assert.True(vm.HasCoverageNote); Assert.Contains("access restrictions", vm.Status);
+        Assert.Empty(vm.Failures); Assert.Single(vm.ProtectedFailures); vm.Close();
     }
 
     [Fact]

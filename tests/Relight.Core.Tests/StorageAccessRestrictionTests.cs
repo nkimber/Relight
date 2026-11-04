@@ -126,7 +126,7 @@ public sealed class StorageAccessRestrictionTests
         new StorageScanStore(fixture.Path).Save(result);
         using var gate = new SemaphoreSlim(1, 1);
         var vm = new StorageScanViewModel(fixture.Path, gate); await vm.LoadAsync();
-        Assert.True(vm.ShowCoverageWarning); Assert.True(vm.HasAccessRestrictions); Assert.Empty(vm.Failures); vm.Close();
+        Assert.False(vm.ShowCoverageWarning); Assert.True(vm.HasCoverageNote); Assert.True(vm.HasAccessRestrictions); Assert.Empty(vm.Failures); vm.Close();
     }
 
     [Fact]

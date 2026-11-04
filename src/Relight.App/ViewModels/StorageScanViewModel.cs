@@ -73,8 +73,12 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
     public int ScanVersion { get; private set; }
     public string CoverageWarningTitle { get; private set; } = "";
     public string CoverageWarning { get; private set; } = "";
-    public string FilesHeading => HasCoverageWarning ? "Largest files found in PARTIAL scan (allocated space)" : "Largest files by allocated space";
-    public string FoldersHeading => HasCoverageWarning ? "Largest folders found in PARTIAL scan (includes descendants)" : "Largest folders by allocated space (includes descendants)";
+    public string CoverageNote { get; private set; } = "";
+    public bool HasCoverageNote => CoverageNote.Length > 0;
+    public string FilesHeading => HasCoverageWarning ? "Largest files found in PARTIAL scan (allocated space)" :
+        _lastSnapshot?.CoverageComplete == false ? "Largest files found in measured locations (allocated space)" : "Largest files by allocated space";
+    public string FoldersHeading => HasCoverageWarning ? "Largest folders found in PARTIAL scan (includes descendants)" :
+        _lastSnapshot?.CoverageComplete == false ? "Largest folders found in measured locations (includes descendants)" : "Largest folders by allocated space (includes descendants)";
     public string Status { get; private set; } = "Choose a local folder or drive and select Scan folder. No files will be deleted.";
     public string BaselineStatus { get; private set; } = "No growth comparison yet.";
     public string ScanAge => _lastFinishedUtc is { } time
@@ -102,6 +106,19 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
     public bool HasLimits => Limits.Count > 0;
     public string CoverageTotals { get; private set; } = "Excluded: — · Failed: —";
     public IReadOnlyList<StorageScanIssueCountRow> IssueCounts { get; private set; } = [];
+    public IReadOnlyList<StorageErrorCountRow> ErrorCounts { get; private set; } = [];
+    public bool HasErrorCounts => ErrorCounts.Count > 0;
+    public IReadOnlyList<StorageScanErrorDetail> ErrorDetails { get; private set; } = [];
+    public string ErrorSummary { get; private set; } = "";
+    private StorageScanErrorDetail? _selectedError;
+    public StorageScanErrorDetail? SelectedError
+    {
+        get => _selectedError;
+        set { if (ReferenceEquals(_selectedError, value)) return; _selectedError = value; Changed(); }
+    }
+    public bool HasSelectedError => SelectedError is not null;
+    public string SelectedErrorReport => SelectedError is null ? "" :
+        $"Relight scan result: {_lastFinishedUtc:O}\nScan root: {_lastSnapshot?.Root}\n\n{SelectedError.Report}";
 
     public async Task LoadAsync()
     {
@@ -219,17 +236,29 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
         _lastFinishedUtc = snapshot.FinishedUtc;
         _lastSnapshot = snapshot;
         ResultsLabel = $"Results from {snapshot.Root}";
-        HasCoverageWarning = !snapshot.CoverageComplete;
+        var presentation = StorageScanPresentation.For(snapshot);
+        HasCoverageWarning = presentation.Warn;
         EntryLimitReached = snapshot.EntryLimitReached;
-        CoverageWarningTitle = snapshot.EntryLimitReached ? "SCAN STOPPED — ENTRY LIMIT REACHED" : "PARTIAL SCAN — COVERAGE INCOMPLETE";
-        CoverageWarning = !HasCoverageWarning ? "" : snapshot.EntryLimitReached
-            ? $"Stopped after {snapshot.EntriesVisited:N0} entries (limit {snapshot.EntryLimit:N0}) in {snapshot.Root}. " +
-              "These are only the largest files FOUND, not the largest files on the whole drive or selected folder. Larger files may be missing. " +
-              "Increase the scan entry limit below or select a smaller folder, then start a new scan."
-            : $"Some files or folders in {snapshot.Root} could not be measured. These rankings are incomplete; larger files may be missing. Review coverage issues below.";
+        CoverageWarningTitle = presentation.WarningTitle;
+        CoverageWarning = presentation.Explanation;
+        CoverageNote = presentation.CoverageNote;
         Files = snapshot.Entries.Where(e => e.Kind == StorageScanEntryKind.File).Take(100).Select(Row).ToArray();
         Folders = snapshot.Entries.Where(e => e.Kind == StorageScanEntryKind.Folder).Take(100).Select(Row).ToArray();
         Issues = snapshot.Issues;
+        ErrorDetails = Failures.Select(StorageScanErrorDetail.For).ToArray();
+        _selectedError = ErrorDetails.FirstOrDefault();
+        ErrorCounts = (snapshot.IssueCounts ?? []).Where(c => StorageScanIssue.KindOf(c.Category) == StorageScanIssueKind.Failed &&
+                c.Category is not (StorageScanIssueCategory.AccessDenied or StorageScanIssueCategory.ProtectedSystemAccess))
+            .Select(c => new StorageErrorCountRow(CategoryLabel(c.Category), c.Count,
+                StorageScanErrorDetail.Advice(c.Category).NextSteps)).ToArray();
+        ErrorSummary = snapshot.OtherErrorEntries switch
+        {
+            0 => "No other read errors were recorded.",
+            { } count => $"{count:N0} other read errors recorded; {ErrorDetails.Count:N0} first/recent examples retained. " +
+                (ErrorDetails.Count > 0 ? "Select an example for its full details and suggested next steps." :
+                    "No path examples are available in this saved result. Rescan a smaller folder to capture details; scan-failures logs may retain redacted codes."),
+            null => "The other-error total is unknown for this older result. Review retained examples and rescan to classify coverage."
+        };
         var access = snapshot.AccessRestrictions;
         if (access is null)
         {
@@ -257,7 +286,7 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
                     : $"Access restricted: {snapshot.AccessRestrictedEntries:N0} · Protected-system / other-error split: unknown for this older scan. Rescan to classify.");
         IssueCounts = (snapshot.IssueCounts ?? []).Select(c => new StorageScanIssueCountRow(
             CategoryLabel(c.Category), StorageScanIssue.KindOf(c.Category).ToString(), c.Count)).ToArray();
-        Status = $"{(snapshot.CoverageComplete ? "Traversal completed" : "Partial scan")} · {snapshot.Root}\n" +
+        Status = $"{presentation.Status} · {snapshot.Root}\n" +
             $"As of {snapshot.FinishedUtc.ToLocalTime():G} · {snapshot.EntriesVisited:N0} entries inspected, " +
             $"{snapshot.FilesMeasured:N0} file paths measured, {snapshot.SkippedEntries:N0} total coverage gaps, " +
             $"{snapshot.HardLinkAliases:N0} hard-link aliases. " +
@@ -292,3 +321,4 @@ internal sealed record StorageScanRow(string Path, double LogicalMiB, double All
 internal sealed record StorageGrowthRow(string Path, string Kind, string Growth);
 internal sealed record StorageScanIssueCountRow(string Reason, string Kind, int Count);
 internal sealed record StorageAccessFolderRow(string Folder, int Count, string CountKind);
+internal sealed record StorageErrorCountRow(string Error, int Count, string NextSteps);

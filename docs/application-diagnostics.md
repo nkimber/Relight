@@ -6,7 +6,9 @@ After a recurrence, retain that folder promptly or use **Export diagnostic bundl
 
 ## Completed scans with partial coverage
 
-`ScanFinished` with stage `Completed` means the operation finished; its coverage can still be incomplete. Check the saved result's `TraversalComplete`, `EntryLimitReached` and `SkippedEntries` together. A finished traversal below its budget with skipped entries legitimately displays **PARTIAL SCAN — COVERAGE INCOMPLETE**. Protected/changed paths and intentional reparse/offline/recall exclusions remain gaps. New results have exact `IssueCounts` and separate Excluded, Failed and depth-limited totals; these count issue occurrences, including folders/enumeration, not distinct failed files. Up to ten local samples per category retain the first five and latest five (currently at most 100 overall). Older results only retained the first 100 issues: their split remains unknown until an explicit rescan.
+`ScanFinished` with stage `Completed` means the operation finished; its measurement coverage can still be incomplete. Check the saved result's `TraversalComplete`, `EntryLimitReached` and `SkippedEntries` together. Completed traversal with only known exclusions/protected-system/access restrictions now uses a neutral **Scan completed with exclusions and access restrictions** status (worded for the gaps present), visible counts and a small unmeasured-location note. The prominent warning is reserved for **other errors, entry/depth limits, unfinished traversal or unknown error coverage**. Multiple causes are listed together. Missing historical folder groups alone do not trigger it. This changes presentation, not the `CoverageComplete` flag, growth eligibility or recorded gaps.
+
+New results have exact `IssueCounts` and separate Excluded, Failed and depth-limited totals; these count issue occurrences, including folders/enumeration, not distinct failed files. Up to ten local samples per category retain the first five and latest five (currently at most 100 overall). Older gap results with unknown counts/protected classification stay prominent until a rescan establishes their breakdown; an older genuinely complete result remains complete. Loading performs no rewrite.
 
 The [1 November long-path investigation and correction](storage-checkpoint.md#long-path-coverage-correction--1-november-2026) confirmed that existing paths beyond the legacy Windows length limit could incorrectly report path-not-found. The corrected adapter uses normalized extended paths for native opens. Restart with the rebuilt application and explicitly rescan to replace older results; changing the entry budget cannot repair that historical coverage.
 
@@ -24,7 +26,7 @@ Reproduce the isolated native workflow with `pwsh -File scripts/Test-StorageUi.p
 
 ## Protected-system access failures
 
-New scans classify access-denied/sharing errors (Windows codes 5, 32 or 33) in a small allowlist as `ProtectedSystemAccess`. They remain in **Failed**, with **Protected system**, **Access restricted** and **Other errors** subtotals. Access restrictions have a folder table and separate collapsed samples; the main error table contains remaining read errors. Protected samples have their own collapsed section. All remain in `scan-failures` logs with their original native code, operation and redacted samples. Diagnostic scan snapshots expose `ProtectedSystemFailed`, `AccessRestricted` and `OtherErrors` alongside total `Failed`; the older `OtherFailed` field continues to mean every non-protected failure, including access restrictions. Partial warnings remain attached even if every failure is protected or access-restricted.
+New scans classify access-denied/sharing errors (Windows codes 5, 32 or 33) in a small allowlist as `ProtectedSystemAccess`. They remain in **Failed**, with **Protected system**, **Access restricted** and **Other errors** subtotals. Access restrictions have a folder table and separate collapsed samples; the main error table contains remaining read errors. Protected samples have their own collapsed section. All remain in `scan-failures` logs with their original native code, operation and redacted samples. Diagnostic scan snapshots expose `ProtectedSystemFailed`, `AccessRestricted` and `OtherErrors` alongside total `Failed`; the older `OtherFailed` field continues to mean every non-protected failure, including access restrictions. Restriction-only finished scans now use the neutral presentation described above.
 
 The allowlist uses the actual common-data and Windows paths: `Microsoft\Crypto\Keys`, `Microsoft\Crypto\SystemKeys`, `Microsoft\Crypto\RSA\MachineKeys`, `Microsoft\Crypto\DSS\MachineKeys` under common data; `System32\config` under Windows; `$Recycle.Bin` and `System Volume Information` on the Windows drive; the Windows `Temp` root exactly; and exact Windows-drive root files `DumpStack.log`, `DumpStack.log.tmp`, `hiberfil.sys`, `pagefile.sys`, `swapfile.sys`. It does not match similarly named sibling directories, arbitrary user folders, the entire Windows tree or every Temp descendant. Missing/changed paths and other errors remain ordinary failures inside these locations. A protected label describes location, not an ACL audit or proof that a denial is benign.
 
@@ -42,7 +44,27 @@ An older categorized scan can immediately show its exact Access restricted total
 
 `pwsh -File scripts/Test-StorageUi.ps1 -ExerciseAccessRestrictions` loads a synthetic saved result with 935 restrictions assigned 900/30 plus a remainder of five, one protected-system failure and two other errors. It checks native displayed counts, separate samples/errors, retained partial coverage and unchanged saved bytes/no new failure events on load. `-ExerciseProtectedFailures` and `-LegacyProtectedResult` exercise older scans with sample-only folder counts and known/unknown protected splits.
 
-`pwsh -File scripts/Test-StorageUi.ps1 -ExerciseProtectedFailures` checks the native split, collapsed/expandable protected samples and retained partial warning using synthetic saved metadata. `-LegacyProtectedResult` verifies that an older categorized baseline retains both failures visibly with an unknown protected split. Neither fixture starts a scan or generates new failure events by loading saved data.
+`pwsh -File scripts/Test-StorageUi.ps1 -ExerciseProtectedFailures` checks the native split, collapsed/expandable protected samples, neutral status and unmeasured-location note using synthetic saved metadata. `-LegacyProtectedResult` verifies that an older categorized baseline retains both failures visibly with a prominent unknown-coverage warning. Neither fixture starts a scan or generates new failure events by loading saved data.
+
+## Other-error details and next steps
+
+Space usage shows exact available other-error counts by reason and a separate table of first/recent examples. Select an example for the full local path, original Windows/scanner message, failed operation, native code, hexadecimal HRESULT, explanation and suggested next steps. Codes not recorded remain explicit; counts without path examples request a rescan for examples. The category count is not inferred from samples, and a sampled native code is not claimed to describe every occurrence in that category.
+
+| Reported error | Suggested next step |
+|---|---|
+| Missing/changed path (2/3) | Let moves/updates finish, rescan the containing folder and check the exact path if it repeats. |
+| Incompatible open/file lock (32/33) | Let the owning operation finish or close its application normally when convenient, then rescan. |
+| Device I/O / checksum error (1117/23) | Rescan the containing folder once; if repeated, retain logs and have storage health/system events investigated. The code alone does not prove a failed disk. |
+| Unsupported/invalid request (1/50/87), path-length error (206) | Retain the exact details for the Relight maintainer to investigate metadata/filesystem/long-path compatibility. |
+| Unverified metadata / interrupted enumeration | Use a direct local folder, allow changes to finish, rescan and retain persistent evidence. Root-validation failures explain selecting an existing folder. |
+| Size-total overflow | Scan smaller subfolders separately and report the calculation problem. |
+| Other native codes | Keep the original code/message and collect diagnostics for investigation; no cause or repair is invented. |
+
+Native-code meanings follow Microsoft's [0–499 error reference](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499-) and [1000–1299 reference](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--1000-1299-). The suggested actions are Relight guidance; they are not guaranteed fixes and perform no repairs, permission changes, elevation or forced process termination.
+
+**Copy selected error details** copies the visible example, suggested next steps, scan root and result timestamp to the local clipboard only when clicked. No report is automatically copied or sent. This copy contains local paths/original messages; diagnostic logs and bundles retain their existing redaction. Clipboard failures are shown beside the action. Native checks exercise selection and availability without changing the user's clipboard.
+
+Run `Test-StorageUi.ps1 -ExerciseAccessRestrictions` for mixed other errors and selected device-error details, or `-ExerciseScanFailures -ExerciseScanLimit -ExerciseCleanup` for an actual disposable locked-folder error and entry-limit warning. `-CoverageWarningCase Depth`, `Unfinished` and `Unknown` validate the remaining prominent-warning cases without scanning real files.
 
 ## Evidence
 

@@ -82,7 +82,10 @@
                 </WrapPanel>
                 <TextBlock Text="{Binding ScanAge}" TextWrapping="Wrap" Margin="0,0,0,8" />
                 <TextBlock Text="{Binding ResultsLabel}" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,8" />
-                <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Margin="0,0,0,12" />
+                <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Margin="0,0,0,8" AutomationProperties.AutomationId="ScanResultStatus" />
+                <TextBlock Text="{Binding CoverageNote}" TextWrapping="Wrap" Margin="0,0,0,12"
+                           Visibility="{Binding HasCoverageNote, Converter={StaticResource VisibleWhenTrue}}"
+                           AutomationProperties.AutomationId="ScanCoverageNote" />
                 <TextBlock Text="{Binding CoverageTotals}" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,12"
                            AutomationProperties.AutomationId="ScanCoverageTotals" />
                 <TextBlock Text="Logical size counts file paths. Allocated space counts each file identity once, charged to its first encountered path; folder totals overlap. These are measured file-stream bytes, not guaranteed reclaimable space. Directory overhead, alternate streams and excluded entries are not measured."
@@ -149,16 +152,41 @@
                     </Expander>
                 </StackPanel>
                 <TextBlock Text="{Binding FailuresHeading}" FontSize="18" Margin="0,16,0,8" />
-                <TextBlock Text="Access restrictions and protected-system failures have separate sections and still count as failed, incomplete coverage. All failures remain in scan-failures logs, available through Open diagnostic logs."
+                <TextBlock Text="{Binding ErrorSummary}" TextWrapping="Wrap" Margin="0,0,0,8" AutomationProperties.AutomationId="ScanErrorSummary" />
+                <TextBlock Text="Access restrictions and protected-system failures have separate sections. Error counts cover all occurrences; path details are retained examples. All failures remain in scan-failures logs, available through Open diagnostic logs."
                            TextWrapping="Wrap" Margin="0,0,0,8" />
-                <DataGrid ItemsSource="{Binding Failures}" AutoGenerateColumns="False" IsReadOnly="True"
+                <DataGrid ItemsSource="{Binding ErrorCounts}" AutoGenerateColumns="False" IsReadOnly="True"
+                          CanUserAddRows="False" MaxHeight="180" Margin="0,0,0,8" Visibility="{Binding HasErrorCounts, Converter={StaticResource VisibleWhenTrue}}"
+                          AutomationProperties.Name="Scan other-error counts and next steps">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Error" Binding="{Binding Error}" Width="*" />
+                        <DataGridTextColumn Header="Count" Binding="{Binding Count, StringFormat=N0}" Width="80" />
+                        <DataGridTextColumn Header="Suggested next steps" Binding="{Binding NextSteps}" Width="2*">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap" /></Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                    </DataGrid.Columns>
+                </DataGrid>
+                <DataGrid ItemsSource="{Binding ErrorDetails}" SelectedItem="{Binding SelectedError, Mode=TwoWay}"
+                          AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single" SelectionChanged="ScanErrorSelectionChanged"
                           CanUserAddRows="False" Height="160" AutomationProperties.Name="Scan read failures">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="Location" Binding="{Binding Path}" Width="*" />
                         <DataGridTextColumn Header="Reason" Binding="{Binding Reason}" Width="*" />
-                        <DataGridTextColumn Header="Windows code" Binding="{Binding NativeErrorCode}" Width="100" />
+                        <DataGridTextColumn Header="Operation" Binding="{Binding Operation}" Width="130" />
+                        <DataGridTextColumn Header="Windows code" Binding="{Binding WindowsCode}" Width="100" />
                     </DataGrid.Columns>
                 </DataGrid>
+                <StackPanel Visibility="{Binding HasSelectedError, Converter={StaticResource VisibleWhenTrue}}" Margin="0,8,0,0">
+                    <TextBlock Text="Selected error — details and suggested next steps" FontSize="16" Margin="0,0,0,8" />
+                    <TextBox Text="{Binding SelectedErrorReport, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap"
+                             AcceptsReturn="True" MinHeight="160" MaxHeight="320" VerticalScrollBarVisibility="Auto"
+                             AutomationProperties.Name="Selected scan error details" />
+                    <Button Content="Copy selected error details" Click="CopyScanErrorClick" IsEnabled="{Binding HasSelectedError}"
+                            HorizontalAlignment="Left" Margin="0,8,0,0" />
+                    <TextBlock x:Name="ErrorCopyStatus" TextWrapping="Wrap" Margin="0,4,0,0" />
+                </StackPanel>
                 <Expander Header="Protected-system access failures — samples" Margin="0,12,0,0"
                           Visibility="{Binding HasProtectedFailures, Converter={StaticResource VisibleWhenTrue}}">
                     <StackPanel>
