@@ -6,6 +6,78 @@ namespace Relight.Core.Tests;
 
 public sealed class RecoverySchedulerTests
 {
+    [Fact]
+    public async Task Missed_heartbeat_reconciles_before_any_overdue_profile_poll()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var discovery = new MutableDiscovery(Detection.Absent());
+        var launcher = new CountingLauncher();
+        var recorder = new CapturingRecorder();
+        Guid id = Guid.NewGuid();
+        var coordinator = ProfileCoordinator.CreateNew(id, AutoPolicy,
+            store, discovery, launcher, clock, recorder: recorder);
+        await using var scheduler = new RecoveryScheduler(clock);
+        scheduler.Add(id, coordinator, AutoPolicy);
+        await Assert.Single(scheduler.Pulse()).Value;
+        clock.Elapsed = TimeSpan.FromSeconds(2);
+        await Assert.Single(scheduler.Pulse()).Value;
+        Assert.Equal(0, launcher.Dispatches);
+
+        clock.Elapsed = TimeSpan.FromHours(1);
+        discovery.Result = Detection.Present("verified-after-wake");
+        Assert.Empty(scheduler.PulseAfterMonitoringGap(TimeSpan.FromSeconds(2)));
+        await Assert.IsAssignableFrom<Task>(scheduler.GetGapReconciliation(id))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.Single(scheduler.Pulse()).Value;
+
+        Assert.Equal("verified-after-wake", coordinator.Snapshot.TargetIdentity);
+        Assert.Equal(0, launcher.Dispatches);
+        Assert.Equal(0, store.Load(id).Checkpoint.ReservedAutomaticAttempts);
+        Assert.Contains(recorder.Events, entry =>
+            entry.Kind == OperationalEventKind.MonitoringGap);
+        Assert.Contains(recorder.Events, entry =>
+            entry.Kind == OperationalEventKind.MonitoringRestored);
+    }
+
+    [Fact]
+    public async Task One_blocked_profile_does_not_hold_other_gap_reconciliation()
+    {
+        using var directory = new TestDirectory();
+        var store = new RecoveryStateStore(directory.Path);
+        var clock = new FakeClock();
+        var blocked = new BlockingDiscovery();
+        Guid blockedId = Guid.NewGuid(), otherId = Guid.NewGuid();
+        await using var scheduler = new RecoveryScheduler(clock);
+        scheduler.Add(blockedId, ProfileCoordinator.CreateNew(blockedId, AutoPolicy,
+            store, blocked, new CountingLauncher(), clock), AutoPolicy);
+        scheduler.Add(otherId, ProfileCoordinator.CreateNew(otherId, AutoPolicy,
+            store, new ConstantDiscovery(Detection.Absent()),
+            new CountingLauncher(), clock), AutoPolicy);
+        IReadOnlyDictionary<Guid, Task> initial = scheduler.Pulse();
+        await blocked.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await initial[otherId].WaitAsync(TimeSpan.FromSeconds(5));
+
+        clock.Elapsed = TimeSpan.FromHours(1);
+        IReadOnlyDictionary<Guid, Task> started = scheduler.PulseAfterMonitoringGap(
+            TimeSpan.Zero);
+        await Assert.IsAssignableFrom<Task>(scheduler.GetGapReconciliation(otherId))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(Assert.IsAssignableFrom<Task>(
+            scheduler.GetGapReconciliation(blockedId)).IsCompleted);
+        Assert.False(initial[blockedId].IsCompleted);
+        Task otherPoll = started.TryGetValue(otherId, out Task? alreadyStarted)
+            ? alreadyStarted : scheduler.Pulse()[otherId];
+        await otherPoll.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.NotNull(scheduler.GetLast(otherId)?.Result);
+
+        blocked.Release.TrySetResult();
+        await initial[blockedId].WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.IsAssignableFrom<Task>(scheduler.GetGapReconciliation(blockedId))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
     private static RecoveryPolicy AutoPolicy => RecoveryPolicy.Default with
     {
         StartAutomaticallyWhenInitiallyAbsent = true,

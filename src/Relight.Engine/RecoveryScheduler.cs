@@ -9,6 +9,7 @@ namespace Relight.Engine;
 /// </summary>
 public sealed class RecoveryScheduler : IAsyncDisposable
 {
+    private static readonly TimeSpan MonitoringGapThreshold = TimeSpan.FromSeconds(5);
     private readonly IMonotonicClock _clock;
     private readonly Dictionary<Guid, ScheduledProfile> _profiles = new();
     private readonly Dictionary<Guid, PassiveProfile> _passive = new();
@@ -63,7 +64,8 @@ public sealed class RecoveryScheduler : IAsyncDisposable
             TimeSpan now = _clock.Elapsed;
             foreach ((Guid id, ScheduledProfile profile) in _profiles)
             {
-                if (profile.InFlight is not null || now < profile.NextDue) continue;
+                if (profile.InFlight is not null || profile.GapPending ||
+                    now < profile.NextDue) continue;
                 profile.ImmediateRequested = false;
                 // Task.Run prevents a synchronously blocked adapter from holding
                 // the scheduler's scan lock or delaying another due profile.
@@ -155,6 +157,7 @@ public sealed class RecoveryScheduler : IAsyncDisposable
         {
             profile.Cancellation.Cancel();
             if (profile.InFlight is { } running) await running.ConfigureAwait(false);
+            if (profile.GapTask is { } gap) await gap.ConfigureAwait(false);
             profile.Coordinator.Dispose();
             profile.Cancellation.Dispose();
         }
@@ -181,16 +184,78 @@ public sealed class RecoveryScheduler : IAsyncDisposable
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             _stop.Token, cancellationToken);
+        TimeSpan previousPulse = _clock.Elapsed;
         try
         {
             while (!linked.IsCancellationRequested)
             {
-                Pulse();
+                PulseAfterMonitoringGap(previousPulse);
+                previousPulse = _clock.Elapsed;
                 await Task.Delay(TimeSpan.FromSeconds(1), linked.Token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (linked.IsCancellationRequested) { }
         finally { _stop.Cancel(); }
+    }
+
+    internal IReadOnlyDictionary<Guid, Task> PulseAfterMonitoringGap(
+        TimeSpan previousPulse)
+    {
+        if (_clock.Elapsed - previousPulse > MonitoringGapThreshold)
+            BeginMonitoringGapReconciliation();
+        return Pulse();
+    }
+
+    internal Task? GetGapReconciliation(Guid id)
+    {
+        lock (_sync)
+            return _profiles.GetValueOrDefault(id)?.GapTask;
+    }
+
+    private void BeginMonitoringGapReconciliation()
+    {
+        lock (_sync)
+        {
+            if (_disposed || _stop.IsCancellationRequested) return;
+            foreach ((Guid id, ScheduledProfile profile) in _profiles)
+            {
+                if (profile.GapPending) continue;
+                profile.GapPending = true;
+                profile.Coordinator.CancelPendingLaunchForMonitoringInterruption();
+                profile.GapTask = Task.Run(() => ReconcileGapAsync(id, profile));
+            }
+            TimeSpan now = _clock.Elapsed;
+            foreach (PassiveProfile profile in _passive.Values)
+            {
+                if (profile.InFlight is null) profile.NextDue = now;
+                else profile.ImmediateRequested = true;
+            }
+        }
+    }
+
+    private async Task ReconcileGapAsync(Guid id, ScheduledProfile profile)
+    {
+        string? error = null;
+        try
+        {
+            await profile.Coordinator.MarkMonitoringInterruptedAsync(profile.Cancellation.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (profile.Cancellation.IsCancellationRequested) { }
+        catch (Exception exception) { error = exception.Message; }
+        finally
+        {
+            lock (_sync)
+            {
+                if (_profiles.TryGetValue(id, out ScheduledProfile? current) &&
+                    ReferenceEquals(profile, current))
+                {
+                    profile.Error = error;
+                    profile.GapPending = error is not null;
+                    if (error is null) profile.NextDue = _clock.Elapsed;
+                }
+            }
+        }
     }
 
     private async Task TickAsync(Guid id, ScheduledProfile profile)
@@ -335,6 +400,8 @@ public sealed class RecoveryScheduler : IAsyncDisposable
         public TimeSpan NextDue { get; set; } = nextDue;
         public bool ImmediateRequested { get; set; }
         public Task? InFlight { get; set; }
+        public bool GapPending { get; set; }
+        public Task? GapTask { get; set; }
         public CoordinatorResult? LastResult { get; set; }
         public string? Error { get; set; }
     }
