@@ -1,5 +1,28 @@
 # Storage monitoring checkpoint
 
+## Remaining access denials — 4 November 2026
+
+The user's new C-drive scan ran from **10:56:29 to 11:53:46 Eastern** using build `ff0af82` (Debug). Traversal finished below its 10,000,000-entry budget: 7,576,472 entries inspected, 6,113,803 file paths measured, 156,797 exclusions, 34,372 protected-system failures and **935 other failures**. The partial-coverage warning is accurate; completing traversal does not establish that inaccessible/excluded entries were measured.
+
+The final failure-only summary agrees with the saved baseline. All 935 other failures have native Windows code **5 (Access denied)**: **925 metadata reads and 10 directory enumerations**. These are issue occurrences, including folders, rather than 935 distinct files. The code/operation grouping was not limited, and neither diagnostic stream reports lost records. There are no missing-path, sharing, size-overflow or other I/O failure categories within this 935 group.
+
+All 24 distinct first/latest AccessDenied sample tags retained across the scan summaries were correlated to current local names through metadata-only directory enumeration. Locations include HP files/recovery folders, Intune/other managed application data, additional machine cryptographic stores, Windows Error Reporting, another user's profile, temporary scratch `lock` files, Windows appcompat/task/service/update stores, WMI AutoRecover and a WinSxS file. The ten raw baseline samples and the matched samples reproduce native access denial. For example, the task folders permit a zero-content-access metadata handle but deny the directory-list handle; a read-only ACL query on `SysWOW64\Tasks` shows no directory-list grant for the current non-elevated user. Denial occurs at the native open, before Relight's canonical-path verification. No file contents, permissions or elevation settings were changed.
+
+A separate, read-only metadata probe reproduced **935 unique denied paths**, with the same **925 metadata / 10 directory-list** operation counts. All 24 retained historical sample tags occur in that reproduced set. Current-location counts are:
+
+| Selected location | Reproduced denials | Examples |
+|---|---:|---|
+| Windows | 420 | 287 event-log files, 42 WMI entries (40 in AutoRecover), task/appcompat and other service stores. |
+| ProgramData | 419 | 337 Windows Error Reporting entries (315 archive, 21 queue, one temporary metadata entry), Defender/management data and additional machine cryptographic stores. |
+| Current user's Temp | 76 | Scratch lock files and restricted diagnostic directories. |
+| Other selected locations | 20 | 11 under Program Files/Program Files (x86), four HP files, three restricted drive-root folders and two other user-profile roots. |
+
+These are investigation-time inventories, not retroactively exact per-folder counts for the original scan: retained first/latest samples cannot reconstruct every historical path. The probe used no content-access rights; it visited selected locations and skipped the already recognized protected trees. Its Temp walk stopped at the 90-second investigation budget after 606,609 entries; the other selected walks completed. Finding the matching 935 denials is not proof that this bounded probe enumerated every currently inaccessible path on C:. The original scan baseline's SHA-256 remained unchanged. Local probe scripts/results remain ignored under `artifacts/scan-investigation-20261104`; raw names, profile identities and generated evidence are not published.
+
+**Recommended handling; not implemented in this investigation:** expose native access denial as **Access restricted**, with bounded counts by location, alongside the existing protected-system subset. Keep other error types distinct and preserve total failures, native codes, the original saved evidence and incomplete-coverage warning. A restricted location is a description of unavailable access, not a claim that its ACL is correct. Do not treat every Windows/user/temp denial as a protected-system exclusion, automatically change ACLs, elevate the resident application or repeatedly retry the same denial. Unreadable folders can hide an unknown amount of space. Scanning an accessible folder is useful for complete rankings within that folder. If fuller drive coverage is needed, a separately designed, explicitly requested privileged metadata-scan path could measure more; it would still need exclusion/lock reporting and could not promise complete coverage.
+
+Validation: saved-result/final-summary agreement and exact category/operation sums passed; sampled native denials reproduced on Windows 11 Business x64 build 26300 in the current non-elevated context. No new full-C scan, cleanup, target termination or application behavior change was performed. This is an investigation/documentation checkpoint; application builds, unit suites and UI acceptance were not rerun for these documentation-only changes.
+
 ## S13 — Protected-system access failures
 
 **2 November 2026:** The latest user scan's 35,301 failures were 35,286 access-denied metadata reads, 11 access-denied enumerations and four sharing violations on Windows root system files. The principal burst was correlated to the shared Windows cryptographic-key store using 45 logged sample tags; that folder contained 34,359 files at investigation time. This is not a claim that every file in that current inventory accounts for one historical failure. No key contents or permissions were inspected/changed.
