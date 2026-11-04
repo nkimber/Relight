@@ -84,7 +84,7 @@ public sealed class ProtectedSystemScanTests
         Assert.Equal(1, store.Load()!.ProtectedSystemFailedEntries);
         using var gate = new SemaphoreSlim(1, 1);
         var vm = new StorageScanViewModel(fixture.Path, gate); await vm.LoadAsync();
-        Assert.Contains("Failed: 2", vm.CoverageTotals); Assert.Contains("Protected system: 1", vm.CoverageTotals); Assert.Contains("Other failures: 1", vm.CoverageTotals);
+        Assert.Contains("Failed: 2", vm.CoverageTotals); Assert.Contains("Protected system: 1", vm.CoverageTotals); Assert.Contains("Access restricted: 0", vm.CoverageTotals); Assert.Contains("Other errors: 1", vm.CoverageTotals);
         Assert.True(vm.ShowCoverageWarning); Assert.Single(vm.Failures); Assert.Single(vm.ProtectedFailures); Assert.True(vm.HasProtectedFailures);
         Assert.Equal(StorageScanIssueCategory.MissingOrChanged, vm.Failures[0].Category); vm.Close();
         using var output = new MemoryStream(); await new ApplicationDiagnosticReader(fixture.Path).ExportFailuresAsync(output);
@@ -119,7 +119,7 @@ public sealed class ProtectedSystemScanTests
         store.Save(older); Assert.Null(store.Load()!.ProtectedSystemFailedEntries); Assert.Null(store.Load()!.OtherFailedEntries);
         using var gate = new SemaphoreSlim(1, 1);
         var vm = new StorageScanViewModel(fixture.Path, gate); await vm.LoadAsync();
-        Assert.Contains("split: unknown", vm.CoverageTotals); Assert.Single(vm.Failures); Assert.Empty(vm.ProtectedFailures); Assert.True(vm.ShowCoverageWarning); vm.Close();
+        Assert.Contains("split: unknown", vm.CoverageTotals); Assert.Empty(vm.Failures); Assert.Single(vm.AccessRestrictedSamples); Assert.Empty(vm.ProtectedFailures); Assert.True(vm.ShowCoverageWarning); vm.Close();
         byte[] before = File.ReadAllBytes(Path.Combine(fixture.Path, "Storage", "latest-scan.json"));
         Assert.Throws<InvalidDataException>(() => store.Save(older with { FailureClassificationVersion = 99 }));
         Assert.Throws<InvalidDataException>(() => store.Save(older with { IssueCounts = [new(StorageScanIssueCategory.ProtectedSystemAccess, 1)] }));

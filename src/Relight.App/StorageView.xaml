@@ -125,8 +125,31 @@
                         <DataGridTextColumn Header="Count" Binding="{Binding Count, StringFormat=N0}" Width="100" />
                     </DataGrid.Columns>
                 </DataGrid>
+                <StackPanel Visibility="{Binding HasAccessRestrictions, Converter={StaticResource VisibleWhenTrue}}" Margin="0,16,0,0">
+                    <TextBlock Text="Access restricted — grouped by folder" FontSize="18" />
+                    <TextBlock Text="{Binding AccessRestrictionSummary}" TextWrapping="Wrap" Margin="0,8,0,8"
+                               AutomationProperties.AutomationId="ScanAccessRestrictionSummary" />
+                    <DataGrid ItemsSource="{Binding AccessRestrictedFolders}" AutoGenerateColumns="False" IsReadOnly="True"
+                              CanUserAddRows="False" MaxHeight="220" AutomationProperties.Name="Scan access-restricted folders">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Folder" Binding="{Binding Folder}" Width="*" />
+                            <DataGridTextColumn Header="Count" Binding="{Binding Count, StringFormat=N0}" Width="100" />
+                            <DataGridTextColumn Header="Count type" Binding="{Binding CountKind}" Width="130" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <Expander Header="Access-restricted samples — first and recent" Margin="0,8,0,0">
+                        <DataGrid ItemsSource="{Binding AccessRestrictedSamples}" AutoGenerateColumns="False" IsReadOnly="True"
+                                  CanUserAddRows="False" Height="160" AutomationProperties.Name="Scan access-restricted samples">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Location" Binding="{Binding Path}" Width="*" />
+                                <DataGridTextColumn Header="Reason" Binding="{Binding Reason}" Width="*" />
+                                <DataGridTextColumn Header="Windows code" Binding="{Binding NativeErrorCode}" Width="100" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Expander>
+                </StackPanel>
                 <TextBlock Text="{Binding FailuresHeading}" FontSize="18" Margin="0,16,0,8" />
-                <TextBlock Text="Full counts appear above. Protected-system access failures are grouped separately below and still count as failed, incomplete coverage. All failures remain in scan-failures logs, available through Open diagnostic logs."
+                <TextBlock Text="Access restrictions and protected-system failures have separate sections and still count as failed, incomplete coverage. All failures remain in scan-failures logs, available through Open diagnostic logs."
                            TextWrapping="Wrap" Margin="0,0,0,8" />
                 <DataGrid ItemsSource="{Binding Failures}" AutoGenerateColumns="False" IsReadOnly="True"
                           CanUserAddRows="False" Height="160" AutomationProperties.Name="Scan read failures">

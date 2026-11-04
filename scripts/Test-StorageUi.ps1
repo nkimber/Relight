@@ -10,7 +10,8 @@ param(
     [switch]$ExerciseLongPaths,
     [switch]$ExerciseScanFailures,
     [switch]$ExerciseProtectedFailures,
-    [switch]$LegacyProtectedResult
+    [switch]$LegacyProtectedResult,
+    [switch]$ExerciseAccessRestrictions
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
@@ -36,6 +37,8 @@ if ($ExerciseScanLimit) { $ExerciseScan = $true }
 if ($ExerciseLongPaths) { $ExerciseScan = $true }
 if ($ExerciseScanFailures) { $ExerciseScan = $true }
 if ($LegacyProtectedResult) { $ExerciseProtectedFailures = $true }
+if ($ExerciseAccessRestrictions) { $ExerciseProtectedFailures = $true }
+if ($ExerciseAccessRestrictions -and $LegacyProtectedResult) { throw 'Choose new access groups or the legacy fixture, not both.' }
 function Wait-For([scriptblock]$Condition, [string]$Description) {
     $until = [DateTime]::UtcNow.AddSeconds(20)
     while ([DateTime]::UtcNow -lt $until) {
@@ -88,6 +91,19 @@ try {
                 @{Path=(Join-Path $protectedFixture 'other-example');Reason='Access is denied.';Category=3;Operation=1;NativeErrorCode=5;HResult=-2147467259},
                 @{Path=(Join-Path $protectedFixture 'excluded-example');Reason='Expected exclusion';Category=1;Operation=1})}
         if (-not $LegacyProtectedResult) {$seed.FailureClassificationVersion=1; $seed.IssueCounts+=@{Category=10;Count=1}}
+        if ($ExerciseAccessRestrictions) {
+            $folderA=Join-Path $protectedFixture 'folder-A'
+            $folderB=Join-Path $protectedFixture 'folder-B'
+            $seed.EntriesVisited=1000; $seed.SkippedEntries=939
+            $seed.IssueCounts=@(@{Category=1;Count=1},@{Category=3;Count=935},@{Category=4;Count=1},@{Category=8;Count=1},@{Category=10;Count=1})
+            $seed.AccessRestrictions=@{Version=1;Folders=@(@{Folder=$folderA;Count=900},@{Folder=$folderB;Count=30});UngroupedFailures=5}
+            $seed.Issues=@(@{Path=(Join-Path $folderA 'sample');Reason='Access is denied.';Category=3;Operation=1;NativeErrorCode=5},
+                @{Path=$folderB;Reason='Access is denied.';Category=3;Operation=2;NativeErrorCode=5},
+                @{Path=(Join-Path $protectedFixture 'protected-example');Reason='Access is denied.';Category=10;Operation=1;NativeErrorCode=5},
+                @{Path=(Join-Path $protectedFixture 'missing');Reason='Path changed';Category=4;Operation=1;NativeErrorCode=3},
+                @{Path=(Join-Path $protectedFixture 'io-error');Reason='I/O error';Category=8;Operation=1;NativeErrorCode=1117},
+                @{Path=(Join-Path $protectedFixture 'excluded');Reason='Expected exclusion';Category=1;Operation=1})
+        }
         $seed | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $seededBaseline -Encoding utf8
         $seedHash = (Get-FileHash -LiteralPath $seededBaseline -Algorithm SHA256).Hash
     }
@@ -138,23 +154,45 @@ try {
         $totals = Wait-For {
             $condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'ScanCoverageTotals')
             $candidate = $storage.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
-            if ($candidate -and $candidate.Current.Name.Contains('Failed: 2')) {return $candidate.Current.Name}
+            if ($candidate -and $candidate.Current.Name.Contains($(if($ExerciseAccessRestrictions){'Failed: 938'}else{'Failed: 2'}))) {return $candidate.Current.Name}
         } 'saved failure totals'
         $otherCount = (Find-Control $storage 'Scan read failures').GetCurrentPattern([System.Windows.Automation.GridPattern]::Pattern).Current.RowCount
-        if ($LegacyProtectedResult) {
-            if (-not $totals.Contains('split: unknown') -or $otherCount -ne 2) {throw 'Legacy protected split was invented or failures hidden.'}
+        $folderGrid=Find-Control $storage 'Scan access-restricted folders'
+        $folderPattern=$folderGrid.GetCurrentPattern([System.Windows.Automation.GridPattern]::Pattern)
+        $summaryCondition=[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'ScanAccessRestrictionSummary')
+        $folderSummary=$storage.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$summaryCondition).Current.Name
+        if ($ExerciseAccessRestrictions) {
+            if (-not $totals.Contains('Protected system: 1 · Access restricted: 935 · Other errors: 2') -or $otherCount -ne 2) {throw 'Restriction/protected/other error counts overlap or differ.'}
+            if ($folderPattern.Current.RowCount -ne 3 -or -not $folderSummary.Contains('5 restrictions are in Other folders')) {throw 'Exact folder counts or explicit grouping remainder missing.'}
+            foreach($row in 0..2) {
+                $expected=@('900','30','5')[$row]
+                $cell=$folderPattern.GetItem($row,1)
+                $texts=$cell.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+                $names=@($cell.Current.Name)+@($texts | ForEach-Object {$_.Current.Name})
+                if ($names -notcontains $expected) {throw "Folder row $row does not display count $expected (names: $names)."}
+            }
+            Write-Output 'PASS: 935 restrictions grouped separately with exact 900/30/remainder 5 counts; protected and other errors stay separate; partial coverage retained.'
+        } elseif ($LegacyProtectedResult) {
+            if (-not $totals.Contains('Access restricted: 2') -or -not $totals.Contains('split: unknown') -or $otherCount -ne 0) {throw 'Legacy protected split was invented or access restrictions mixed into other errors.'}
+            if ($folderPattern.Current.RowCount -ne 1 -or -not $folderSummary.Contains('retained samples only (2 shown)')) {throw 'Legacy folder sample counts were presented as exact full-scan counts.'}
             if (Find-Control $storage 'Protected-system access failures — samples') {throw 'Legacy result unexpectedly shows a protected classification.'}
-            Write-Output 'PASS: legacy saved failure total preserved; protected split unknown; both failures remain visible with partial coverage.'
+            Write-Output 'PASS: legacy total preserved; protected split unknown; access restrictions grouped as retained samples only with partial coverage.'
         } else {
-            if (-not $totals.Contains('Protected system: 1') -or -not $totals.Contains('Other failures: 1') -or $otherCount -ne 1) {throw 'Protected/other totals or failure separation incorrect.'}
+            if (-not $totals.Contains('Protected system: 1 · Access restricted: 1 · Other errors: 0') -or $otherCount -ne 0) {throw 'Protected/restricted/other totals or failure separation incorrect.'}
+            if ($folderPattern.Current.RowCount -ne 1 -or -not $folderSummary.Contains('retained samples only (1 shown)')) {throw 'Older classified scan acquired invented exact folder counts.'}
             $expander = Find-Control $storage 'Protected-system access failures — samples'
             $pattern = $expander.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
             if ($pattern.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Collapsed) {throw 'Protected samples are not initially collapsed.'}
             $pattern.Expand()
             $grid = Wait-For {Find-Control $storage 'Scan protected-system failures'} 'expanded protected samples'
             if ($grid.GetCurrentPattern([System.Windows.Automation.GridPattern]::Pattern).Current.RowCount -ne 1) {throw 'Protected sample missing or other failures mixed in.'}
-            Write-Output 'PASS: total failures include protected subset; other failures remain prominent; protected samples expand separately; partial coverage retained.'
+            Write-Output 'PASS: total includes protected and access-restricted subsets; old folder counts remain sample-only; protected samples expand; partial coverage retained.'
         }
+        $accessExpander=Find-Control $storage 'Access-restricted samples — first and recent'
+        $accessExpander.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
+        $accessSamples=Wait-For {Find-Control $storage 'Scan access-restricted samples'} 'expanded access-restricted samples'
+        $expectedSamples=if($ExerciseAccessRestrictions -or $LegacyProtectedResult){2}else{1}
+        if($accessSamples.GetCurrentPattern([System.Windows.Automation.GridPattern]::Pattern).Current.RowCount -ne $expectedSamples){throw 'Access-restricted samples missing or mixed with other errors.'}
         if ((Get-FileHash -LiteralPath $seededBaseline -Algorithm SHA256).Hash -ne $seedHash) {throw 'Loading reclassified or rewrote saved evidence.'}
         if (@(Get-ChildItem -LiteralPath (Join-Path $root 'Logs/Diagnostics') -Filter 'scan-failures-*.jsonl' -ErrorAction SilentlyContinue).Count) {throw 'Loading saved evidence generated new failure events.'}
         Select-StorageSection 'Overview'
@@ -335,7 +373,7 @@ try {
             Wait-For {
                 $condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'ScanCoverageTotals')
                 $text = $storage.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition).Current.Name
-                $text.Contains('Excluded: 1 · Failed: 1 · Depth-limited: 0') -and $text.Contains('Protected system: 0 · Other failures: 1')
+                $text.Contains('Excluded: 1 · Failed: 1 · Depth-limited: 0') -and $text.Contains('Protected system: 0 · Access restricted: 0 · Other errors: 1')
             } 'visible separated totals' | Out-Null
             $failuresGrid = Find-Control $storage 'Scan read failures'
             if ($failuresGrid.GetCurrentPattern([System.Windows.Automation.GridPattern]::Pattern).Current.RowCount -ne 1) {throw 'Failure grid includes exclusions or omits failure.'}

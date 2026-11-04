@@ -92,5 +92,29 @@ public sealed class StorageScanStore(string dataDirectory)
         if (snapshot.IssueCounts is not null && snapshot.Issues.GroupBy(i => i.Category)
             .Any(g => g.Count() > snapshot.IssueCounts.Single(c => c.Category == g.Key).Count))
             throw new InvalidDataException("Storage baseline samples exceed their issue counts.");
+        if (snapshot.AccessRestrictions is { } access)
+        {
+            if (access.Version != StorageAccessRestrictionSummary.CurrentVersion || snapshot.IssueCounts is null ||
+                access.Folders is null || access.Folders.Length > StorageAccessRestrictionSummary.MaximumFolders ||
+                access.UngroupedFailures < 0 || access.Folders.Any(f => f is null || f.Count <= 0 ||
+                    string.IsNullOrWhiteSpace(f.Folder) || f.Folder.Length > StorageAccessRestrictionSummary.MaximumFolderLength ||
+                    !string.Equals(f.Folder, StorageAccessRestrictionCollector.FolderFor(snapshot.Root,
+                        new(f.Folder, "folder validation") { Operation = ScanIoOperation.EnumerateDirectory }), StringComparison.OrdinalIgnoreCase)) ||
+                access.Folders.Select(f => f.Folder).Distinct(StringComparer.OrdinalIgnoreCase).Count() != access.Folders.Length ||
+                access.Folders.Sum(f => (long)f.Count) + access.UngroupedFailures != snapshot.AccessRestrictedEntries)
+                throw new InvalidDataException("Storage access-restriction folder counts are invalid or unsupported.");
+            var folderCounts = access.Folders.ToDictionary(f => f.Folder, f => f.Count, StringComparer.OrdinalIgnoreCase);
+            var sampleCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            int ungroupedSamples = 0;
+            foreach (var sample in snapshot.Issues.Where(i => i.Category == StorageScanIssueCategory.AccessDenied))
+            {
+                string? folder = StorageAccessRestrictionCollector.FolderFor(snapshot.Root, sample);
+                if (folder is null || !folderCounts.TryGetValue(folder, out int count)) { ungroupedSamples++; continue; }
+                sampleCounts.TryGetValue(folder, out int samples); sampleCounts[folder] = samples + 1;
+                if (samples + 1 > count) throw new InvalidDataException("Storage access-restriction samples exceed their folder counts.");
+            }
+            if (ungroupedSamples > access.UngroupedFailures)
+                throw new InvalidDataException("Storage access-restriction samples exceed the ungrouped count.");
+        }
     }
 }

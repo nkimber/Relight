@@ -32,6 +32,7 @@ public sealed class StorageScanner(IStorageScanFileSystem? fileSystem = null)
             throw new ArgumentException("Select a folder on a fixed local drive.");
         DateTimeOffset started = DateTimeOffset.UtcNow;
         var issues = new StorageScanIssueCollector();
+        var accessRestrictions = new StorageAccessRestrictionCollector(root);
         var folders = new PriorityQueue<StorageScanEntry, long>();
         var largestFiles = new PriorityQueue<StorageScanEntry, long>();
         var identities = new HashSet<string>(StringComparer.Ordinal);
@@ -51,6 +52,7 @@ public sealed class StorageScanner(IStorageScanFileSystem? fileSystem = null)
         {
             skipped++;
             issues.Add(issue);
+            accessRestrictions.Add(issue);
             diagnostics?.Issue(issue, error);
         }
         void Failure(string path, ScanIoOperation operation, Exception error) =>
@@ -163,7 +165,8 @@ public sealed class StorageScanner(IStorageScanFileSystem? fileSystem = null)
                 .OrderByDescending(e => e.AllocatedBytes).ThenByDescending(e => e.LogicalBytes)
                 .ThenBy(e => e.Path, StringComparer.OrdinalIgnoreCase).ToArray(),
             issues.Samples()) { EntryLimit = maximumEntries, IssueCounts = issues.Counts(),
-                FailureClassificationVersion = StorageScanSnapshot.CurrentFailureClassificationVersion };
+                FailureClassificationVersion = StorageScanSnapshot.CurrentFailureClassificationVersion,
+                AccessRestrictions = accessRestrictions.Summary() };
     }
 
     private static bool IsReadFailure(Exception error) => error is IOException or UnauthorizedAccessException

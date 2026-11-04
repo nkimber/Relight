@@ -24,6 +24,11 @@ public sealed record StorageScanSnapshot(int SchemaVersion, string Root,
     public int? ProtectedSystemFailedEntries => FailureClassificationVersion == CurrentFailureClassificationVersion && IssueCounts is not null
         ? IssueCounts.Where(c => c.Category == StorageScanIssueCategory.ProtectedSystemAccess).Sum(c => c.Count) : null;
     public int? OtherFailedEntries => FailedEntries - ProtectedSystemFailedEntries;
+    public int? AccessRestrictedEntries => IssueCounts is null ? null :
+        IssueCounts.Where(c => c.Category == StorageScanIssueCategory.AccessDenied).Sum(c => c.Count);
+    public int? OtherErrorEntries => OtherFailedEntries - AccessRestrictedEntries;
+    // Null on older scans: exact folder counts cannot be inferred from retained samples.
+    public StorageAccessRestrictionSummary? AccessRestrictions { get; init; }
     private int? Count(StorageScanIssueKind kind) => IssueCounts is null ? null :
         IssueCounts.Where(c => StorageScanIssue.KindOf(c.Category) == kind).Sum(c => c.Count);
     public const int MaximumRetainedEntries = 2100;

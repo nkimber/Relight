@@ -143,7 +143,7 @@ public sealed class ScanDiagnosticSession : IStorageScanDiagnostics
     private long _operationStarted, _operationEnded, _progress, _stageStarted;
     private string? _path, _lastFailureType;
     private int? _lastFailureCode, _lastNativeCode;
-    private int _visited, _measured, _skipped, _aliases, _identities, _depth, _excluded, _failed, _protectedFailed, _limitedEntries, _reportedFailures;
+    private int _visited, _measured, _skipped, _aliases, _identities, _depth, _excluded, _failed, _protectedFailed, _accessRestricted, _limitedEntries, _reportedFailures;
     internal const int DetailedFailureGroupLimit = 24;
     private readonly Dictionary<FailureKey, DiagnosticScanFailureGroup> _failureGroups = new();
     private int _detailedGroups;
@@ -193,6 +193,7 @@ public sealed class ScanDiagnosticSession : IStorageScanDiagnostics
             if (issue.Kind != StorageScanIssueKind.Failed) return;
             _failed++;
             if (issue.Category == StorageScanIssueCategory.ProtectedSystemAccess) _protectedFailed++;
+            if (issue.Category == StorageScanIssueCategory.AccessDenied) _accessRestricted++;
             _lastFailureType = error?.GetType().FullName;
             _lastFailureCode = issue.HResult; _lastNativeCode = issue.NativeErrorCode;
             var key = new FailureKey(issue.Category, issue.Operation, issue.NativeErrorCode, issue.HResult, false);
@@ -286,7 +287,8 @@ public sealed class ScanDiagnosticSession : IStorageScanDiagnostics
                 _cancel, _complete, _limited, _lastFailureType, _lastFailureCode)
                 { StageSeconds = _clock.GetElapsedTime(_stageStarted, now).TotalSeconds,
                     LastFailureNativeCode = _lastNativeCode, Excluded = _excluded, Failed = _failed, Limited = _limitedEntries,
-                    ProtectedSystemFailed = _protectedFailed, OtherFailed = _failed - _protectedFailed };
+                    ProtectedSystemFailed = _protectedFailed, OtherFailed = _failed - _protectedFailed,
+                    AccessRestricted = _accessRestricted, OtherErrors = _failed - _protectedFailed - _accessRestricted };
         }
     }
 }

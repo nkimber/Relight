@@ -85,12 +85,16 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
     public IReadOnlyList<StorageGrowthRow> Growth { get; private set; } = [];
     public IReadOnlyList<StorageScanIssue> Issues { get; private set; } = [];
     public IReadOnlyList<StorageScanIssue> Failures => Issues.Where(i => i.Kind == StorageScanIssueKind.Failed &&
-        i.Category != StorageScanIssueCategory.ProtectedSystemAccess).ToArray();
+        i.Category is not (StorageScanIssueCategory.ProtectedSystemAccess or StorageScanIssueCategory.AccessDenied)).ToArray();
+    public IReadOnlyList<StorageScanIssue> AccessRestrictedSamples => Issues.Where(i => i.Category == StorageScanIssueCategory.AccessDenied).ToArray();
+    public IReadOnlyList<StorageAccessFolderRow> AccessRestrictedFolders { get; private set; } = [];
+    public bool HasAccessRestrictions => _lastSnapshot?.AccessRestrictedEntries > 0 || AccessRestrictedSamples.Count > 0;
+    public string AccessRestrictionSummary { get; private set; } = "";
     public IReadOnlyList<StorageScanIssue> ProtectedFailures => Issues.Where(i => i.Category == StorageScanIssueCategory.ProtectedSystemAccess).ToArray();
     public bool HasProtectedFailures => ProtectedFailures.Count > 0;
     public string FailuresHeading => _lastSnapshot?.FailureClassificationVersion == StorageScanSnapshot.CurrentFailureClassificationVersion
-        ? "Other read failures — first and recent samples by reason"
-        : "Read failures — protected-system split unavailable for this scan";
+        ? "Other read errors — first and recent samples by reason"
+        : "Read errors — protected-system split unavailable for this scan";
     public IReadOnlyList<StorageScanIssue> Exclusions => Issues.Where(i => i.Kind == StorageScanIssueKind.Excluded).ToArray();
     public IReadOnlyList<StorageScanIssue> Limits => Issues.Where(i => i.Kind == StorageScanIssueKind.Limited).ToArray();
     public IReadOnlyList<StorageScanIssue> UnclassifiedIssues => Issues.Where(i => i.Kind == StorageScanIssueKind.Unknown).ToArray();
@@ -226,12 +230,31 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
         Files = snapshot.Entries.Where(e => e.Kind == StorageScanEntryKind.File).Take(100).Select(Row).ToArray();
         Folders = snapshot.Entries.Where(e => e.Kind == StorageScanEntryKind.Folder).Take(100).Select(Row).ToArray();
         Issues = snapshot.Issues;
+        var access = snapshot.AccessRestrictions;
+        if (access is null)
+        {
+            var samples = new StorageAccessRestrictionCollector(snapshot.Root);
+            foreach (var issue in AccessRestrictedSamples) samples.Add(issue);
+            access = samples.Summary();
+        }
+        string countKind = snapshot.AccessRestrictions is null ? "Retained samples" : "Failures";
+        AccessRestrictedFolders = access.Folders.Select(f => new StorageAccessFolderRow(f.Folder, f.Count, countKind))
+            .Concat(access.UngroupedFailures > 0 ? [new StorageAccessFolderRow("Other folders (not individually retained)", access.UngroupedFailures, countKind)] : [])
+            .ToArray();
+        AccessRestrictionSummary = snapshot.AccessRestrictions is null
+            ? $"Exact folder counts are unavailable for this older scan. Rows group retained samples only ({AccessRestrictedSamples.Count:N0} shown). " +
+                (snapshot.AccessRestrictedEntries is { } restrictedCount ? $"The scan recorded {restrictedCount:N0} access restrictions. " :
+                    "The full access-restricted total is unknown. ") + "Rescan to record exact folder counts."
+            : "Each access restriction is counted once. Metadata-read failures use the containing folder; folder-list failures use that folder. " +
+                $"Deeper paths roll up after {StorageAccessRestrictionSummary.MaximumFolderDepth} folder levels below the scan root. " +
+                (access.UngroupedFailures > 0 ? $"{access.UngroupedFailures:N0} restrictions are in Other folders because of a folder/path limit or unsupported path. " : "") +
+                "These counts describe unavailable access; unreadable folders may contain additional unmeasured files.";
         CoverageTotals = snapshot.IssueCounts is null
             ? $"Excluded: unknown · Failed: unknown · {snapshot.SkippedEntries:N0} combined gaps in this older scan. Rescan to classify."
             : $"Excluded: {snapshot.ExcludedEntries:N0} · Failed: {snapshot.FailedEntries:N0} · Depth-limited: {snapshot.LimitedEntries:N0}\n" +
                 (snapshot.ProtectedSystemFailedEntries is { } protectedCount
-                    ? $"Of failed: Protected system: {protectedCount:N0} · Other failures: {snapshot.OtherFailedEntries:N0}"
-                    : "Protected-system / other-failure split: unknown for this older scan. Rescan to classify.");
+                    ? $"Of failed: Protected system: {protectedCount:N0} · Access restricted: {snapshot.AccessRestrictedEntries:N0} · Other errors: {snapshot.OtherErrorEntries:N0}"
+                    : $"Access restricted: {snapshot.AccessRestrictedEntries:N0} · Protected-system / other-error split: unknown for this older scan. Rescan to classify.");
         IssueCounts = (snapshot.IssueCounts ?? []).Select(c => new StorageScanIssueCountRow(
             CategoryLabel(c.Category), StorageScanIssue.KindOf(c.Category).ToString(), c.Count)).ToArray();
         Status = $"{(snapshot.CoverageComplete ? "Traversal completed" : "Partial scan")} · {snapshot.Root}\n" +
@@ -247,7 +270,7 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
     {
         StorageScanIssueCategory.ReparseOrOffline => "Reparse, offline or recall entry",
         StorageScanIssueCategory.DepthLimit => "Directory depth limit",
-        StorageScanIssueCategory.AccessDenied => "Access denied",
+        StorageScanIssueCategory.AccessDenied => "Access restricted",
         StorageScanIssueCategory.MissingOrChanged => "Missing or changed path",
         StorageScanIssueCategory.SharingViolation => "File in use",
         StorageScanIssueCategory.MetadataUnavailable => "Metadata unavailable",
@@ -268,3 +291,4 @@ internal sealed class StorageScanViewModel(string dataDirectory, SemaphoreSlim s
 internal sealed record StorageScanRow(string Path, double LogicalMiB, double AllocatedMiB, string Coverage);
 internal sealed record StorageGrowthRow(string Path, string Kind, string Growth);
 internal sealed record StorageScanIssueCountRow(string Reason, string Kind, int Count);
+internal sealed record StorageAccessFolderRow(string Folder, int Count, string CountKind);
