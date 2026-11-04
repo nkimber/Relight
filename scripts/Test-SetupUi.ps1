@@ -12,6 +12,7 @@ param(
     [switch]$ExerciseResetDuplicate,
     [switch]$ExerciseNoRearm,
     [switch]$ExerciseStartNow,
+    [switch]$ExerciseExitRace,
     [switch]$ZeroAutomaticAttempts,
     [switch]$ExerciseHistoryNavigation,
     [ValidateSet('Pause', 'Disable', 'Remove', 'Exit')]
@@ -81,6 +82,23 @@ function Read-Configuration([string]$Path) {
     catch [UnauthorizedAccessException] { return $null }
 }
 
+function Get-ProfileEvents([string]$Directory, [string]$ProfileId) {
+    $logs = Join-Path $Directory 'Logs'
+    if (-not (Test-Path -LiteralPath $logs)) { return @() }
+    $events = @()
+    foreach ($log in @(Get-ChildItem -LiteralPath $logs -File -Filter 'events-*.jsonl')) {
+        foreach ($line in @(Get-Content -LiteralPath $log.FullName)) {
+            if (-not $line.Contains($ProfileId)) { continue }
+            try {
+                $event = $line | ConvertFrom-Json
+                if ($event.profileId -eq $ProfileId) { $events += $event }
+            }
+            catch [System.ArgumentException] { }
+        }
+    }
+    return $events
+}
+
 function Find-MessageBox($Dashboard, [string]$Title, [int]$Seconds = 12) {
     Wait-For {
         $nested = Find-Control $Dashboard $Title `
@@ -140,6 +158,13 @@ if ($ExerciseStartNow -and ($AcceptInitialStart -or $ExercisePauseResume -or
     $ExerciseDisableRemove -or $ExerciseExit -or $ExerciseResetDuplicate -or
     $EditSavedExecutable -or $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
     throw 'Start now acceptance uses a saved initially absent disposable target with automatic initial start off.'
+}
+if ($ExerciseExitRace -and ($AcceptInitialStart -or $ExerciseStartNow -or
+    $ExercisePauseResume -or $ExerciseDisableRemove -or $ExerciseExit -or
+    $ExerciseResetDuplicate -or $ExerciseNoRearm -or $ExerciseHistoryNavigation -or
+    $ExplicitAction -or $CancelPendingAction -or $EditSavedExecutable -or
+    $TestSavedLaunch -or $RegisterSelectedChatGpt)) {
+    throw 'Exit-race acceptance uses only one initially absent disposable profile.'
 }
 if ($ZeroAutomaticAttempts -and -not $ExerciseStartNow) {
     throw 'The zero-attempt UI check requires -ExerciseStartNow.'
@@ -254,6 +279,31 @@ try {
         Wait-For {
             Find-Control $dashboard 'Disposable UI target' ([System.Windows.Automation.ControlType]::Text)
         } 'new dashboard row' | Out-Null
+    }
+    if ($ExerciseExitRace) {
+        Invoke-Button $dashboard 'Edit policy'
+        $editor = Wait-For {
+            Find-Control $dashboard 'Edit protection · Relight' `
+                ([System.Windows.Automation.ControlType]::Window)
+        } 'profile editor for exit race'
+        foreach ($field in @(@('Normal check interval in seconds', '60'),
+                             @('Stable observation period in minutes', '1'),
+                             @('Retry delay in seconds', '10'))) {
+            $input = Find-Control $editor $field[0] `
+                ([System.Windows.Automation.ControlType]::Edit)
+            if ($null -eq $input) { throw "Exit-race editor lacks '$($field[0])'." }
+            $input.GetCurrentPattern(
+                [System.Windows.Automation.ValuePattern]::Pattern).SetValue($field[1])
+        }
+        Invoke-Button $editor 'Save changes'
+        Wait-For {
+            $config = Read-Configuration (Join-Path $root 'configuration.json')
+            $saved = @($config.configuration.profiles | Where-Object id -eq $profile.id) |
+                Select-Object -First 1
+            $null -ne $saved -and $saved.policy.normalPollInterval -eq '00:01:00' -and
+                $saved.policy.observationPeriod -eq '00:01:00' -and
+                $saved.policy.retryDelay -eq '00:00:10'
+        } 'saved exit-race policy' 45 | Out-Null
     }
     if ($ExerciseNoRearm) {
         Invoke-Button $dashboard 'Edit policy'
@@ -493,6 +543,50 @@ try {
         } 'explicit-start history event' | Out-Null
         $policyDescription = if ($ZeroAutomaticAttempts) { ' with a zero automatic-attempt limit' } else { '' }
         Write-Output "PASS: WPF Start now$policyDescription launched the absent disposable target once, disabled duplicate start while present, logged an explicit dispatch and left the automatic budget at zero."
+    }
+
+    if ($ExerciseExitRace) {
+        $budgetPath = Join-Path $root ('Budgets\' + $profile.id.Replace('-', '') + '.json')
+        $external = Start-Process -FilePath $targetPath -WindowStyle Hidden -PassThru `
+            -ArgumentList @('--label', $label, '--ready-file', $ready,
+                '--exit-after-ms', '300000', '--hidden')
+        Wait-For { Test-Path -LiteralPath $ready } 'external exit-race target' 10 | Out-Null
+        Wait-For {
+            @(Get-ProfileEvents $root $profile.id | Where-Object kind -eq 'ObservationCompleted').Count -ge 1
+        } 'stable external target observation' 150 | Out-Null
+        $before = Read-Configuration $budgetPath
+        if ($null -eq $before -or $before.budget.reservedAutomaticAttempts -ne 0) {
+            throw 'Exit-race target had a charged budget before exit.'
+        }
+        if ($external.HasExited) { throw 'External exit-race target closed before controlled exit.' }
+        Stop-Process -Id $external.Id
+        $external.WaitForExit(10000) | Out-Null
+        Remove-Item -LiteralPath $ready -ErrorAction SilentlyContinue
+        Wait-For {
+            @(Get-ProfileEvents $root $profile.id | Where-Object kind -eq 'TargetDisappeared').Count -ge 1
+        } 'callback-driven target disappearance' 20 | Out-Null
+        $button = Wait-For {
+            Find-EnabledButton $dashboard 'Start now'
+        } 'WPF Start now during retry window' 8
+        $button.GetCurrentPattern(
+            [System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+        Wait-For { Test-Path -LiteralPath $ready } 'exit-race replacement target' 20 | Out-Null
+        $targetPid = [int](Get-Content -LiteralPath $ready -Raw).Split('|')[0]
+        if ($targetPid -eq $external.Id) { throw 'Exit-race target identity did not change.' }
+        Start-Sleep -Seconds 15
+        $events = @(Get-ProfileEvents $root $profile.id)
+        $manual = @($events | Where-Object kind -eq 'ExplicitStartDispatched')
+        $automatic = @($events | Where-Object kind -eq 'LaunchDispatched')
+        $requests = @($events | Where-Object kind -eq 'ExplicitStartRequested')
+        if ($manual.Count -ne 1 -or $automatic.Count -ne 0 -or $requests.Count -ne 1 -or
+            $requests[0].operationId -ne $manual[0].operationId) {
+            throw 'Exit-race UI action produced a missing, duplicate or mismatched launch operation.'
+        }
+        $after = Read-Configuration $budgetPath
+        if ($null -eq $after -or $after.budget.reservedAutomaticAttempts -ne 0) {
+            throw 'Exit-race WPF Start now changed the automatic attempt budget.'
+        }
+        Write-Output 'PASS: callback-driven disappearance enabled WPF Start now; one explicit replacement launched with matching operation IDs, no automatic duplicate and no automatic budget charge.'
     }
 
     if ($ExerciseHistoryNavigation) {

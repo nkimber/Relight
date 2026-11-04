@@ -11,7 +11,7 @@ namespace Relight.Windows;
 internal sealed class ConfigurationGuardedDiscovery(
     IProcessDiscovery inner,
     ConfigurationStore store,
-    Func<StoredConfiguration?> activeConfiguration) : IProcessDiscovery
+    Func<StoredConfiguration?> activeConfiguration) : IProcessDiscovery, IDisposable
 {
     public async Task<Detection> DetectAsync(CancellationToken cancellationToken)
     {
@@ -56,4 +56,6 @@ internal sealed class ConfigurationGuardedDiscovery(
         diagnostic = null;
         return null;
     }
+
+    public void Dispose() => (inner as IDisposable)?.Dispose();
 }
